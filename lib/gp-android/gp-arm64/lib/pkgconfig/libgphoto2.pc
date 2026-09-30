@@ -1,0 +1,15 @@
+prefix=/home/heng/android/gp-arm64
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+VERSION=2.5.34
+driverdir=${libdir}/libgphoto2/2.5.34
+
+Name: libgphoto2
+Description: Library for easy access to digital cameras
+URL: http://gphoto.org/proj/libgphoto2/
+Version: 2.5.34
+Requires: libgphoto2_port >= 0.12.1
+Requires.private: 
+Libs: -L${libdir} -lgphoto2 -lm
+Cflags: -I${includedir} -I${includedir}/gphoto2
