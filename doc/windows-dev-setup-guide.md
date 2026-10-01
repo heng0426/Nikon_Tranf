@@ -263,9 +263,14 @@ tar xf libgphoto2-2.5.34.tar.gz && cd libgphoto2-2.5.34
 # 若报 "libgphoto2 requires libltdl"，先确认 $PREFIX/lib/libltdl.a 和
 # $PREFIX/include/ltdl.h 存在（3.6 步完成），再按下述方式传入变量。
 # 不要用 apt install libltdl-dev —— 那是 x86 宿主机的库，对交叉编译无效。
+#
+# ⚠️ LDFLAGS 必须带 -Wl,-z,max-page-size=16384：
+# 16KB 内核页设备（Android 15+ 的 16K 模式真机、16K 模拟器镜像）要求
+# .so 的 LOAD 段对齐 ≥ 16384，缺这个 flag 编出来是 4096 对齐，
+# dlopen 直接报 UnsatisfiedLinkError 闪退（详见 doc/16k-page-realignment-wsl.md）。
 PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig \
 CPPFLAGS="-I$PREFIX/include" \
-LDFLAGS="-L$PREFIX/lib" \
+LDFLAGS="-L$PREFIX/lib -Wl,-z,max-page-size=16384" \
 ./configure \
   --host=$HOST --prefix=$PREFIX \
   --with-camlibs=ptp2 \

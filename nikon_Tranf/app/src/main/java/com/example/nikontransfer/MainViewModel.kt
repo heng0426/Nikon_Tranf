@@ -1,0 +1,807 @@
+package com.example.nikontransfer
+
+import android.app.Application
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.ConnectivityManager
+import android.net.LinkAddress
+import android.net.NetworkCapabilities
+import android.provider.MediaStore
+import android.util.Log
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
+
+/** 照片行：预览位图异步填充（原生会话单通道，必须串行取块） */
+class PhotoRow(val name: String, val handle: Int, val type: String, val stamp: String) {
+    val preview = mutableStateOf<Bitmap?>(null)
+    val selected = mutableStateOf(false)
+    val downloaded = mutableStateOf(false)
+}
+
+fun badgeColor(type: String) =
+    if (type.equals("JPG", true)) androidx.compose.ui.graphics.Color(0xFF00695C)
+    else androidx.compose.ui.graphics.Color(0xFF6A1B9A)
+
+/** "20261001-162351" → "2026-10-01 16:23:51"（相机时钟，可能比手机慢） */
+fun prettyStamp(s: String): String =
+    if (s.length >= 15 && s[8] == '-')
+        "${s.slice(0..3)}-${s.slice(4..5)}-${s.slice(6..7)} ${s.slice(9..10)}:${s.slice(11..12)}:${s.slice(13..14)}"
+    else s
+
+/** 连接与相册的全部状态和逻辑。
+ *  放在 ViewModel 里：MIUI 等系统在 App 切后台后可能销毁重建 Activity，
+ *  ViewModel 跨重建存活 —— 前台服务维持的相机会话不会被 UI 重置丢掉。 */
+class MainViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val ctx: Context get() = getApplication()
+    private val prefs get() = ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+
+    /* ---------- 连接状态机 ---------- */
+    private val camMutex = Object()
+    @Volatile var connected = false
+    private var ptpPath = ""
+    @Volatile var connecting = false
+    val connPhase = mutableStateOf("disconnected")   // disconnected / connecting / connected
+    val connText = mutableStateOf("未连接 · 点按连接相机")
+    val connDetail = mutableStateOf("")              // "型号|序列号"
+    val connectedIp = mutableStateOf("")
+    val showConnDetail = mutableStateOf(false)
+    val scanResults = mutableStateListOf<Pair<String, String>>()  // ip to "型号|序列号"
+    val scanning = mutableStateOf(false)
+    val scanText = mutableStateOf("")
+
+    /* ---------- 相册 / 下载 / 预览 ---------- */
+    val photoRows = mutableStateListOf<PhotoRow>()
+    @Volatile private var previewGen = 0
+    @Volatile private var nefDumped = false
+    @Volatile private var downloadBusy = false
+    val downloadProgress = mutableStateOf("")
+
+    /* ---------- 多选模式 ---------- */
+    val selectMode = mutableStateOf(false)
+
+    /* ---------- 已下载标记（跨会话持久化，键 = 合成文件名）---------- */
+    private val downloadedNames = mutableStateOf<Set<String>>(emptySet())
+
+    private fun loadDownloaded() {
+        downloadedNames.value =
+            prefs.getStringSet("downloaded_names", emptySet()) ?: emptySet()
+    }
+
+    private fun markDownloaded(name: String) {
+        val s = downloadedNames.value + name
+        downloadedNames.value = s
+        prefs.edit().putStringSet("downloaded_names", s).apply()
+    }
+
+    init {
+        loadDownloaded()
+    }
+
+    /* ---------- 日志 ---------- */
+    var uiLog by mutableStateOf("就绪")
+
+    /* ---------- 事件轮询 ---------- */
+    @Volatile private var pollerRunning = false
+    private var eventThread: Thread? = null
+
+    /* ---------- 后台保活 ---------- */
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+
+    fun splitInfo(info: String): Pair<String, String> {
+        val p = info.split('|')
+        return (p.getOrNull(0)?.ifEmpty { "Nikon" } ?: "Nikon") to (p.getOrNull(1)?.ifEmpty { "?" } ?: "?")
+    }
+
+    /* ---------- 扫描 ---------- */
+
+    /** 收集所有 Wi-Fi 接口的 /24 网段前缀（如 "10.19.161"） */
+    private fun wifiSubnets(): List<String> {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val out = LinkedHashSet<String>()
+        for (net in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(net) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            val lp = cm.getLinkProperties(net) ?: continue
+            for (la in lp.linkAddresses) {
+                val a = la.address.address
+                if (a is Array<*> || a.size != 4) continue
+                if (la.prefixLength == 24)
+                    out.add("${a[0].toInt() and 0xFF}.${a[1].toInt() and 0xFF}.${a[2].toInt() and 0xFF}")
+            }
+        }
+        return out.toList()
+    }
+
+    /** 并发扫描网段的 15740 端口（PTP/IP），返回开放的 IP 列表 */
+    private fun scanSubnet(subnet: String, progress: (Int, Int) -> Unit): List<String> {
+        val found = java.util.Collections.synchronizedList(ArrayList<String>())
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(16)
+        val ips = (1..254).map { "$subnet.$it" }
+        val latch = java.util.concurrent.CountDownLatch(ips.size)
+        val done = java.util.concurrent.atomic.AtomicInteger()
+        for (ip in ips) {
+            pool.execute {
+                try {
+                    val s = java.net.Socket()
+                    try {
+                        s.connect(java.net.InetSocketAddress(ip, 15740), 300)
+                        found.add(ip)
+                    } finally { s.close() }
+                } catch (_: Throwable) {
+                } finally {
+                    progress(done.incrementAndGet(), ips.size)
+                    latch.countDown()
+                }
+            }
+        }
+        latch.await(40, java.util.concurrent.TimeUnit.SECONDS)
+        pool.shutdownNow()
+        return found
+    }
+
+    /** 设置页「扫描相机」：扫全部网段 + 读取相机名 */
+    fun scanForCameras() {
+        scanning.value = true
+        try {
+            GPhoto2Bridge.setup(ctx)
+            val candidates = ArrayList<String>()
+            for (subnet in wifiSubnets()) {
+                scanText.value = "扫描 $subnet.x …"
+                candidates.addAll(
+                    scanSubnet(subnet) { done, total ->
+                        scanText.value = "扫描 $subnet.x … $done/$total"
+                    }
+                )
+            }
+            scanResults.clear()
+            for (ip in candidates.distinct()) {
+                val info = synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(ip) } ?: "|"
+                scanResults.add(ip to info)
+            }
+            if (scanResults.isEmpty())
+                scanText.value = "未发现相机 · 请确认相机已进入 Wi-Fi 等待态"
+        } finally {
+            scanning.value = false
+        }
+    }
+
+    /* ---------- 连接流程 ---------- */
+
+    /** 连接总流程（IO 线程）：上次 IP 探测 → 网段扫描 → 命中即连。
+     *  多台命中时填充 scanResults 并返回 false（设置页选择）。 */
+    fun connectionFlow(): Boolean {
+        if (connecting || connected) return false
+        connecting = true
+        connPhase.value = "connecting"
+        try {
+            GPhoto2Bridge.setup(ctx)
+            val lastIp = prefs.getString("camera_ip", null)
+            if (lastIp != null) {
+                connText.value = "探测上次相机 $lastIp …"
+                val info = synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(lastIp) }
+                if (info != null) return finishConnect(lastIp, info)
+                Log.i("GPhoto2", "上次 IP $lastIp 不可达，转为网段扫描")
+            }
+            val subnets = wifiSubnets()
+            if (subnets.isEmpty()) {
+                connText.value = "未发现可用 Wi-Fi 子网"
+                connPhase.value = "disconnected"
+                return false
+            }
+            var candidates: List<String> = emptyList()
+            for (subnet in subnets) {
+                connText.value = "扫描网段 $subnet.x …"
+                candidates = scanSubnet(subnet) { done, total ->
+                    connText.value = "扫描网段 $subnet.x … $done/$total"
+                }
+                if (candidates.isNotEmpty()) break
+            }
+            if (candidates.isEmpty()) {
+                connText.value = "未发现相机 · 请确认相机已进入 Wi-Fi 等待态"
+                connPhase.value = "disconnected"
+                return false
+            }
+            val named = candidates.map { ip ->
+                ip to (synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(ip) } ?: "|")
+            }
+            if (named.size == 1) {
+                val (ip, info) = named[0]
+                return finishConnect(ip, info)
+            }
+            scanResults.clear()
+            scanResults.addAll(named)
+            connText.value = "发现 ${named.size} 台相机 · 请到设置中选择"
+            connPhase.value = "disconnected"
+            return false
+        } finally {
+            connecting = false
+        }
+    }
+
+    /** 连接入口（带防并发守卫，设置页扫描结果点击触发） */
+    fun connectToCamera(ip: String, info: String): Boolean {
+        if (connecting) { scanText.value = "有连接正在进行…"; return false }
+        connecting = true
+        connPhase.value = "connecting"
+        try {
+            return finishConnect(ip, info)
+        } finally {
+            connecting = false
+        }
+    }
+
+    /** 与指定相机完成连接（配对探针 + 常驻传输会话）并自动列目录 */
+    private fun finishConnect(ip: String, info: String): Boolean {
+        val (model, serial) = splitInfo(info)
+        connText.value = "连接 $model ($serial) …"
+        // 已连接则先干净断开旧会话（相机需要时间复位）
+        if (connected) {
+            stopEventPolling()
+            synchronized(camMutex) { GPhoto2Bridge.nativeTransferClose() }
+            Thread.sleep(3000)
+        }
+        bindToWifiNetwork(ip)
+        connText.value = "配对探针 + 传输会话…"
+        val ret = synchronized(camMutex) { GPhoto2Bridge.nativePairingProbe(ip) }
+        if (ret != 0) {
+            connected = false
+            ptpPath = ""
+            stopKeepAlive()       // 重连失败时清理可能残留的保活
+            connText.value = "连接失败: $ret（相机需处于 Wi-Fi 等待态）"
+            connPhase.value = "disconnected"
+            return false
+        }
+        connected = true
+        ptpPath = "ptpip:$ip"
+        startEventPolling()
+        startKeepAlive()          // 前台服务 + WifiLock：后台不再被冻结断连
+        prefs.edit().putString("camera_ip", ip).apply()
+        connectedIp.value = ip
+        connDetail.value = info
+        connText.value = "枚举照片…"
+        uiLog = listFiles()
+        connText.value = "$model ($serial) · $ip"
+        connPhase.value = "connected"
+        return true
+    }
+
+    /**
+     * 关键：把进程网络绑定到「相机所在」的网络。
+     * - 手机连相机热点（AP 模式）：相机网段是受管 Wi-Fi 网络之一，按子网匹配并绑定。
+     * - 相机连手机热点：热点网段不在受管网络列表里，此时【不绑定】——
+     *   未绑定套接字经主路由表的直连路由即可到达热点客户端（实测验证）。
+     */
+    private fun bindToWifiNetwork(cameraIp: String): String {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val camBytes = try {
+            java.net.InetAddress.getByName(cameraIp).address
+        } catch (e: Exception) {
+            Log.i("GPhoto2", "IP 解析失败($cameraIp)，未绑定网络")
+            return "IP 解析失败，未绑定网络"
+        }
+        var desc = "未发现受管 Wi-Fi 网络"
+        for (net in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(net) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            val lp = cm.getLinkProperties(net) ?: continue
+            for (la in lp.linkAddresses) {
+                if (la is LinkAddress && ipInSubnet(la, camBytes)) {
+                    if (cm.bindProcessToNetwork(net)) {
+                        desc = "绑定到相机所在网络（${la.address.hostName ?: ""}${la.address.hostAddress}）"
+                        Log.i("GPhoto2", "网络策略: $desc")
+                        return desc
+                    }
+                }
+            }
+        }
+        // 相机在手机热点网段（不受管网络）：不绑定，走主路由直连
+        Log.i("GPhoto2", "网络策略: $desc，相机 IP=$cameraIp 直连模式")
+        return desc
+    }
+
+    /** 相机 IP 是否落在 IP/prefix 子网内 */
+    private fun ipInSubnet(la: LinkAddress, camBytes: ByteArray): Boolean {
+        val addr = la.address.address
+        if (addr.size != camBytes.size) return false
+        val prefix = la.prefixLength
+        val full = prefix / 8
+        val rem = prefix % 8
+        for (i in 0 until full) if (addr[i] != camBytes[i]) return false
+        if (rem > 0) {
+            val mask = (0xFF shl (8 - rem))
+            if ((addr[full].toInt() and 0xFF and mask) != (camBytes[full].toInt() and 0xFF and mask)) return false
+        }
+        return true
+    }
+
+    /* ---------- 列目录 / 下载 / 预览 ---------- */
+
+    fun listFiles(): String = synchronized(camMutex) {
+        if (!connected) return "未连接相机，请先连接成功后再列目录"
+        // 配对模式原生列目录："句柄:YYYYMMDD-HHMMSS:类型|..."
+        val res = GPhoto2Bridge.nativeListNative()
+            ?: return "列目录失败（传输会话可能已断开，请重新连接）"
+        val rows = res.split('|').filter { it.isNotBlank() }
+        if (rows.isEmpty()) return "相机里没有待传输的照片"
+        val parsed = rows.mapNotNull { row ->
+            val p = row.split(':')
+            if (p.size < 3) return@mapNotNull null
+            val handle = p[0].toIntOrNull() ?: return@mapNotNull null
+            val stamp = p[1]
+            val type = p[2].uppercase()
+            val name = "IMG_${stamp}_${p[0].takeLast(4).padStart(4, '0')}.${type.lowercase()}"
+            PhotoRow(name, handle, type, stamp)
+        }.sortedByDescending { it.stamp }              // 从新到旧
+        parsed.forEach { it.downloaded.value = it.name in downloadedNames.value }
+        photoRows.clear()
+        photoRows.addAll(parsed)
+        val autoPreview = prefs.getBoolean("set_auto_preview", true)
+        if (autoPreview) {
+            startPreviewLoading(parsed)                // 异步逐个取内嵌缩略图
+            return "共 ${photoRows.size} 个文件（按拍摄时间从新到旧，预览加载中）"
+        }
+        return "共 ${photoRows.size} 个文件（按拍摄时间从新到旧，预览已关闭）"
+    }
+
+    /** 保存到系统相册（JPEG→图片集，NEF→文件集合） */
+    private fun savePhoto(name: String, type: String, data: ByteArray): Boolean {
+        val mime = if (type.equals("NEF", true)) "image/x-nikon-nef" else "image/jpeg"
+        val collection = if (type.equals("NEF", true))
+            MediaStore.Files.getContentUri("external_primary")
+        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+        }
+        val uri = ctx.contentResolver.insert(collection, values) ?: return false
+        return try {
+            ctx.contentResolver.openOutputStream(uri)?.use { it.write(data) }
+            true
+        } catch (t: Throwable) {
+            Log.e("GPhoto2", "savePhoto 失败: $name", t)
+            false
+        }
+    }
+
+    /** 单张下载（IO 线程调用；全屏预览页触发） */
+    fun downloadOne(row: PhotoRow) {
+        if (downloadBusy) { downloadProgress.value = "有下载正在进行，请稍候…"; return }
+        downloadBusy = true
+        downloadProgress.value = "下载中: ${row.name}"
+        val data = synchronized(camMutex) { GPhoto2Bridge.nativeDownloadNative(row.handle) }
+        downloadProgress.value = if (data == null) {
+            "下载失败: ${row.name}（看 logcat GPhoto2）"
+        } else if (savePhoto(row.name, row.type, data)) {
+            row.downloaded.value = true
+            markDownloaded(row.name)
+            "已保存: ${row.name} (${data.size} bytes)"
+        } else {
+            "保存失败: ${row.name}"
+        }
+        downloadBusy = false
+    }
+
+    /** 批量下载勾选的照片（IO 线程调用；原生会话单通道，天然串行）。
+     *  设置「批量下载只取 JPG」开启时，成对照片（时间戳相同的 NEF）自动跳过。 */
+    fun downloadSelected() {
+        val targets = photoRows.filter { it.selected.value }
+        if (targets.isEmpty()) { downloadProgress.value = "请先勾选要下载的照片"; return }
+        if (downloadBusy) { downloadProgress.value = "有下载正在进行，请稍候…"; return }
+        val jpgOnly = prefs.getBoolean("set_jpg_only", false)
+        val jpgStamps = photoRows.filter { it.type.equals("JPG", true) }.map { it.stamp }.toSet()
+        downloadBusy = true
+        var ok = 0; var fail = 0; var skipped = 0
+        for ((idx, row) in targets.withIndex()) {
+            if (!connected) { downloadProgress.value = "连接已断开，批量中止"; break }
+            if (jpgOnly && row.type.equals("NEF", true) && row.stamp in jpgStamps) {
+                skipped++
+                row.selected.value = false
+                continue
+            }
+            downloadProgress.value = "批量下载 ${idx + 1}/${targets.size}: ${row.name}"
+            val data = synchronized(camMutex) { GPhoto2Bridge.nativeDownloadNative(row.handle) }
+            if (data != null && savePhoto(row.name, row.type, data)) {
+                ok++
+                row.downloaded.value = true
+                row.selected.value = false
+                markDownloaded(row.name)
+            } else fail++
+        }
+        downloadProgress.value = "批量完成: 成功 $ok / 失败 $fail" +
+            (if (skipped > 0) " / 按 JPG 优先跳过 $skipped" else "")
+        downloadBusy = false
+    }
+
+    private fun decodeScaled(buf: ByteArray, off: Int, len: Int): Bitmap? = try {
+        val bmp = BitmapFactory.decodeByteArray(buf, off, len)
+        if (bmp != null) {
+            val trimmed = trimBlackBars(bmp)
+            if (trimmed.width > 640) {
+                val s = 640f / trimmed.width
+                Bitmap.createScaledBitmap(trimmed, 640, (trimmed.height * s).toInt().coerceAtLeast(1), true)
+            } else trimmed
+        } else null
+    } catch (_: Throwable) { null }
+
+    /** 裁掉位图上下贴边的纯黑条：Z6_2 内嵌缩略图（JPG 的 EXIF 缩略图与 NEF 的
+     *  RGB 条带）自带 letterbox 黑边，布局层 Crop 裁不掉（黑边长在位图里）。
+     *  保守策略：整行平均亮度 <20 才算黑行，单边最多裁 35%，避免误裁暗色照片。 */
+    private fun trimBlackBars(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        if (w < 16 || h < 16) return src
+        val px = IntArray(w * h)
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        fun rowLum(y: Int): Int {
+            var sum = 0L
+            var n = 0
+            val step = (w / 24).coerceAtLeast(1)
+            var x = 0
+            while (x < w) {
+                val p = px[y * w + x]
+                sum += ((p shr 16) and 0xFF) + ((p shr 8) and 0xFF) + (p and 0xFF)
+                n++
+                x += step
+            }
+            return (sum / (n * 3L)).toInt()
+        }
+        val maxTrim = (h * 0.35f).toInt()
+        var top = 0
+        while (top < maxTrim && rowLum(top) < 20) top++
+        if (top >= h - 16) return src                     // 几乎全黑，别裁
+        var bot = 0
+        while (bot < maxTrim && rowLum(h - 1 - bot) < 20) bot++
+        if (top + bot >= h - 16) return src
+        if (top == 0 && bot == 0) return src
+        val nh = h - top - bot
+        val dst = Bitmap.createBitmap(w, nh, Bitmap.Config.ARGB_8888)
+        val part = IntArray(w * nh)
+        src.getPixels(part, 0, w, 0, top, w, nh)
+        dst.setPixels(part, 0, w, 0, 0, w, nh)
+        return dst
+    }
+
+    /** 从对象前 128KB 里抠出可解码的完整 JPEG（EXIF/TIFF 内嵌缩略图）。
+     *  实测 Z6_2 JPG 首块结构：SOI@0(主图) … SOI@33352(缩略图) … EOI@43956 ——
+     *  主图前缀段和缩略图共享同一个 EOI，所以不能"跳到段尾继续扫"，
+     *  必须收集全部 SOI→最近EOI 候选段，按段长升序尝试解码：
+     *  真缩略图段最短（约 10KB），优先命中；主图截断段解码失败自动跳过。 */
+    private fun extractPreviewJpeg(chunk: ByteArray): Bitmap? {
+        val n = chunk.size
+        val sois = ArrayList<Int>()
+        var i = 0
+        while (i + 1 < n) {
+            if (chunk[i] == 0xFF.toByte() && chunk[i + 1] == 0xD8.toByte()) sois.add(i)
+            i++
+        }
+        data class Cand(val start: Int, val len: Int)
+        val cands = ArrayList<Cand>()
+        for (s in sois) {
+            var j = s + 2
+            var eoi = -1
+            while (j + 1 < n) {
+                if (chunk[j] == 0xFF.toByte() && chunk[j + 1] == 0xD9.toByte()) { eoi = j + 2; break }
+                j++
+            }
+            if (eoi > s) cands.add(Cand(s, eoi - s))
+        }
+        cands.sortBy { it.len }
+        for (c in cands) {
+            if (c.len < 512) continue              // 过短的伪配对忽略
+            val bmp = decodeScaled(chunk, c.start, c.len)
+            if (bmp != null) return bmp
+        }
+        return null
+    }
+
+    /** TIFF/NEF 结构感知：走 IFD 链（IFD0 → next / SubIFD 0x014a），
+     *  找内嵌 JPEG 缩略图 tags 0x0201(JPEGInterchangeFormat)+0x0202(长度)。
+     *  返回 longArrayOf(偏移, 长度)，找不到返回 null。 */
+    private fun tiffThumbRange(chunk: ByteArray): LongArray? {
+        if (chunk.size < 16) return null
+        val bb = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        if (bb.getShort(0).toInt() != 0x4949) return null          // "II"（Nikon 小端）
+        if (bb.getShort(2).toInt() != 42) return null              // TIFF 魔数
+        val visited = HashSet<Int>()
+        val queue = ArrayDeque<Int>()
+        queue.add(bb.getInt(4))
+        var offset = -1L
+        var length = -1L
+        fun value(e: Int, typ: Int, num: Int): Long =
+            if (typ == 3 && num == 1) bb.getShort(e + 8).toLong() and 0xFFFF
+            else bb.getInt(e + 8).toLong() and 0xFFFFFFFFL
+        while (queue.isNotEmpty() && visited.size < 8) {
+            val base = queue.removeFirst()
+            if (base <= 0 || base + 2 > chunk.size || !visited.add(base)) continue
+            val cnt = bb.getShort(base).toInt() and 0xFFFF
+            if (base + 2 + cnt * 12 + 4 > chunk.size) continue
+            for (i in 0 until cnt) {
+                val e = base + 2 + i * 12
+                val tag = bb.getShort(e).toInt() and 0xFFFF
+                val typ = bb.getShort(e + 2).toInt() and 0xFFFF
+                val num = bb.getInt(e + 4)
+                when (tag) {
+                    0x0201 -> if (num >= 1 && offset < 0) offset = value(e, typ, num)
+                    0x0202 -> if (num >= 1 && length < 0) length = value(e, typ, num)
+                    0x014a -> when {                               // SubIFD
+                        num == 1 -> queue.add(value(e, typ, 1).toInt())
+                        num in 2..8 -> {
+                            val p = if (typ == 3) e + 8 else bb.getInt(e + 8)
+                            if (p > 0 && p + num * 4 <= chunk.size)
+                                for (k in 0 until num) queue.add(bb.getInt(p + k * 4))
+                        }
+                    }
+                }
+            }
+            val nxt = bb.getInt(base + 2 + cnt * 12)
+            if (nxt > 0) queue.add(nxt)
+        }
+        return if (offset > 0 && length > 0) longArrayOf(offset, length) else null
+    }
+
+    /** NEF（TIFF）缩略图条带解析：实测 Z6_2 NEF 的 IFD0 直接描述 160×120
+     *  未压缩 RGB 条带 —— 0x0100/0x0101=宽高、0x0103=1(未压缩)、0x0106=2(RGB)、
+     *  0x0111=StripOffsets、0x0117=StripByteCounts(=w*h*3)。
+     *  返回 Triple(宽, 高, [数据偏移, 字节数])，结构不符返回 null。 */
+    private fun tiffRgbStrip(chunk: ByteArray): Triple<Int, Int, LongArray>? {
+        if (chunk.size < 16) return null
+        val bb = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        if (bb.getShort(0).toInt() != 0x4949 || bb.getShort(2).toInt() != 42) return null
+        val base = bb.getInt(4)
+        if (base <= 0 || base + 2 > chunk.size) return null
+        val cnt = bb.getShort(base).toInt() and 0xFFFF
+        if (base + 2 + cnt * 12 > chunk.size) return null
+        var w = -1; var h = -1; var compression = -1; var photometric = -1
+        var off = -1L; var byteCount = -1L
+        for (i in 0 until cnt) {
+            val e = base + 2 + i * 12
+            val tag = bb.getShort(e).toInt() and 0xFFFF
+            val typ = bb.getShort(e + 2).toInt() and 0xFFFF
+            val num = bb.getInt(e + 4)
+            val v: Long = when {
+                typ == 3 && num == 1 -> bb.getShort(e + 8).toLong() and 0xFFFF
+                typ == 4 && num == 1 -> bb.getInt(e + 8).toLong() and 0xFFFFFFFFL
+                else -> -1L
+            }
+            when (tag) {
+                0x0100 -> w = v.toInt()
+                0x0101 -> h = v.toInt()
+                0x0103 -> compression = v.toInt()
+                0x0106 -> photometric = v.toInt()
+                0x0111 -> if (num >= 1) off = v
+                0x0117 -> if (num >= 1) byteCount = v
+            }
+        }
+        if (w <= 0 || h <= 0 || off < 0 || byteCount <= 0) return null
+        if (compression != 1 || photometric != 2) return null   // 只支持未压缩 RGB
+        if (byteCount != w.toLong() * h * 3) return null        // 必须是 24bpp packed
+        return Triple(w, h, longArrayOf(off, byteCount))
+    }
+
+    /** 未压缩 RGB24 字节 → Bitmap */
+    private fun rawRgbToBitmap(data: ByteArray, w: Int, h: Int): Bitmap? {
+        if (data.size < w * h * 3) return null
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(w * h)
+        var p = 0
+        for (y in 0 until h) {
+            var o = y * w * 3
+            for (x in 0 until w) {
+                pixels[p++] = 0xFF000000.toInt() or
+                    ((data[o].toInt() and 0xFF) shl 16) or
+                    ((data[o + 1].toInt() and 0xFF) shl 8) or
+                    (data[o + 2].toInt() and 0xFF)
+                o += 3
+            }
+        }
+        bmp.setPixels(pixels, 0, w, 0, 0, w, h)
+        return bmp
+    }
+
+    /** 预览加载管线（原生会话单通道，camMutex 串行取块）：
+     *  ① 首 128KB 纯 JPEG 段扫描（JPG 的 EXIF 缩略图必在）
+     *  ② TIFF/NEF 解析：EXIF 式 0x0201/0x0202 缩略图，或 IFD0 未压缩 RGB 条带
+     *  ③ 盲扩块扫描（最多到 768KB），兜底非标准布局
+     *  列表变化（重新连接/列目录）会使旧加载线程失效。 */
+    private fun startPreviewLoading(rows: List<PhotoRow>) {
+        val myGen = ++previewGen
+        val CH = 0x10000
+        Thread {
+            for (row in rows) {
+                if (!connected || previewGen != myGen) return@Thread
+                var bmp: Bitmap? = null
+                val first = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(row.handle, 0, 2 * CH) }
+                if (first != null) {
+                    bmp = extractPreviewJpeg(first)
+                    if (bmp == null) {
+                        val range = tiffThumbRange(first)
+                        Log.i("GPhoto2", "preview: ${row.name} TIFF解析=${range?.joinToString("/") ?: "null"}")
+                        if (range != null) {
+                            val off = range[0].toInt()
+                            val len = range[1].toInt()
+                            // 大小不限：小缩略图整取；大预览（如全尺寸 JPEG）先取头部 256KB 再扫内嵌小图
+                            val take = if (off + len <= first.size) {
+                                bmp = decodeScaled(first, off, len); null
+                            } else if (len <= 2 * 1024 * 1024) {
+                                longArrayOf(off.toLong(), len.toLong())
+                            } else {
+                                longArrayOf(off.toLong(), 256L * 1024)
+                            }
+                            if (bmp == null && take != null) {
+                                Log.i("GPhoto2", "preview: NEF 缩略图在 ${take[0]}+${take[1]}，扩块取")
+                                val aligned = (((take[1] + CH - 1) / CH * CH).toInt()).coerceAtMost(1024 * 1024)
+                                val extra = synchronized(camMutex) {
+                                    GPhoto2Bridge.nativePreviewNative(row.handle, take[0].toInt(), aligned)
+                                }
+                                if (extra != null) {
+                                    bmp = extractPreviewJpeg(extra) ?: decodeScaled(extra, 0, extra.size)
+                                }
+                            }
+                        }
+                    }
+                    if (bmp == null) {
+                        val strip = tiffRgbStrip(first)
+                        if (strip != null) {
+                            val (w, h, range) = strip
+                            Log.i("GPhoto2", "preview: ${row.name} NEF RGB 条带 ${w}x${h} @${range[0]}(${range[1]}B)")
+                            val aligned = ((range[1] + CH - 1) / CH * CH).toInt()
+                            val data = if (range[0] + range[1] <= first.size)
+                                first.copyOfRange(range[0].toInt(), range[0].toInt() + range[1].toInt())
+                            else synchronized(camMutex) {
+                                GPhoto2Bridge.nativePreviewNative(row.handle, range[0].toInt(), aligned)
+                            }
+                            if (data != null) bmp = rawRgbToBitmap(data, w, h)?.let { trimBlackBars(it) }
+                        }
+                    }
+                    if (bmp == null) {
+                        // 诊断转储：只存第一个失败的 NEF 首 128KB，供离线分析
+                        if (row.type.equals("NEF", true) && !nefDumped) {
+                            nefDumped = true
+                            try {
+                                java.io.File(ctx.filesDir, "debug_nef.bin").writeBytes(first)
+                                Log.i("GPhoto2", "preview: 已转储 NEF 首 128KB 供分析")
+                            } catch (_: Throwable) {}
+                        }
+                        for (seg in 2..4) {                        // 256K/512K/768K 盲扫
+                            if (!connected || previewGen != myGen) return@Thread
+                            val more = synchronized(camMutex) {
+                                GPhoto2Bridge.nativePreviewNative(row.handle, seg * 2 * CH, 2 * CH)
+                            }
+                            if (more == null) break
+                            bmp = extractPreviewJpeg(more)
+                            if (bmp != null) { Log.i("GPhoto2", "preview: ${row.name} 在 ${seg * 256}KB 处命中"); break }
+                        }
+                    }
+                }
+                if (bmp != null) row.preview.value = bmp
+            }
+        }.apply {
+            isDaemon = true
+            name = "preview-loader"
+            start()
+        }
+    }
+
+    /* ---------- 事件轮询 + 失联检测 ---------- */
+
+    /** 事件轮询：周期消费相机事件（原生会话 0x941c GetEventEx），维持会话健康。
+     *  连续 3 次失败 = 会话已死（后台被冻结/相机关闭），如实标记断开。
+     *  心跳日志用于诊断后台存活情况。 */
+    private fun startEventPolling() {
+        stopEventPolling()
+        pollerRunning = true
+        eventThread = Thread {
+            var failStreak = 0
+            var beats = 0
+            val t0 = System.currentTimeMillis()
+            while (pollerRunning && connected) {
+                val ok = try {
+                    synchronized(camMutex) { GPhoto2Bridge.nativeEventPollNative() == 0 }
+                } catch (t: Throwable) { false }
+                beats++
+                if (!ok) {
+                    failStreak++
+                    Log.w("GPhoto2", "poll 失败 #$failStreak (t=+${(System.currentTimeMillis() - t0) / 1000}s)")
+                    if (failStreak >= 3 && connected) {
+                        markSessionLost("心跳连续失败 $failStreak 次")
+                        break
+                    }
+                } else {
+                    failStreak = 0
+                    if (beats % 4 == 0)
+                        Log.i("GPhoto2", "poll ok #${beats / 4} (t=+${(System.currentTimeMillis() - t0) / 1000}s)")
+                }
+                try { Thread.sleep(850) } catch (e: InterruptedException) { break }
+            }
+        }.apply {
+            isDaemon = true
+            name = "gphoto2-event"
+            start()
+        }
+    }
+
+    private fun stopEventPolling() {
+        pollerRunning = false
+        val t = eventThread
+        eventThread = null
+        t?.join(1500)
+    }
+
+    /** 会话失联（心跳失败/回前台体检失败）：如实更新状态，不假装还连着 */
+    private fun markSessionLost(reason: String) {
+        if (!connected) return
+        connected = false
+        pollerRunning = false
+        ptpPath = ""
+        connPhase.value = "disconnected"
+        connText.value = "连接已断开 · 点按重连"
+        uiLog = "相机连接已断开（$reason）"
+        Log.i("GPhoto2", "markSessionLost: $reason")
+        stopKeepAlive()
+    }
+
+    /** 回前台体检：后台期间会话可能已被相机/系统掐掉 */
+    fun resumeHealthCheck() {
+        if (!connected || connecting) return
+        Thread {
+            val ok = try {
+                synchronized(camMutex) { GPhoto2Bridge.nativeEventPollNative() == 0 }
+            } catch (t: Throwable) { false }
+            if (!ok && connected) markSessionLost("回前台体检失败")
+        }.start()
+    }
+
+    /* ---------- 后台保活（前台服务 + WifiLock）---------- */
+
+    private fun startKeepAlive() {
+        try {
+            val wm = ctx.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            if (wifiLock == null)
+                wifiLock = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "nikon-cam")
+                    .apply { setReferenceCounted(false); acquire() }
+            Log.i("GPhoto2", "WifiLock isHeld=${wifiLock?.isHeld}")
+        } catch (t: Throwable) {
+            Log.i("GPhoto2", "WifiLock 失败: $t")
+        }
+        CameraKeepAliveService.start(ctx)
+        requestBatteryExemption()   // 首次连接弹一次系统确认框
+    }
+
+    private fun stopKeepAlive() {
+        try { wifiLock?.let { if (it.isHeld) it.release() } } catch (_: Throwable) {}
+        wifiLock = null
+        CameraKeepAliveService.stop(ctx)
+    }
+
+    /** 电池优化豁免：MIUI/原生系统会限制后台网络，豁免后前台服务才能真正保活 */
+    private fun requestBatteryExemption() {
+        try {
+            val pm = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(ctx.packageName)) {
+                ctx.startActivity(
+                    Intent(
+                        android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        android.net.Uri.parse("package:${ctx.packageName}")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        } catch (t: Throwable) {
+            Log.i("GPhoto2", "电池豁免请求失败: $t")
+        }
+    }
+
+    /** App 真正退出（isFinishing）时整体清理 */
+    fun shutdown() {
+        stopEventPolling()
+        stopKeepAlive()
+        GPhoto2Bridge.nativeTransferClose()
+        if (ptpPath.isNotEmpty()) GPhoto2Bridge.nativeExit()
+    }
+}
