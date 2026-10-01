@@ -24,6 +24,22 @@ class PhotoRow(val name: String, val handle: Int, val type: String, val stamp: S
     val downloaded = mutableStateOf(false)
 }
 
+/** 合并视图格子：同一时间戳的 JPG+NEF 成对（或孤儿单格式）。
+ *  实例每次派生时重建，选中态存在 VM 的 pairSelection 里（键 = stamp）。 */
+data class PairRow(
+    val stamp: String,
+    val jpg: PhotoRow?,
+    val nef: PhotoRow?
+) {
+    val previewBmp: Bitmap? get() = (jpg ?: nef)?.preview?.value
+    val hasJpg get() = jpg != null
+    val hasNef get() = nef != null
+    val jpgDownloaded get() = jpg?.downloaded?.value == true
+    val nefDownloaded get() = nef?.downloaded?.value == true
+    /** 下载状态筛选的"补全"语义：两个格式都落地才算已下载 */
+    val allDownloaded get() = (!hasJpg || jpgDownloaded) && (!hasNef || nefDownloaded)
+}
+
 fun badgeColor(type: String) =
     if (type.equals("JPG", true)) androidx.compose.ui.graphics.Color(0xFF00695C)
     else androidx.compose.ui.graphics.Color(0xFF6A1B9A)
@@ -66,8 +82,202 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /* ---------- 多选模式 ---------- */
     val selectMode = mutableStateOf(false)
 
+    /* ---------- 照片筛选（会话内有效，不跨启动记忆）---------- */
+    val filterFormat = mutableStateOf("全部")          // 全部 / JPG / NEF（单选）
+    val filterUntransferred = mutableStateOf(false)   // 状态 chip：只看未传
+    val filterDownloaded = mutableStateOf(false)      // 状态 chip：只看已传
+    val filterStart = mutableStateOf<String?>(null)   // "YYYYMMDD"，null = 不限
+    val filterEnd = mutableStateOf<String?>(todayKey())  // 默认今天（含）
+
+    private fun todayKey(): String {
+        val d = java.time.LocalDate.now()
+        return "%04d%02d%02d".format(d.year, d.monthValue, d.dayOfMonth)
+    }
+
+    /** 是否有偏离默认的筛选条件（决定筛选按钮高亮） */
+    val filterActive: Boolean
+        get() = filterFormat.value != "全部" || filterUntransferred.value ||
+            filterDownloaded.value || filterStart.value != null ||
+            filterEnd.value != todayKey()
+
+    fun resetFilter() {
+        filterFormat.value = "全部"
+        filterUntransferred.value = false
+        filterDownloaded.value = false
+        filterStart.value = null
+        filterEnd.value = todayKey()
+    }
+
+    /** 筛选后的可见照片 —— 网格 / 全屏预览翻页 / 多选全选的统一数据源 */
+    val visiblePhotos: List<PhotoRow>
+        get() {
+            val fmt = filterFormat.value
+            val onlyUn = filterUntransferred.value
+            val onlyDl = filterDownloaded.value
+            val st = filterStart.value
+            val en = filterEnd.value
+            return photoRows.filter { r ->
+                if (fmt != "全部" && !r.type.equals(fmt, true)) return@filter false
+                val dl = r.downloaded.value
+                if (onlyUn && !onlyDl && dl) return@filter false
+                if (onlyDl && !onlyUn && !dl) return@filter false
+                val d = if (r.stamp.length >= 8) r.stamp.substring(0, 8) else ""
+                if (st != null && (d.isEmpty() || d < st)) return@filter false
+                if (en != null && (d.isEmpty() || d > en)) return@filter false
+                true
+            }
+        }
+
+    /** 按日期分组的可见照片：日期从新到旧，组内保持原排序 */
+    data class DateSection(val dateKey: String, val rows: List<PhotoRow>)
+
+    val visibleSections: List<DateSection>
+        get() {
+            val order = ArrayList<String>()
+            val map = LinkedHashMap<String, MutableList<PhotoRow>>()
+            for (r in visiblePhotos) {
+                val d = if (r.stamp.length >= 8) r.stamp.substring(0, 8) else "00000000"
+                val list = map.getOrPut(d) { mutableListOf() }
+                if (list.isEmpty()) order.add(d)
+                list.add(r)
+            }
+            return order.map { DateSection(it, map[it]!!) }
+        }
+
+    /** 节头文案："10月1日 周四 · 6 张" */
+    fun dateLabel(dateKey: String, count: Int): String {
+        if (dateKey.length != 8) return "$dateKey · $count 张"
+        return try {
+            val ld = java.time.LocalDate.of(
+                dateKey.substring(0, 4).toInt(),
+                dateKey.substring(4, 6).toInt(),
+                dateKey.substring(6, 8).toInt()
+            )
+            val wd = arrayOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")[ld.dayOfWeek.value - 1]
+            "${ld.monthValue}月${ld.dayOfMonth}日 $wd · $count 张"
+        } catch (_: Exception) {
+            "$dateKey · $count 张"
+        }
+    }
+
+    /* ---------- 合并展示（RAW+JPG 同时间戳合成一格，设置开关即时生效）---------- */
+    val mergePairs = mutableStateOf(false)
+
+    fun setMergePairs(on: Boolean) {
+        mergePairs.value = on
+        prefs.edit().putBoolean("set_merge_pairs", on).apply()
+        clearSelection()   // 切换视图形态时清空多选，避免跨模式选中态混乱
+    }
+
+    fun clearSelection() {
+        photoRows.forEach { it.selected.value = false }
+        pairSelection.value = emptySet()
+    }
+
+    /** 合并模式的多选（键 = 时间戳），与文件模式的多选相互独立 */
+    val pairSelection = mutableStateOf<Set<String>>(emptySet())
+
+    fun togglePair(stamp: String) {
+        pairSelection.value =
+            if (stamp in pairSelection.value) pairSelection.value - stamp
+            else pairSelection.value + stamp
+    }
+
+    /** 多选批量下载的格式勾选框（合并模式；默认只勾 JPG） */
+    val batchFmtJpg = mutableStateOf(true)
+    val batchFmtNef = mutableStateOf(false)
+
+    /** 全部照片按时间戳配对（孤儿单格式也成一项），从新到旧 */
+    val pairRowsAll: List<PairRow>
+        get() {
+            val byStamp = LinkedHashMap<String, MutableList<PhotoRow>>()
+            for (r in photoRows) byStamp.getOrPut(r.stamp) { mutableListOf() }.add(r)
+            return byStamp.map { (stamp, list) ->
+                PairRow(
+                    stamp,
+                    list.firstOrNull { it.type.equals("JPG", true) },
+                    list.firstOrNull { it.type.equals("NEF", true) }
+                )
+            }.sortedByDescending { it.stamp }
+        }
+
+    /** 合并模式的可见对：格式筛选隐藏（①b）；下载状态=补全语义（②a）；日期照旧 */
+    val visiblePairs: List<PairRow>
+        get() {
+            val onlyUn = filterUntransferred.value
+            val onlyDl = filterDownloaded.value
+            val st = filterStart.value
+            val en = filterEnd.value
+            return pairRowsAll.filter { p ->
+                if (onlyUn && !onlyDl && p.allDownloaded) return@filter false
+                if (onlyDl && !onlyUn && !p.allDownloaded) return@filter false
+                val d = p.stamp.take(8)
+                if (st != null && d < st) return@filter false
+                if (en != null && d > en) return@filter false
+                true
+            }
+        }
+
+    data class PairSection(val dateKey: String, val rows: List<PairRow>)
+
+    val pairSections: List<PairSection>
+        get() {
+            val order = ArrayList<String>()
+            val map = LinkedHashMap<String, MutableList<PairRow>>()
+            for (p in visiblePairs) {
+                val d = p.stamp.take(8)
+                val list = map.getOrPut(d) { mutableListOf() }
+                if (list.isEmpty()) order.add(d)
+                list.add(p)
+            }
+            return order.map { PairSection(it, map[it]!!) }
+        }
+
     /* ---------- 已下载标记（跨会话持久化，键 = 合成文件名）---------- */
     private val downloadedNames = mutableStateOf<Set<String>>(emptySet())
+
+    /* ---------- 存储位置（Q1=A 默认 Pictures/NikonTransfer/<拍摄日期>/，可 SAF 自定义）---------- */
+    val dateFolderOn = mutableStateOf(true)          // 按拍摄日期文件夹保存，默认开（Q3=A）
+    val customDirUri = mutableStateOf<String?>(null) // SAF tree URI，null = 默认位置
+    val dirDisplay = mutableStateOf("Pictures/NikonTransfer")
+
+    fun setDateFolder(on: Boolean) {
+        dateFolderOn.value = on
+        prefs.edit().putBoolean("set_date_folder", on).apply()
+    }
+
+    fun setCustomDir(uri: String?) {
+        customDirUri.value = uri
+        if (uri == null) prefs.edit().remove("save_dir_uri").apply()
+        else prefs.edit().putString("save_dir_uri", uri).apply()
+        refreshDirDisplay()
+    }
+
+    /** 目录行的友好显示：默认 = 相对路径；自定义 = 目录名（SAF 查询 DISPLAY_NAME） */
+    fun refreshDirDisplay() {
+        val u = customDirUri.value
+        if (u == null) {
+            dirDisplay.value = "Pictures/NikonTransfer（默认）"
+            return
+        }
+        try {
+            val treeUri = android.net.Uri.parse(u)
+            val doc = android.provider.DocumentsContract.buildDocumentUriUsingTree(
+                treeUri, android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+            )
+            ctx.contentResolver.query(
+                doc, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null
+            )?.use { c ->
+                if (c.moveToFirst()) {
+                    dirDisplay.value = c.getString(0) ?: u
+                    return
+                }
+            }
+            dirDisplay.value = u
+        } catch (t: Throwable) {
+            dirDisplay.value = u
+        }
+    }
 
     private fun loadDownloaded() {
         downloadedNames.value =
@@ -82,6 +292,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         loadDownloaded()
+        mergePairs.value = prefs.getBoolean("set_merge_pairs", false)
+        dateFolderOn.value = prefs.getBoolean("set_date_folder", true)   // 默认开（Q3=A）
+        customDirUri.value = prefs.getString("save_dir_uri", null)
+        refreshDirDisplay()
     }
 
     /* ---------- 日志 ---------- */
@@ -350,23 +564,144 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return "共 ${photoRows.size} 个文件（按拍摄时间从新到旧，预览已关闭）"
     }
 
-    /** 保存到系统相册（JPEG→图片集，NEF→文件集合） */
-    private fun savePhoto(name: String, type: String, data: ByteArray): Boolean {
+    /** 保存到系统相册：自定义 SAF 目录优先；否则 MediaStore。
+     *  「按拍摄日期文件夹保存」开启时，JPG 与 NEF 同入 <根>/<拍摄日期>/ 子夹（Q2=A）。 */
+    private fun savePhoto(name: String, type: String, data: ByteArray, stamp: String): Boolean {
         val mime = if (type.equals("NEF", true)) "image/x-nikon-nef" else "image/jpeg"
-        val collection = if (type.equals("NEF", true))
-            MediaStore.Files.getContentUri("external_primary")
-        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+        val dateSub = stampDateSub(stamp)
+        // 自定义目录（SAF tree URI）
+        customDirUri.value?.let { uriStr ->
+            return saveToSaf(uriStr, name, mime, data, if (dateFolderOn.value) dateSub else null)
         }
-        val uri = ctx.contentResolver.insert(collection, values) ?: return false
+        // 默认 MediaStore 位置
         return try {
-            ctx.contentResolver.openOutputStream(uri)?.use { it.write(data) }
-            true
+            val rel = if (dateFolderOn.value && dateSub != null)
+                "Pictures/NikonTransfer/$dateSub" else "Pictures/NikonTransfer"
+            // NEF（raw 图像，Android 10+ 识别为 image media）必须走 Images 集合：
+            // Files 集合只允许 Download/Documents 路径， Pictures 会直接被拒（实测异常见日志）。
+            if (type.equals("NEF", true) && android.os.Build.VERSION.SDK_INT >= 29) {
+                try {
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, rel)
+                    }
+                    val uri = ctx.contentResolver.insert(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+                    ) ?: return false
+                    ctx.contentResolver.openOutputStream(uri)?.use { it.write(data) }
+                    true
+                } catch (t: Throwable) {
+                    // 个别系统对 Images+raw 校验严格 → 回退 Files 集合（只能 Download/）
+                    Log.w("GPhoto2", "NEF 写 Pictures 失败，回退 Download", t)
+                    val dlRel = if (dateFolderOn.value && dateSub != null)
+                        "Download/NikonTransfer/$dateSub" else "Download/NikonTransfer"
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, dlRel)
+                    }
+                    val uri = ctx.contentResolver.insert(
+                        MediaStore.Files.getContentUri("external_primary"), values
+                    ) ?: return false
+                    ctx.contentResolver.openOutputStream(uri)?.use { it.write(data) }
+                    true
+                }
+            } else {
+                val collection = if (type.equals("NEF", true))
+                    MediaStore.Files.getContentUri("external_primary")
+                else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                    if (android.os.Build.VERSION.SDK_INT >= 29) {
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, rel)
+                    }
+                }
+                val uri = ctx.contentResolver.insert(collection, values) ?: return false
+                ctx.contentResolver.openOutputStream(uri)?.use { it.write(data) }
+                true
+            }
         } catch (t: Throwable) {
             Log.e("GPhoto2", "savePhoto 失败: $name", t)
             false
+        }
+    }
+
+    /** "20261001-…" → "2026-10-01"（拍摄日期，取自相机时间戳） */
+    private fun stampDateSub(stamp: String): String? {
+        if (stamp.length < 8) return null
+        return try {
+            val ld = java.time.LocalDate.of(
+                stamp.substring(0, 4).toInt(),
+                stamp.substring(4, 6).toInt(),
+                stamp.substring(6, 8).toInt()
+            )
+            "%04d-%02d-%02d".format(ld.year, ld.monthValue, ld.dayOfMonth)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** SAF 目录写入：treeUri/<dateSub?>/<name>；dateSub 目录不存在则创建 */
+    private fun saveToSaf(
+        uriStr: String,
+        name: String,
+        mime: String,
+        data: ByteArray,
+        dateSub: String?
+    ): Boolean {
+        return try {
+            val treeUri = android.net.Uri.parse(uriStr)
+            val rootId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+            var parentId = rootId
+            if (dateSub != null) {
+                parentId = findOrCreateSafDir(treeUri, rootId, dateSub) ?: return false
+            }
+            val parentUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId)
+            val newDoc = android.provider.DocumentsContract.createDocument(
+                ctx.contentResolver, parentUri, mime, name
+            ) ?: return false
+            ctx.contentResolver.openOutputStream(newDoc)?.use { it.write(data) }
+            true
+        } catch (t: Throwable) {
+            Log.e("GPhoto2", "saveToSaf 失败: $name", t)
+            false
+        }
+    }
+
+    /** 在 SAF 目录树里找名为 dirName 的子目录，找不到就创建，返回其 documentId */
+    private fun findOrCreateSafDir(
+        treeUri: android.net.Uri,
+        rootId: String,
+        dirName: String
+    ): String? {
+        return try {
+            val children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, rootId)
+            ctx.contentResolver.query(
+                children,
+                arrayOf(
+                    android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE
+                ),
+                null, null, null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    if (c.getString(2) == android.provider.DocumentsContract.Document.MIME_TYPE_DIR &&
+                        c.getString(1) == dirName
+                    ) return c.getString(0)
+                }
+            }
+            val parentUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, rootId)
+            val docUri = android.provider.DocumentsContract.createDocument(
+                ctx.contentResolver, parentUri,
+                android.provider.DocumentsContract.Document.MIME_TYPE_DIR, dirName
+            )
+            docUri?.let { android.provider.DocumentsContract.getDocumentId(it) }
+        } catch (t: Throwable) {
+            Log.e("GPhoto2", "findOrCreateSafDir 失败", t)
+            null
         }
     }
 
@@ -378,7 +713,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val data = synchronized(camMutex) { GPhoto2Bridge.nativeDownloadNative(row.handle) }
         downloadProgress.value = if (data == null) {
             "下载失败: ${row.name}（看 logcat GPhoto2）"
-        } else if (savePhoto(row.name, row.type, data)) {
+        } else if (savePhoto(row.name, row.type, data, row.stamp)) {
             row.downloaded.value = true
             markDownloaded(row.name)
             "已保存: ${row.name} (${data.size} bytes)"
@@ -389,8 +724,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 批量下载勾选的照片（IO 线程调用；原生会话单通道，天然串行）。
-     *  设置「批量下载只取 JPG」开启时，成对照片（时间戳相同的 NEF）自动跳过。 */
+     *  合并模式：按格式勾选框（JPG/NEF）决定下载目标，勾哪个下哪个；
+     *  文件模式：设置「批量下载只取 JPG」开启时，成对 NEF 自动跳过。 */
     fun downloadSelected() {
+        if (mergePairs.value) {
+            val targets = visiblePairs.filter { it.stamp in pairSelection.value }
+            if (targets.isEmpty()) { downloadProgress.value = "请先勾选要下载的照片"; return }
+            if (downloadBusy) { downloadProgress.value = "有下载正在进行，请稍候…"; return }
+            val wantJpg = batchFmtJpg.value
+            val wantNef = batchFmtNef.value
+            val total = targets.sumOf { p ->
+                (if (wantJpg && p.jpg != null) 1 else 0) + (if (wantNef && p.nef != null) 1 else 0)
+            }
+            if (total == 0) { downloadProgress.value = "请至少勾选一种格式（JPG / NEF）"; return }
+            downloadBusy = true
+            var ok = 0; var fail = 0; var done = 0
+            outer@ for (p in targets) {
+                if (!connected) { downloadProgress.value = "连接已断开，批量中止"; break }
+                for (row in listOfNotNull(if (wantJpg) p.jpg else null, if (wantNef) p.nef else null)) {
+                    done++
+                    downloadProgress.value = "批量下载 $done/$total: ${row.name}"
+                    val data = synchronized(camMutex) { GPhoto2Bridge.nativeDownloadNative(row.handle) }
+                    if (data != null && savePhoto(row.name, row.type, data, row.stamp)) {
+                        ok++
+                        row.downloaded.value = true
+                        markDownloaded(row.name)
+                    } else fail++
+                }
+            }
+            downloadProgress.value = "批量完成: 成功 $ok / 失败 $fail"
+            pairSelection.value = emptySet()
+            downloadBusy = false
+            return
+        }
         val targets = photoRows.filter { it.selected.value }
         if (targets.isEmpty()) { downloadProgress.value = "请先勾选要下载的照片"; return }
         if (downloadBusy) { downloadProgress.value = "有下载正在进行，请稍候…"; return }
@@ -407,7 +773,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             downloadProgress.value = "批量下载 ${idx + 1}/${targets.size}: ${row.name}"
             val data = synchronized(camMutex) { GPhoto2Bridge.nativeDownloadNative(row.handle) }
-            if (data != null && savePhoto(row.name, row.type, data)) {
+            if (data != null && savePhoto(row.name, row.type, data, row.stamp)) {
                 ok++
                 row.downloaded.value = true
                 row.selected.value = false
