@@ -33,9 +33,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -44,9 +47,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
@@ -55,6 +61,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -194,13 +201,20 @@ class MainActivity : ComponentActivity() {
         val prefs = LocalContext.current.getSharedPreferences("cfg", Context.MODE_PRIVATE)
         val scope = rememberCoroutineScope()
         var showSettings by remember { mutableStateOf(false) }
+        var showDownloads by remember { mutableStateOf(false) }
         var previewIndex by remember { mutableStateOf(-1) }
         var pairPreviewIndex by remember { mutableStateOf(-1) }
 
-        // 返回键：全屏预览 → 关预览；设置页 → 回主页
+        // 返回键：全屏预览 → 关预览；下载页/设置页 → 回主页
         BackHandler(enabled = pairPreviewIndex >= 0) { pairPreviewIndex = -1 }
         BackHandler(enabled = previewIndex >= 0) { previewIndex = -1 }
+        BackHandler(enabled = showDownloads) { showDownloads = false }
         BackHandler(enabled = showSettings) { showSettings = false }
+
+        if (showDownloads) {
+            DownloadsScreen(onBack = { showDownloads = false })
+            return
+        }
 
         if (showSettings) {
             SettingsScreen(
@@ -229,11 +243,13 @@ class MainActivity : ComponentActivity() {
                 // 顶部栏：浏览模式（占位logo+选择+齿轮）/ 多选模式（关闭+已选N+全选）
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     if (!selMode) {
-                        // 顶部 logo（用户提供图片，透明底 PNG）
+                        // 顶部 logo（用户提供图片，透明底 PNG）：点击进入设置
                         Image(
                             painter = painterResource(R.drawable.logo),
                             contentDescription = "logo",
-                            modifier = Modifier.height(34.dp)
+                            modifier = Modifier
+                                .height(34.dp)
+                                .clickable { showSettings = true }
                         )
                         // 筛选按钮（logo 右侧，同款圆角外框）：有筛选生效时漏斗变色
                         Box(
@@ -248,16 +264,15 @@ class MainActivity : ComponentActivity() {
                             FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else Color(0xFF9E9E9E))
                         }
                         Spacer(Modifier.weight(1f))
-                        Text(
-                            "选择",
-                            Modifier
-                                .clickable { selectMode.value = true }
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                        IconButton(onClick = { showSettings = true }) {
-                            Icon(Icons.Filled.Settings, contentDescription = "设置")
+                        // 下载队列按钮（原齿轮位）：有活跃任务时显示数量角标
+                        IconButton(onClick = { showDownloads = true }) {
+                            BadgedBox(badge = {
+                                if (vm.activeDownloadCount > 0) {
+                                    Badge { Text("${vm.activeDownloadCount}") }
+                                }
+                            }) {
+                                Icon(Icons.Filled.List, contentDescription = "下载队列")
+                            }
                         }
                     } else {
                         IconButton(onClick = {
@@ -326,35 +341,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 Text(uiLog, style = MaterialTheme.typography.bodySmall)
-                if (downloadProgress.value.isNotEmpty()) {
-                    Text(
-                        downloadProgress.value,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                if (selMode) {
-                    if (mergeOn) {
-                        // 合并模式：批量下载的格式勾选（默认只勾 JPG）
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                "下载格式",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF888888)
-                            )
-                            LabeledCheckbox("JPG", vm.batchFmtJpg)
-                            LabeledCheckbox("NEF", vm.batchFmtNef)
-                        }
-                    }
-                    Button(
-                        onClick = { scope.launch { withContext(Dispatchers.IO) { vm.downloadSelected() } } },
-                        enabled = selCount > 0,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text(if (selCount > 0) "下载所选($selCount)" else "下载所选") }
-                }
                 if (connPhase.value != "connected" && photoRows.isEmpty()) {
                     Text(
                         "连接相机后即可浏览与下载照片\n（相机菜单 → 连接至 PC (Wi-Fi) → 建立连接）",
@@ -459,6 +445,28 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 } // else: 文件模式网格结束
+                // 多选模式：格式勾选（合并模式）+ 下载所选（固定屏幕底部）
+                if (selMode) {
+                    if (mergeOn) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                "下载格式",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF888888)
+                            )
+                            LabeledCheckbox("JPG", vm.batchFmtJpg)
+                            LabeledCheckbox("NEF", vm.batchFmtNef)
+                        }
+                    }
+                    Button(
+                        onClick = { scope.launch { withContext(Dispatchers.IO) { vm.downloadSelected() } } },
+                        enabled = selCount > 0,
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text(if (selCount > 0) "下载所选($selCount)" else "下载所选") }
+                }
             }
             // 全屏预览（横向滑动翻页，只在筛选结果内翻；合并模式翻合并对）
             if (mergeOn && pairPreviewIndex >= 0 && pairs.isNotEmpty()) {
@@ -534,6 +542,131 @@ class MainActivity : ComponentActivity() {
             } catch (e2: Throwable) {
                 startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
             }
+        }
+    }
+
+    /** 下载管理页：队列条目（状态/进度/重试/取消）+ 清空已完成 */
+    @Composable
+    private fun DownloadsScreen(onBack: () -> Unit) {
+        Column(
+            Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+                }
+                Text("下载队列", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                val hasFinished = vm.downloadQueue.any {
+                    it.status.value in setOf(QStatus.DONE, QStatus.CANCELED)
+                }
+                if (hasFinished) {
+                    TextButton(onClick = { vm.clearFinished() }) { Text("清空已完成") }
+                }
+            }
+            if (vm.downloadQueue.isEmpty()) {
+                Text(
+                    "暂无下载任务\n\n点按照片或批量下载后，任务会出现在这里",
+                    Modifier.fillMaxWidth().padding(vertical = 48.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF999999),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
+            LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(vm.downloadQueue, key = { it.handle }) { item ->
+                    QueueRow(item)
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun QueueRow(item: QueueItem) {
+        val st = item.status.value
+        Column(Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    item.type,
+                    Modifier
+                        .background(badgeColor(item.type), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(item.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                when (st) {
+                    QStatus.QUEUED -> Text("排队中", color = Color(0xFF999999), style = MaterialTheme.typography.labelSmall)
+                    QStatus.RUNNING -> Text(
+                        "${humanSize(item.got.value)} / ${humanSize(item.total.value)} · ${item.speed.value}",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    QStatus.DONE -> Text("已完成 ✓", color = Color(0xFF00695C), style = MaterialTheme.typography.labelSmall)
+                    QStatus.FAILED -> Text("失败", color = Color(0xFFB71C1C), style = MaterialTheme.typography.labelSmall)
+                    QStatus.CANCELED -> Text("已取消", color = Color(0xFF999999), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            if (st == QStatus.RUNNING && item.total.value > 0) {
+                Spacer(Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = {
+                        (item.got.value.toFloat() / item.total.value).coerceIn(0f, 1f)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                when (st) {
+                    QStatus.QUEUED -> TextButton(onClick = { vm.cancelDownload(item) }) { Text("取消") }
+                    QStatus.RUNNING -> TextButton(onClick = { vm.cancelDownload(item) }) { Text("取消") }
+                    QStatus.FAILED -> TextButton(onClick = { vm.retryDownload(item) }) { Text("重试") }
+                    else -> {}
+                }
+            }
+        }
+    }
+
+    /** 预览页下载槽位：按队列状态渲染（排队/进度条/重试/已下载），与队列单一真相源联动 */
+    @Composable
+    private fun DownloadStateSlot(
+        downloaded: Boolean,
+        qItem: QueueItem?,
+        label: String,
+        enabled: Boolean = true,
+        onDownload: () -> Unit,
+        modifier: Modifier = Modifier
+    ) {
+        val st = qItem?.status?.value
+        when {
+            downloaded -> Button(onClick = {}, enabled = false, modifier = modifier) { Text("已下载") }
+            qItem != null && st == QStatus.RUNNING -> Column(modifier) {
+                if (qItem.total.value > 0) {
+                    LinearProgressIndicator(
+                        progress = {
+                            (qItem.got.value.toFloat() / qItem.total.value).coerceIn(0f, 1f)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
+                Text(
+                    "${humanSize(qItem.got.value)} / ${humanSize(qItem.total.value)} · ${qItem.speed.value}",
+                    color = Color(0xFFAAAAAA),
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            qItem != null && st == QStatus.QUEUED -> Box(modifier, contentAlignment = Alignment.Center) {
+                Text("排队中…", color = Color(0xFFAAAAAA), style = MaterialTheme.typography.bodyMedium)
+            }
+            qItem != null && st == QStatus.FAILED -> Button(
+                onClick = { vm.retryDownload(qItem) }, modifier = modifier
+            ) { Text("失败 · 重试") }
+            qItem != null && st == QStatus.CANCELED -> Button(
+                onClick = { vm.retryDownload(qItem) }, modifier = modifier
+            ) { Text("重新下载") }
+            else -> Button(onClick = onDownload, enabled = enabled, modifier = modifier) { Text(label) }
         }
     }
 
@@ -651,7 +784,32 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.weight(1f),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
-                    Spacer(Modifier.width(48.dp))
+                    // 右上角选择框：加入/移出多选（选中打勾）
+                    val curPair = rows.getOrNull(pagerState.currentPage)
+                    val selNow = curPair != null && curPair.stamp in vm.pairSelection.value
+                    Box(
+                        Modifier
+                            .padding(end = 8.dp)
+                            .size(24.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (selNow) Color(0xFF00695C) else Color.Transparent)
+                            .border(
+                                2.dp,
+                                if (selNow) Color(0xFF00695C) else Color.White,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .clickable { curPair?.let { vm.togglePair(it.stamp) } },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (selNow) {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = "已选择",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
                 }
                 HorizontalPager(
                     state = pagerState,
@@ -710,42 +868,25 @@ class MainActivity : ComponentActivity() {
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { onDownloadJpg(pair) },
-                            enabled = pair.hasJpg && !pair.jpgDownloaded,
+                        DownloadStateSlot(
+                            downloaded = pair.jpgDownloaded,
+                            qItem = pair.jpg?.let { j ->
+                                vm.downloadQueue.firstOrNull { it.handle == j.handle }
+                            },
+                            label = "下载 JPG",
+                            enabled = pair.hasJpg,
+                            onDownload = { onDownloadJpg(pair) },
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                when {
-                                    !pair.hasJpg -> "无 JPG"
-                                    pair.jpgDownloaded -> "JPG 已下载"
-                                    else -> "下载 JPG"
-                                }
-                            )
-                        }
-                        Button(
-                            onClick = { onDownloadNef(pair) },
-                            enabled = pair.hasNef && !pair.nefDownloaded,
+                        )
+                        DownloadStateSlot(
+                            downloaded = pair.nefDownloaded,
+                            qItem = pair.nef?.let { n ->
+                                vm.downloadQueue.firstOrNull { it.handle == n.handle }
+                            },
+                            label = "下载 NEF",
+                            enabled = pair.hasNef,
+                            onDownload = { onDownloadNef(pair) },
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                when {
-                                    !pair.hasNef -> "无 NEF"
-                                    pair.nefDownloaded -> "NEF 已下载"
-                                    else -> "下载 NEF"
-                                }
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    val pairSelected = pair.stamp in vm.pairSelection.value
-                    OutlinedButton(
-                        onClick = { vm.togglePair(pair.stamp) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            if (pairSelected) "已加入选择" else "加入选择",
-                            color = Color.White
                         )
                     }
                 }
@@ -1077,7 +1218,32 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.weight(1f),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
-                    Spacer(Modifier.width(48.dp))
+                    // 右上角选择框：加入/移出多选（选中打勾）
+                    val curRow = rows.getOrNull(pagerState.currentPage)
+                    val selNow = curRow != null && curRow.selected.value
+                    Box(
+                        Modifier
+                            .padding(end = 8.dp)
+                            .size(24.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (selNow) Color(0xFF00695C) else Color.Transparent)
+                            .border(
+                                2.dp,
+                                if (selNow) Color(0xFF00695C) else Color.White,
+                                RoundedCornerShape(6.dp)
+                            )
+                            .clickable { curRow?.let { it.selected.value = !it.selected.value } },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (selNow) {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = "已选择",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
                 }
                 HorizontalPager(
                     state = pagerState,
@@ -1138,20 +1304,13 @@ class MainActivity : ComponentActivity() {
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { onDownload(row) },
-                            enabled = !row.downloaded.value,
+                        DownloadStateSlot(
+                            downloaded = row.downloaded.value,
+                            qItem = vm.downloadQueue.firstOrNull { it.handle == row.handle },
+                            label = "下载此照片",
+                            onDownload = { onDownload(row) },
                             modifier = Modifier.weight(1f)
-                        ) { Text(if (row.downloaded.value) "已下载" else "下载此照片") }
-                        OutlinedButton(
-                            onClick = { row.selected.value = !row.selected.value },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                if (row.selected.value) "已加入选择" else "加入选择",
-                                color = Color.White
-                            )
-                        }
+                        )
                     }
                 }
             }

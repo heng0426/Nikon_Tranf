@@ -46,6 +46,7 @@ class CameraKeepAliveService : Service() {
     companion object {
         private const val CHANNEL_ID = "camera_keepalive"
         private const val NOTIF_ID = 1
+        private const val PROGRESS_NOTIF_ID = 2
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, CameraKeepAliveService::class.java))
@@ -53,6 +54,30 @@ class CameraKeepAliveService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, CameraKeepAliveService::class.java))
+        }
+
+        /** 下载进行中：进度通知（与保活通知共存，不同 id）。 */
+        fun notifyProgress(context: Context, text: String) {
+            val ch = NotificationChannel(
+                CHANNEL_ID, "相机连接保持", NotificationManager.IMPORTANCE_LOW
+            ).apply { setShowBadge(false) }
+            (context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .createNotificationChannel(ch)   // 幂等；服务未启动时也保渠道存在
+            val n = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("下载中")
+                .setContentText(text)
+                .setOngoing(true)
+                .setSilent(true)
+                .build()
+            (context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(PROGRESS_NOTIF_ID, n)
+        }
+
+        /** 下载结束：清除进度通知。 */
+        fun clearProgress(context: Context) {
+            (context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .cancel(PROGRESS_NOTIF_ID)
         }
     }
 }

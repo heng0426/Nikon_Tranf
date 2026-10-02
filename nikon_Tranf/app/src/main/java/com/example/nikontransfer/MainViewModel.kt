@@ -50,6 +50,24 @@ fun prettyStamp(s: String): String =
         "${s.slice(0..3)}-${s.slice(4..5)}-${s.slice(6..7)} ${s.slice(9..10)}:${s.slice(11..12)}:${s.slice(13..14)}"
     else s
 
+/** 下载队列条目状态 */
+enum class QStatus { QUEUED, RUNNING, DONE, FAILED, CANCELED }
+
+/** 下载队列条目：一个文件一条；状态被下载管理页与全屏预览页共同读取（单一真相源） */
+class QueueItem(val handle: Int, val name: String, val type: String, val stamp: String) {
+    val status = mutableStateOf(QStatus.QUEUED)
+    val total = mutableStateOf(0L)
+    val got = mutableStateOf(0L)
+    val speed = mutableStateOf("")
+    @Volatile var cancelRequested = false
+}
+
+fun humanSize(b: Long): String = when {
+    b >= 1 shl 20 -> "%.1fMB".format(b / 1048576.0)
+    b >= 1 shl 10 -> "%.0fKB".format(b / 1024.0)
+    else -> "${b}B"
+}
+
 /** 连接与相册的全部状态和逻辑。
  *  放在 ViewModel 里：MIUI 等系统在 App 切后台后可能销毁重建 Activity，
  *  ViewModel 跨重建存活 —— 前台服务维持的相机会话不会被 UI 重置丢掉。 */
@@ -719,84 +737,167 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 单张下载（IO 线程调用；全屏预览页触发） */
-    fun downloadOne(row: PhotoRow) {
-        if (downloadBusy) { downloadProgress.value = "有下载正在进行，请稍候…"; return }
-        downloadBusy = true
-        downloadProgress.value = "下载中: ${row.name}"
-        val data = synchronized(camMutex) { GPhoto2Bridge.nativeDownloadNative(row.handle) }
-        downloadProgress.value = if (data == null) {
-            "下载失败: ${row.name}（看 logcat GPhoto2）"
-        } else if (savePhoto(row.name, row.type, data, row.stamp)) {
-            row.downloaded.value = true
-            markDownloaded(row.name)
-            "已保存: ${row.name} (${data.size} bytes)"
-        } else {
-            "保存失败: ${row.name}"
+    /* ---------- 下载队列（单一真相源：单张/批量全量入队，串行 worker 消费）---------- */
+    val downloadQueue = mutableStateListOf<QueueItem>()
+    private val queueLock = Object()
+    @Volatile private var workerRunning = false
+
+    /** 活跃任务数（顶栏队列按钮角标） */
+    val activeDownloadCount: Int
+        get() = downloadQueue.count { it.status.value in setOf(QStatus.QUEUED, QStatus.RUNNING) }
+
+    /** 入队（去重：同一文件已在排队/下载中则忽略） */
+    fun enqueueDownload(row: PhotoRow) {
+        synchronized(queueLock) {
+            if (downloadQueue.any {
+                    it.handle == row.handle &&
+                        it.status.value in setOf(QStatus.QUEUED, QStatus.RUNNING)
+                }) return
+            downloadQueue.add(QueueItem(row.handle, row.name, row.type, row.stamp))
         }
-        downloadBusy = false
+        ensureWorker()
     }
 
-    /** 批量下载勾选的照片（IO 线程调用；原生会话单通道，天然串行）。
-     *  合并模式：按格式勾选框（JPG/NEF）决定下载目标，勾哪个下哪个；
-     *  文件模式：设置「批量下载只取 JPG」开启时，成对 NEF 自动跳过。 */
-    fun downloadSelected() {
-        if (mergePairs.value) {
-            val targets = visiblePairs.filter { it.stamp in pairSelection.value }
-            if (targets.isEmpty()) { downloadProgress.value = "请先勾选要下载的照片"; return }
-            if (downloadBusy) { downloadProgress.value = "有下载正在进行，请稍候…"; return }
-            val wantJpg = batchFmtJpg.value
-            val wantNef = batchFmtNef.value
-            val total = targets.sumOf { p ->
-                (if (wantJpg && p.jpg != null) 1 else 0) + (if (wantNef && p.nef != null) 1 else 0)
+    /** 失败/取消后的重试：复用条目，状态复位重新排队 */
+    fun retryDownload(item: QueueItem) {
+        item.cancelRequested = false
+        item.got.value = 0
+        synchronized(queueLock) {
+            if (item.status.value !in setOf(QStatus.QUEUED, QStatus.RUNNING)) {
+                item.status.value = QStatus.QUEUED
+                if (downloadQueue.none { it === item }) downloadQueue.add(item)
             }
-            if (total == 0) { downloadProgress.value = "请至少勾选一种格式（JPG / NEF）"; return }
-            downloadBusy = true
-            var ok = 0; var fail = 0; var done = 0
-            outer@ for (p in targets) {
-                if (!connected) { downloadProgress.value = "连接已断开，批量中止"; break }
-                for (row in listOfNotNull(if (wantJpg) p.jpg else null, if (wantNef) p.nef else null)) {
-                    done++
-                    downloadProgress.value = "批量下载 $done/$total: ${row.name}"
-                    val data = synchronized(camMutex) { GPhoto2Bridge.nativeDownloadNative(row.handle) }
-                    if (data != null && savePhoto(row.name, row.type, data, row.stamp)) {
-                        ok++
-                        row.downloaded.value = true
-                        markDownloaded(row.name)
-                    } else fail++
-                }
-            }
-            downloadProgress.value = "批量完成: 成功 $ok / 失败 $fail"
-            pairSelection.value = emptySet()
-            downloadBusy = false
-            return
         }
-        val targets = photoRows.filter { it.selected.value }
-        if (targets.isEmpty()) { downloadProgress.value = "请先勾选要下载的照片"; return }
-        if (downloadBusy) { downloadProgress.value = "有下载正在进行，请稍候…"; return }
-        val jpgOnly = prefs.getBoolean("set_jpg_only", false)
-        val jpgStamps = photoRows.filter { it.type.equals("JPG", true) }.map { it.stamp }.toSet()
-        downloadBusy = true
-        var ok = 0; var fail = 0; var skipped = 0
-        for ((idx, row) in targets.withIndex()) {
-            if (!connected) { downloadProgress.value = "连接已断开，批量中止"; break }
-            if (jpgOnly && row.type.equals("NEF", true) && row.stamp in jpgStamps) {
-                skipped++
-                row.selected.value = false
+        ensureWorker()
+    }
+
+    /** 取消：排队中 = 直接移除；下载中 = 置取消标志（分块循环丢弃已下字节） */
+    fun cancelDownload(item: QueueItem) {
+        when (item.status.value) {
+            QStatus.QUEUED -> synchronized(queueLock) { downloadQueue.remove(item) }
+            QStatus.RUNNING -> item.cancelRequested = true
+            else -> {}
+        }
+    }
+
+    /** 清空已完成/已取消条目（失败项保留以便重试） */
+    fun clearFinished() {
+        synchronized(queueLock) {
+            downloadQueue.removeAll { it.status.value in setOf(QStatus.DONE, QStatus.CANCELED) }
+        }
+    }
+
+    private fun ensureWorker() {
+        synchronized(queueLock) {
+            if (workerRunning) return
+            workerRunning = true
+        }
+        Thread {
+            while (true) {
+                val item = synchronized(queueLock) {
+                    downloadQueue.firstOrNull { it.status.value == QStatus.QUEUED }
+                } ?: break
+                runQueueItem(item)
+            }
+            synchronized(queueLock) { workerRunning = false }
+            CameraKeepAliveService.clearProgress(ctx)
+        }.apply {
+            isDaemon = true
+            name = "download-worker"
+            start()
+        }
+    }
+
+    /** 串行消费一个队列条目：取总大小（0x9421）→ 0x9431 按 128KB 分块拉取拼装 → 保存。
+     *  全程持有 camMutex（事件轮询与文件传输不能在同一条 PTP 流上交错）。
+     *  每块更新进度（UI 250ms 节流）；通知栏 1s 节流。 */
+    private fun runQueueItem(item: QueueItem) = synchronized(camMutex) {
+        if (!connected) { item.status.value = QStatus.FAILED; return }
+        item.status.value = QStatus.RUNNING
+        item.cancelRequested = false
+        item.got.value = 0
+        val total = GPhoto2Bridge.nativeObjectSizeNative(item.handle)
+        if (total <= 0) { item.status.value = QStatus.FAILED; return }
+        item.total.value = total
+        val buf = ByteArray(total.toInt())
+        var got = 0L
+        var retries = 0
+        var lastUi = 0L
+        var lastNotif = 0L
+        var lastGot = 0L
+        var lastT = System.currentTimeMillis()
+        while (got < total) {
+            if (item.cancelRequested) { item.status.value = QStatus.CANCELED; return }
+            if (!connected) { item.status.value = QStatus.FAILED; return }
+            val chunk = GPhoto2Bridge.nativePreviewNative(item.handle, got.toInt(), 0x20000)
+            if (chunk == null) {
+                retries++
+                if (retries >= 3) { item.status.value = QStatus.FAILED; return }
+                Thread.sleep(300)
                 continue
             }
-            downloadProgress.value = "批量下载 ${idx + 1}/${targets.size}: ${row.name}"
-            val data = synchronized(camMutex) { GPhoto2Bridge.nativeDownloadNative(row.handle) }
-            if (data != null && savePhoto(row.name, row.type, data, row.stamp)) {
-                ok++
-                row.downloaded.value = true
-                row.selected.value = false
-                markDownloaded(row.name)
-            } else fail++
+            retries = 0
+            val len = minOf(chunk.size.toLong(), total - got).toInt()
+            System.arraycopy(chunk, 0, buf, got.toInt(), len)
+            got += len
+            item.got.value = got
+            val now = System.currentTimeMillis()
+            if (now - lastUi >= 250) {
+                val dt = (now - lastT).coerceAtLeast(1)
+                item.speed.value = humanSize((got - lastGot) * 1000 / dt) + "/s"
+                lastUi = now; lastGot = got; lastT = now
+            }
+            if (now - lastNotif >= 1000) {
+                CameraKeepAliveService.notifyProgress(
+                    ctx, "${item.name} ${humanSize(got)}/${humanSize(total)}"
+                )
+                lastNotif = now
+            }
         }
-        downloadProgress.value = "批量完成: 成功 $ok / 失败 $fail" +
-            (if (skipped > 0) " / 按 JPG 优先跳过 $skipped" else "")
-        downloadBusy = false
+        if (savePhoto(item.name, item.type, buf, item.stamp)) {
+            item.status.value = QStatus.DONE
+            photoRows.firstOrNull { it.handle == item.handle }?.downloaded?.value = true
+            markDownloaded(item.name)
+        } else {
+            item.status.value = QStatus.FAILED
+        }
+    }
+
+    /** 单张下载 → 入队（全屏预览页与网格触发统一走队列） */
+    fun downloadOne(row: PhotoRow) = enqueueDownload(row)
+
+    /** 批量下载勾选的照片 → 逐条入队（worker 串行消费）。
+     *  合并模式：按格式勾选框（JPG/NEF）展开；文件模式：「批量只取 JPG」跳过成对 NEF。 */
+    fun downloadSelected() {
+        val rows = mutableListOf<PhotoRow>()
+        if (mergePairs.value) {
+            val wantJpg = batchFmtJpg.value
+            val wantNef = batchFmtNef.value
+            visiblePairs.filter { it.stamp in pairSelection.value }.forEach { p ->
+                if (wantJpg) p.jpg?.let { rows.add(it) }
+                if (wantNef) p.nef?.let { rows.add(it) }
+            }
+        } else {
+            val jpgOnly = prefs.getBoolean("set_jpg_only", false)
+            val jpgStamps = photoRows.filter { it.type.equals("JPG", true) }.map { it.stamp }.toSet()
+            photoRows.filter { it.selected.value }.forEach { row ->
+                if (jpgOnly && row.type.equals("NEF", true) && row.stamp in jpgStamps) return@forEach
+                rows.add(row)
+            }
+        }
+        if (rows.isEmpty()) { downloadProgress.value = "请先勾选要下载的照片"; return }
+        val fresh = rows.filter { r ->
+            downloadQueue.none {
+                it.handle == r.handle && it.status.value in setOf(QStatus.QUEUED, QStatus.RUNNING)
+            }
+        }
+        if (fresh.isEmpty()) { downloadProgress.value = "所选照片已在队列中"; return }
+        synchronized(queueLock) {
+            fresh.forEach { downloadQueue.add(QueueItem(it.handle, it.name, it.type, it.stamp)) }
+        }
+        photoRows.forEach { it.selected.value = false }   // 进度由队列页接管
+        pairSelection.value = emptySet()
+        ensureWorker()
     }
 
     private fun decodeScaled(buf: ByteArray, off: Int, len: Int): Bitmap? = try {

@@ -59,6 +59,7 @@ object GPhoto2Bridge {
     external fun nativeListNative(): String?            // "句柄:YYYYMMDD-HHMMSS:JPG|..."
     external fun nativeDownloadNative(handle: Int): ByteArray?
     external fun nativePreviewNative(handle: Int, offset: Int, maxLen: Int): ByteArray?   // 对象局部数据（含内嵌缩略图）
+    external fun nativeObjectSizeNative(handle: Int): Long                                // 对象总大小（0x9421，字节）
     external fun nativeEventPollNative(): Int           // 消费 0x941c 事件，维持会话健康
     external fun nativeTransferClose()
     external fun nativeProbeCameraInfo(ip: String): String?   // INIT 握手探测相机信息 "型号|序列号"

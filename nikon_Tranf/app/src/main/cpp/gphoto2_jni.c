@@ -884,6 +884,24 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativePreviewNative(
     return arr;
 }
 
+/* 对象总大小：0x9421 数据前 8 字节（u64）。下载分块循环用它算进度。 */
+JNIEXPORT jlong JNICALL
+Java_com_example_nikontransfer_GPhoto2Bridge_nativeObjectSizeNative(
+        JNIEnv *env, jclass clz, jint jHandle) {
+    (void) clz;
+    if (g_tfd < 0) return -1;
+    unsigned int handle = (unsigned int) jHandle;
+    unsigned char *d = NULL; int dlen = 0;
+    if (pp_data_in2(g_tfd, 0x9421, g_ttid++, &handle, 1, &d, &dlen, NULL) != 0 || dlen < 8) {
+        free(d);
+        return -1;
+    }
+    unsigned long long sz = 0;
+    memcpy(&sz, d, 8);
+    free(d);
+    return (jlong) sz;
+}
+
 /* 相机信息探测：只做 INIT 握手（不开会话，不打扰相机会话），读 InitCommandAck
  * 解析相机型号与序列号。返回 "型号|序列号"（如 "Z_6_2|8060212"），失败 NULL。
  * 网段扫描器用它给扫描结果显示「相机名 + IP」。 */
