@@ -13,6 +13,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -81,6 +86,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -104,7 +110,6 @@ class MainActivity : ComponentActivity() {
     // ---- 转发到 ViewModel（Activity 重建时状态由 VM 保留）----
     private val connected get() = vm.connected
     private val connecting get() = vm.connecting
-    private val selectMode get() = vm.selectMode
     private val connPhase get() = vm.connPhase
     private val connText get() = vm.connText
     private val connDetail get() = vm.connDetail
@@ -229,7 +234,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val selMode = selectMode.value
         val visible = vm.visiblePhotos
         var showFilter by remember { mutableStateOf(false) }
         var hotspotHint by remember { mutableStateOf(false) }
@@ -243,57 +247,37 @@ class MainActivity : ComponentActivity() {
                 Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // 顶部栏：浏览模式（占位logo+选择+齿轮）/ 多选模式（关闭+已选N+全选）
+                // 顶部栏：logo + 筛选 + 队列（多选操作全部在底部弹出条，顶栏不再有模式切换）
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    if (!selMode) {
-                        // 顶部 logo（用户提供图片，透明底 PNG）：点击进入设置
-                        Image(
-                            painter = painterResource(R.drawable.logo),
-                            contentDescription = "logo",
-                            modifier = Modifier
-                                .height(34.dp)
-                                .clickable { showSettings = true }
-                        )
-                        // 筛选按钮（logo 右侧，同款圆角外框）：有筛选生效时漏斗变色
-                        Box(
-                            Modifier
-                                .padding(start = 10.dp)
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(9.dp))
-                                .background(Color(0xFFF1F3F5))
-                                .clickable { showFilter = true },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else Color(0xFF9E9E9E))
-                        }
-                        Spacer(Modifier.weight(1f))
-                        // 下载队列按钮（原齿轮位）：有活跃任务时显示数量角标
-                        IconButton(onClick = { showDownloads = true }) {
-                            BadgedBox(badge = {
-                                if (vm.activeDownloadCount > 0) {
-                                    Badge { Text("${vm.activeDownloadCount}") }
-                                }
-                            }) {
-                                Icon(Icons.Filled.List, contentDescription = "下载队列")
+                    // 顶部 logo（用户提供图片，透明底 PNG）：点击进入设置
+                    Image(
+                        painter = painterResource(R.drawable.logo),
+                        contentDescription = "logo",
+                        modifier = Modifier
+                            .height(34.dp)
+                            .clickable { showSettings = true }
+                    )
+                    // 筛选按钮（logo 右侧，同款圆角外框）：有筛选生效时漏斗变色
+                    Box(
+                        Modifier
+                            .padding(start = 10.dp)
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(Color(0xFFF1F3F5))
+                            .clickable { showFilter = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else Color(0xFF9E9E9E))
+                    }
+                    Spacer(Modifier.weight(1f))
+                    // 下载队列按钮（原齿轮位）：有活跃任务时显示数量角标
+                    IconButton(onClick = { showDownloads = true }) {
+                        BadgedBox(badge = {
+                            if (vm.activeDownloadCount > 0) {
+                                Badge { Text("${vm.activeDownloadCount}") }
                             }
-                        }
-                    } else {
-                        IconButton(onClick = {
-                            selectMode.value = false
-                            vm.clearSelection()
                         }) {
-                            Icon(Icons.Filled.Close, contentDescription = "退出选择")
-                        }
-                        Text(
-                            "已选 ${selCount} 张",
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = {
-                            if (mergeOn) vm.pairSelection.value = pairs.map { it.stamp }.toSet()
-                            else visible.forEach { it.selected.value = true }
-                        }) {
-                            Text("全选")
+                            Icon(Icons.Filled.List, contentDescription = "下载队列")
                         }
                     }
                 }
@@ -388,22 +372,8 @@ class MainActivity : ComponentActivity() {
                             items(sec.rows, key = { it.stamp }) { pair ->
                                 PairCell(
                                     pair = pair,
-                                    selectMode = selMode,
-                                    onTap = {
-                                        if (selMode) {
-                                            vm.togglePair(pair.stamp)
-                                        } else {
-                                            pairPreviewIndex = pairs.indexOf(pair)
-                                        }
-                                    },
-                                    onLongPress = {
-                                        if (!selMode) {
-                                            selectMode.value = true
-                                            if (pair.stamp !in vm.pairSelection.value) vm.togglePair(pair.stamp)
-                                        } else {
-                                            vm.togglePair(pair.stamp)
-                                        }
-                                    }
+                                    onTap = { pairPreviewIndex = pairs.indexOf(pair) },
+                                    onLongPress = { vm.togglePair(pair.stamp) }
                                 )
                             }
                         }
@@ -427,48 +397,90 @@ class MainActivity : ComponentActivity() {
                         items(sec.rows, key = { it.handle }) { row ->
                             GridCell(
                                 row = row,
-                                selectMode = selMode,
-                                onTap = {
-                                    if (selMode) {
-                                        row.selected.value = !row.selected.value
-                                    } else {
-                                        previewIndex = visible.indexOf(row)
-                                    }
-                                },
-                                onLongPress = {
-                                    if (!selMode) {
-                                        selectMode.value = true   // 长按直接进入多选
-                                        row.selected.value = true // 并选中该张
-                                    } else {
-                                        row.selected.value = !row.selected.value
-                                    }
-                                }
+                                onTap = { previewIndex = visible.indexOf(row) },
+                                onLongPress = { row.selected.value = !row.selected.value }
                             )
                         }
                     }
                 }
                 } // else: 文件模式网格结束
-                // 多选模式：格式勾选（合并模式）+ 下载所选（固定屏幕底部）
-                if (selMode) {
-                    if (mergeOn) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                "下载格式",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF888888)
-                            )
-                            LabeledCheckbox("JPG", vm.batchFmtJpg)
-                            LabeledCheckbox("NEF", vm.batchFmtNef)
+                // 多选操作条：有选中才从底部弹出（全选 + 格式勾选(合并) + 下载所选）
+                AnimatedVisibility(
+                    visible = selCount > 0,
+                    enter = slideInVertically { it } + fadeIn(),
+                    exit = slideOutVertically { it } + fadeOut()
+                ) {
+                    Column {
+                        // 分格式计数（已应用"跳过已下载"过滤；格式勾掉时其标签变灰）
+                        val skip = vm.skipDownloadedOn
+                        val jpgCount: Int
+                        val nefCount: Int
+                        if (mergeOn) {
+                            val selPairs = pairs.filter { it.stamp in vm.pairSelection.value }
+                            jpgCount = selPairs.count { it.jpg != null && !(skip && it.jpgDownloaded) }
+                            nefCount = selPairs.count { it.nef != null && !(skip && it.nefDownloaded) }
+                        } else {
+                            val selRows = photoRows.filter { it.selected.value }
+                            jpgCount = selRows.count { it.type.equals("JPG", true) && !(skip && it.downloaded.value) }
+                            nefCount = selRows.count { it.type.equals("NEF", true) && !(skip && it.downloaded.value) }
                         }
+                        val rawTotal = jpgCount + nefCount
+                        val total = if (mergeOn)
+                            (if (vm.batchFmtJpg.value) jpgCount else 0) +
+                                (if (vm.batchFmtNef.value) nefCount else 0)
+                        else rawTotal
+                        val allDownloaded = rawTotal == 0 && selCount > 0 && skip
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // 全选：勾上=全选可见项；再点一次=清空（部分选中显示未勾）
+                            val totalVisible = if (mergeOn) pairs.size else visible.size
+                            val allSel = selCount > 0 && selCount == totalVisible
+                            Row(
+                                Modifier.clickable {
+                                    if (allSel) vm.clearSelection()
+                                    else if (mergeOn) vm.pairSelection.value = pairs.map { it.stamp }.toSet()
+                                    else visible.forEach { it.selected.value = true }
+                                },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(checked = allSel, onCheckedChange = null)
+                                Text("全选", style = MaterialTheme.typography.bodyMedium)
+                            }
+                            Spacer(Modifier.weight(1f))
+                            if (mergeOn) {
+                                Row(
+                                    Modifier.clickable { vm.batchFmtJpg.value = !vm.batchFmtJpg.value }
+                                        .alpha(if (vm.batchFmtJpg.value) 1f else 0.45f),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(checked = vm.batchFmtJpg.value, onCheckedChange = null)
+                                    Text("JPG $jpgCount", style = MaterialTheme.typography.bodyMedium)
+                                }
+                                Row(
+                                    Modifier.clickable { vm.batchFmtNef.value = !vm.batchFmtNef.value }
+                                        .alpha(if (vm.batchFmtNef.value) 1f else 0.45f),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(checked = vm.batchFmtNef.value, onCheckedChange = null)
+                                    Text("NEF $nefCount", style = MaterialTheme.typography.bodyMedium)
+                                }
+                            } else {
+                                Text(
+                                    "JPG $jpgCount · NEF $nefCount",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF888888)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(2.dp))
+                        Button(
+                            onClick = { scope.launch { withContext(Dispatchers.IO) { vm.downloadSelected() } } },
+                            enabled = total > 0,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(if (allDownloaded) "均已下载" else "下载所选($total)") }
                     }
-                    Button(
-                        onClick = { scope.launch { withContext(Dispatchers.IO) { vm.downloadSelected() } } },
-                        enabled = selCount > 0,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text(if (selCount > 0) "下载所选($selCount)" else "下载所选") }
                 }
             }
             // 全屏预览（横向滑动翻页，只在筛选结果内翻；合并模式翻合并对）
@@ -705,7 +717,6 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun PairCell(
         pair: PairRow,
-        selectMode: Boolean,
         onTap: () -> Unit,
         onLongPress: () -> Unit
     ) {
@@ -750,7 +761,7 @@ class MainActivity : ComponentActivity() {
                 if (pair.jpgDownloaded) DLBadge("J", Color(0xFF00695C))
                 if (pair.nefDownloaded) DLBadge("N", Color(0xFF6A1B9A))
             }
-            if (selectMode && selected) {
+            if (selected) {
                 Box(Modifier.fillMaxSize().background(Color(0x3300695C)))
                 Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C)))
                 Icon(
@@ -964,13 +975,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 网格格子：预览图 + 左上格式角标 + 右下已下载标记 + 多选选中态。
-     *  点按=浏览模式进全屏预览/多选模式切换选中；长按=进入多选并选中该张。 */
+    /** 网格格子：预览图 + 左上格式角标 + 右下已下载标记 + 选中态。
+     *  点按=进全屏预览；长按=切换选中。 */
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun GridCell(
         row: PhotoRow,
-        selectMode: Boolean,
         onTap: () -> Unit,
         onLongPress: () -> Unit
     ) {
@@ -1027,8 +1037,8 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
-            // 多选选中态：绿色边框 + 中央勾
-            if (selectMode && row.selected.value) {
+            // 选中态：绿色边框 + 中央勾
+            if (row.selected.value) {
                 Box(Modifier.fillMaxSize().background(Color(0x3300695C)))
                 Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C)))
                 Icon(
@@ -1431,7 +1441,6 @@ class MainActivity : ComponentActivity() {
         onKeepScreenOnChanged: (Boolean) -> Unit,
         onPickDir: () -> Unit
     ) {
-        var jpgOnly by remember { mutableStateOf(prefs.getBoolean("set_jpg_only", false)) }
         var keepOn by remember { mutableStateOf(prefs.getBoolean("set_keep_on", false)) }
         var autoPreview by remember { mutableStateOf(prefs.getBoolean("set_auto_preview", true)) }
         val scope = rememberCoroutineScope()
@@ -1496,13 +1505,10 @@ class MainActivity : ComponentActivity() {
                 onChange = { vm.setMergePairs(it) }
             )
             SettingSwitch(
-                title = "批量下载只取 JPG",
-                subtitle = "成对照片（RAW+JPG）只下载 JPG，自动跳过 NEF（未开启合并时生效）",
-                checked = jpgOnly,
-                onChange = {
-                    jpgOnly = it
-                    prefs.edit().putBoolean("set_jpg_only", it).apply()
-                }
+                title = "下载时跳过已下载",
+                subtitle = "批量下载所选时自动排除已下载的文件（预览页重新下载不受影响）",
+                checked = vm.skipDownloadedOn,
+                onChange = { vm.setSkipDownloaded(it) }
             )
             SettingSwitch(
                 title = "连接后自动加载预览",

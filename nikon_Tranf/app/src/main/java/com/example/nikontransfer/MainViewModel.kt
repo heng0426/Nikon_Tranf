@@ -317,6 +317,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("set_hires_preview", v).apply()
     }
 
+    /* ---------- 下载过滤（跳过已下载；仅批量下载所选，预览页重下不受影响）---------- */
+    var skipDownloadedOn: Boolean by mutableStateOf(prefs.getBoolean("set_skip_downloaded", true))
+
+    fun setSkipDownloaded(v: Boolean) {
+        skipDownloadedOn = v
+        prefs.edit().putBoolean("set_skip_downloaded", v).apply()
+    }
+
     init {
         loadDownloaded()
         mergePairs.value = prefs.getBoolean("set_merge_pairs", false)
@@ -880,31 +888,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun downloadOne(row: PhotoRow) = enqueueDownload(row)
 
     /** 批量下载勾选的照片 → 逐条入队（worker 串行消费）。
-     *  合并模式：按格式勾选框（JPG/NEF）展开；文件模式：「批量只取 JPG」跳过成对 NEF。 */
+     *  合并模式：按格式勾选框（JPG/NEF）展开；skipDownloaded 开启时排除已下载文件。 */
     fun downloadSelected() {
+        val skip = skipDownloadedOn
         val rows = mutableListOf<PhotoRow>()
         if (mergePairs.value) {
             val wantJpg = batchFmtJpg.value
             val wantNef = batchFmtNef.value
             visiblePairs.filter { it.stamp in pairSelection.value }.forEach { p ->
-                if (wantJpg) p.jpg?.let { rows.add(it) }
-                if (wantNef) p.nef?.let { rows.add(it) }
+                if (wantJpg) p.jpg?.takeUnless { skip && it.downloaded.value }?.let { rows.add(it) }
+                if (wantNef) p.nef?.takeUnless { skip && it.downloaded.value }?.let { rows.add(it) }
             }
         } else {
-            val jpgOnly = prefs.getBoolean("set_jpg_only", false)
-            val jpgStamps = photoRows.filter { it.type.equals("JPG", true) }.map { it.stamp }.toSet()
-            photoRows.filter { it.selected.value }.forEach { row ->
-                if (jpgOnly && row.type.equals("NEF", true) && row.stamp in jpgStamps) return@forEach
-                rows.add(row)
-            }
+            photoRows.filter { it.selected.value && !(skip && it.downloaded.value) }
+                .forEach { rows.add(it) }
         }
-        if (rows.isEmpty()) { downloadProgress.value = "请先勾选要下载的照片"; return }
         val fresh = rows.filter { r ->
             downloadQueue.none {
                 it.handle == r.handle && it.status.value in setOf(QStatus.QUEUED, QStatus.RUNNING)
             }
         }
-        if (fresh.isEmpty()) { downloadProgress.value = "所选照片已在队列中"; return }
+        if (fresh.isEmpty()) {
+            downloadProgress.value =
+                if (rows.isEmpty() && skip) "所选均已下载，已跳过"
+                else "所选照片已在下载队列中"
+            return
+        }
         synchronized(queueLock) {
             fresh.forEach { downloadQueue.add(QueueItem(it.handle, it.name, it.type, it.stamp)) }
         }
