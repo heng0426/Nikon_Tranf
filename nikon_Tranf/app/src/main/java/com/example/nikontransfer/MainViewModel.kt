@@ -13,6 +13,7 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
@@ -308,6 +309,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putStringSet("downloaded_names", s).apply()
     }
 
+    /* ---------- 高清预览开关（默认关，持久化；Q3 定案）---------- */
+    var hiresOn: Boolean by mutableStateOf(prefs.getBoolean("set_hires_preview", false))
+
+    fun setHiresPreview(v: Boolean) {
+        hiresOn = v
+        prefs.edit().putBoolean("set_hires_preview", v).apply()
+    }
+
     init {
         loadDownloaded()
         mergePairs.value = prefs.getBoolean("set_merge_pairs", false)
@@ -591,9 +600,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val autoPreview = prefs.getBoolean("set_auto_preview", true)
         if (autoPreview) {
             startPreviewLoading(parsed)                // 异步逐个取内嵌缩略图
-            return "共 ${photoRows.size} 个文件（按拍摄时间从新到旧，预览加载中）"
+            return "共 ${photoRows.size} 个文件"
         }
-        return "共 ${photoRows.size} 个文件（按拍摄时间从新到旧，预览已关闭）"
+        return "共 ${photoRows.size} 个文件"
     }
 
     /** 保存到系统相册：自定义 SAF 目录优先；否则 MediaStore。
@@ -1168,6 +1177,312 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             name = "preview-loader"
             start()
         }
+    }
+
+    /* ---------- 高清预览（复刻 Z传：结构解析 + 0x9431 定向读嵌入大图） ----------
+     *  抓包实证（capture-hires.pcap，2026-10-02）：
+     *  JPG：头 128KB 内 APP2 MPF 元数据列出各内嵌图（size+offset），取最大条目
+     *       一次读出即完整 JPEG（实测 0.7~0.9MB，offset+len 恰为文件尾）。
+     *  NEF：补读 0x20000..0x80000（TIFF IFD0 的 SubIFD 链所在），解析压缩=7
+     *       （JPEG）SubIFD 的 StripOffsets/ByteCounts，定向读出全尺寸嵌入预览
+     *       （实测 0.67~0.83MB），RAW 数据一个字节不传。
+     *  Z传 自身无缓存、翻页重拉 —— 这里加 LRU 缓存与 ±1 页预取，翻回秒显。 */
+
+    /** 内存 LRU：最近 6 张高清位图（解码采样至最长边 ≤2048px，单张 ~6MB） */
+    private val hiresCache = object : android.util.LruCache<Int, Bitmap>(6) {
+        override fun entryRemoved(evicted: Boolean, key: Int?, old: Bitmap?, new: Bitmap?) {
+            if (evicted) hiresTick.value++
+        }
+    }
+    private val hiresTick = mutableStateOf(0)
+
+    /** 加载进度：handle → (-1=结构解析期不定长；0..1=定向读取)。完成/失败即移除 */
+    val hiresProgress = mutableStateMapOf<Int, Float>()
+    /** 加载失败的句柄：UI 显示小字，翻回该页自动重试 */
+    val hiresFailed = mutableStateMapOf<Int, Boolean>()
+
+    private enum class HiresKind { JPG, NEF }
+    private data class HiresTask(val handle: Int, val kind: HiresKind)
+
+    /** 供 UI 读取：内部读一次 tick 建立重组依赖（缓存变化 → 重取位图） */
+    fun hiresBitmap(handle: Int): Bitmap? {
+        hiresTick.value
+        return hiresCache.get(handle)
+    }
+
+    @Volatile private var hiresWanted: Set<Int> = emptySet()
+    private val hiresQueued: MutableSet<Int> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+    private val hiresQueue = java.util.concurrent.LinkedBlockingQueue<HiresTask>()
+    @Volatile private var hiresWorkerUp = false
+
+    /** 进入/翻动预览页时调用：targets[0] 为当前页，其余为相邻预取。
+     *  重设 wanted 窗口 —— 窗口外的任务被跳过/中途丢弃（省流量，不占相机）。 */
+    fun requestHires(targets: List<PhotoRow>) {
+        if (!hiresOn || targets.isEmpty()) return
+        val wanted = HashSet<Int>()
+        val fresh = ArrayList<HiresTask>()
+        for (r in targets) {
+            wanted.add(r.handle)
+            if (hiresCache.get(r.handle) == null && hiresQueued.add(r.handle)) {
+                fresh.add(
+                    HiresTask(r.handle, if (r.type.equals("JPG", true)) HiresKind.JPG else HiresKind.NEF)
+                )
+            }
+        }
+        hiresWanted = wanted
+        hiresQueue.addAll(fresh)
+        ensureHiresWorker()
+    }
+
+    /** 退出预览页：停止一切加载（含中途丢弃），清进度与失败标记 */
+    fun clearHires() {
+        hiresWanted = emptySet()
+        hiresProgress.clear()
+        hiresFailed.clear()
+    }
+
+    private fun ensureHiresWorker() {
+        if (hiresWorkerUp) return
+        hiresWorkerUp = true
+        Thread {
+            try {
+                while (true) {
+                    val t = hiresQueue.poll() ?: break
+                    if (t.handle !in hiresWanted) { hiresQueued.remove(t.handle); continue }
+                    loadHires(t)
+                }
+            } finally {
+                hiresWorkerUp = false
+                if (hiresQueue.isNotEmpty()) ensureHiresWorker()   // 退出瞬间来新任务的兜底
+            }
+        }.apply {
+            isDaemon = true
+            name = "hires-loader"
+            start()
+        }
+    }
+
+    private fun loadHires(task: HiresTask) {
+        val h = task.handle
+        try {
+            if (!connected) throw IllegalStateException("未连接")
+            hiresProgress[h] = -1f
+            val fileSize = synchronized(camMutex) { GPhoto2Bridge.nativeObjectSizeNative(h) }
+            val range = when (task.kind) {
+                HiresKind.JPG -> {
+                    val head = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(h, 0, 0x20000) }
+                        ?: throw IllegalStateException("读 JPG 头失败")
+                    mpfLargestRange(head, fileSize)
+                        ?: throw IllegalStateException("MPF 无可用大图 (fileSize=$fileSize)")
+                }
+                HiresKind.NEF -> {
+                    val head = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(h, 0, 0x20000) }
+                        ?: throw IllegalStateException("读 NEF 头失败")
+                    val mid = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(h, 0x20000, 0x60000) }
+                        ?: throw IllegalStateException("读 NEF 中段失败")
+                    nefPreviewRange(head, mid, fileSize)
+                        ?: throw IllegalStateException("TIFF 无嵌入预览 (fileSize=$fileSize)")
+                }
+            }
+            if (h !in hiresWanted) throw IllegalStateException("已翻页")
+            val jpeg = readHiresChunks(h, range[0], range[1])
+            val bmp = decodeHires(trimJpegTail(jpeg)) ?: throw IllegalStateException("JPEG 解码失败")
+            hiresCache.put(h, bmp)
+            hiresTick.value++
+            hiresFailed.remove(h)
+            Log.i("GPhoto2", "hires: ${task.kind} handle=$h @${range[0]}+${range[1]} ✓")
+        } catch (t: Throwable) {
+            if (h in hiresWanted && connected) {
+                hiresFailed[h] = true
+                Log.w("GPhoto2", "hires: handle=$h 失败: ${t.message}")
+            }
+        } finally {
+            hiresProgress.remove(h)
+            hiresQueued.remove(h)
+        }
+    }
+
+    /** 分块读取（单块 ≤0xF0000，JNI 上限 1MB）；中途翻页立即中止 */
+    private fun readHiresChunks(handle: Int, off: Long, len: Long): ByteArray {
+        if (off <= 0 || off > Int.MAX_VALUE - len || len <= 0 || len > 32L * 1024 * 1024)
+            throw IllegalStateException("读参数异常 off=$off len=$len")
+        val out = ByteArray(len.toInt())
+        val cap = 0xF0000
+        var done = 0L
+        while (done < len) {
+            if (handle !in hiresWanted) throw IllegalStateException("已翻页")
+            val n = minOf(cap.toLong(), len - done).toInt()
+            val b = synchronized(camMutex) {
+                GPhoto2Bridge.nativePreviewNative(handle, (off + done).toInt(), n)
+            } ?: throw IllegalStateException("读块失败 @${off + done}")
+            if (b.isEmpty()) throw IllegalStateException("读块为空 @${off + done}")
+            System.arraycopy(b, 0, out, done.toInt(), minOf(n, b.size))
+            done += b.size
+            hiresProgress[handle] = done.toFloat() / len
+        }
+        return out
+    }
+
+    /** 裁掉 JPEG 前导垃圾与尾部余量，保证 SOI..EOI 完整 */
+    private fun trimJpegTail(b: ByteArray): ByteArray {
+        var s = 0
+        while (s + 1 < b.size && !(b[s] == 0xFF.toByte() && b[s + 1] == 0xD8.toByte())) s++
+        if (s + 1 >= b.size) return b
+        var e = b.size
+        var i = b.size - 2
+        while (i >= s) {
+            if (b[i] == 0xFF.toByte() && b[i + 1] == 0xD9.toByte()) { e = i + 2; break }
+            i--
+        }
+        return if (s == 0 && e == b.size) b else b.copyOfRange(s, e)
+    }
+
+    /** 高清解码：采样至最长边 ≤2048px（6048px 原图取 1/4 ≈ 6MB 位图，LRU 6 张可控） */
+    private fun decodeHires(jpeg: ByteArray): Bitmap? = try {
+        val bo = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, bo)
+        if (bo.outWidth <= 0 || bo.outHeight <= 0) null
+        else {
+            var s = 1
+            while (maxOf(bo.outWidth, bo.outHeight) / s > 2048) s *= 2
+            val o = BitmapFactory.Options().apply { inSampleSize = s }
+            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, o)
+        }
+    } catch (_: Throwable) { null }
+
+    private fun findBytes(data: ByteArray, pat: ByteArray): Int? {
+        outer@ for (i in 0..data.size - pat.size) {
+            for (j in pat.indices) if (data[i + j] != pat[j]) continue@outer
+            return i
+        }
+        return null
+    }
+
+    /** JPG：从头 128KB 找 APP2 MPF（"MPF\0"+TIFF 头），取最大内嵌图条目。
+     *  返回 longArrayOf(绝对偏移, 长度)；MPEntry 端序不确定，两种都试，
+     *  须通过文件大小越界校验才算数。 */
+    private fun mpfLargestRange(head: ByteArray, fileSize: Long): LongArray? {
+        val mpf = findBytes(head, byteArrayOf(0x4D, 0x50, 0x46, 0x00)) ?: return null   // "MPF\0"
+        var t = -1
+        var i = mpf + 4
+        while (i + 4 <= head.size && i < mpf + 24) {      // TIFF 头紧随其后（允许少量填充）
+            val m = ((head[i].toInt() and 0xFF) shl 8) or (head[i + 1].toInt() and 0xFF)
+            val ii = m == 0x4949 && head[i + 2] == 0x2A.toByte() && head[i + 3].toInt() == 0
+            val mm = m == 0x4D4D && head[i + 2].toInt() == 0 && head[i + 3] == 0x2A.toByte()
+            if (ii || mm) { t = i; break }
+            i++
+        }
+        if (t < 0) return null
+        val big = (head[t].toInt() and 0xFF) == 0x4D
+        return mpfEntries(head, t, big, fileSize) ?: mpfEntries(head, t, !big, fileSize)
+    }
+
+    /** MPEntry 布局：属性 2B | 大小 4B | 数据偏移 4B（相对 TIFF 头） | 依赖 2×2B */
+    private fun mpfEntries(head: ByteArray, t: Int, big: Boolean, fileSize: Long): LongArray? {
+        fun u16(o: Int): Int = if (big)
+            ((head[o].toInt() and 0xFF) shl 8) or (head[o + 1].toInt() and 0xFF)
+        else (head[o].toInt() and 0xFF) or ((head[o + 1].toInt() and 0xFF) shl 8)
+        fun u32(o: Int): Long = if (big)
+            ((head[o].toLong() and 0xFF) shl 24) or ((head[o + 1].toLong() and 0xFF) shl 16) or
+                ((head[o + 2].toLong() and 0xFF) shl 8) or (head[o + 3].toLong() and 0xFF)
+        else (head[o].toLong() and 0xFF) or ((head[o + 1].toLong() and 0xFF) shl 8) or
+            ((head[o + 2].toLong() and 0xFF) shl 16) or ((head[o + 3].toLong() and 0xFF) shl 24)
+        if (t + 8 > head.size) return null
+        val ifd0 = t + u32(t + 4).toInt()
+        if (ifd0 <= 0 || ifd0 + 2 > head.size) return null
+        val cnt = u16(ifd0)
+        if (cnt <= 0 || cnt > 512) return null
+        var nImages = 0
+        var entryPos = -1
+        for (k in 0 until cnt) {
+            val e = ifd0 + 2 + k * 12
+            if (e + 12 > head.size) return null
+            when (u16(e)) {
+                0xB001 -> nImages = u32(e + 8).toInt()
+                0xB002 -> entryPos = t + u32(e + 8).toInt()
+            }
+        }
+        if (entryPos <= 0 || nImages <= 0 || nImages > 16) return null
+        var bestSize = 0L
+        var bestOff = 0L
+        for (k in 0 until nImages) {
+            val p = entryPos + k * 16
+            if (p + 16 > head.size) break
+            // 实测布局（抓包逐字节闭合）：attr 4B | 大小 4B@+4 | 偏移 4B@+8（相对 TIFF 头）| 依赖 4B
+            val sz = u32(p + 4)
+            val off = u32(p + 8)
+            if (off <= 0 || sz <= 0) continue               // 偏移 0 = 主图自身
+            if (sz < 65536) continue                        // 过小 = 缩略图级，不参与
+            val abs = t + off
+            // fileSize 异常（0x9421 失败返回 -1）时退化为宽松上限，靠读后解码兜底
+            val sizeOk = if (fileSize > 0) abs + sz <= fileSize else sz <= 24L * 1024 * 1024
+            if (!sizeOk) continue                           // 越界 = 端序/结构不符
+            if (sz > bestSize) { bestSize = sz; bestOff = abs }
+        }
+        return if (bestSize > 0) longArrayOf(bestOff, bestSize) else null
+    }
+
+    /** NEF：head[0,0x20000)+mid[0x20000,0x80000) 拼接 → TIFF IFD 链（IFD0 + 0x014a SubIFD），
+     *  收集所有带 0x0201(JPEGInterchangeFormat)/0x0202(长度) 的 IFD（内嵌 JPEG 预览；
+     *  实测压缩值=6 而非 7，RAW IFD(34713) 不带 0x0201 天然排除），
+     *  取长度最小者 = Z传 实际行为（669KB 小预览而非 1.34MB 大预览）。 */
+    private fun nefPreviewRange(head: ByteArray, mid: ByteArray, fileSize: Long): LongArray? {
+        if (head.size < 16 || mid.isEmpty()) return null
+        val full = ByteArray(head.size + mid.size)
+        System.arraycopy(head, 0, full, 0, head.size)
+        System.arraycopy(mid, 0, full, head.size, mid.size)
+        val bb = java.nio.ByteBuffer.wrap(full)
+        val magic = ((full[0].toInt() and 0xFF) shl 8) or (full[1].toInt() and 0xFF)
+        if (magic != 0x4949 && magic != 0x4D4D) return null
+        bb.order(if (magic == 0x4D4D) java.nio.ByteOrder.BIG_ENDIAN else java.nio.ByteOrder.LITTLE_ENDIAN)
+        if (bb.getShort(2).toInt() != 42) return null
+        var best = LongArray(0)
+        var bestLen = Long.MAX_VALUE
+        val visited = HashSet<Int>()
+        val queue = ArrayDeque<Int>()
+        queue.add(bb.getInt(4))
+        var steps = 0
+        while (queue.isNotEmpty() && visited.size < 12 && steps++ < 24) {
+            val base = queue.removeFirst()
+            if (base <= 0 || base + 2 > full.size || !visited.add(base)) continue
+            val cnt = bb.getShort(base).toInt() and 0xFFFF
+            if (cnt <= 0 || base + 2 + cnt * 12 + 4 > full.size) continue
+            var jOff = -1L
+            var jLen = -1L
+            for (k in 0 until cnt) {
+                val e = base + 2 + k * 12
+                val tag = bb.getShort(e).toInt() and 0xFFFF
+                val typ = bb.getShort(e + 2).toInt() and 0xFFFF
+                val num = bb.getInt(e + 4)
+                val v: Long = when {
+                    typ == 3 && num == 1 -> bb.getShort(e + 8).toLong() and 0xFFFF
+                    typ == 4 && num == 1 -> bb.getInt(e + 8).toLong() and 0xFFFFFFFFL
+                    else -> -1L
+                }
+                when (tag) {
+                    0x0201 -> jOff = v
+                    0x0202 -> jLen = v
+                    0x014a -> when {
+                        num == 1 -> { if (v > 0) queue.add(v.toInt()) }
+                        num in 2..8 -> {
+                            val p = bb.getInt(e + 8)
+                            if (p > 0 && p + num * 4 <= full.size)
+                                for (q in 0 until num) {
+                                    val sv = bb.getInt(p + q * 4).toLong() and 0xFFFFFFFFL
+                                    if (sv > 0) queue.add(sv.toInt())
+                                }
+                        }
+                    }
+                }
+            }
+            if (jOff > 0 && jLen >= 65536 && jLen < bestLen &&
+                (fileSize <= 0 || jOff + jLen <= fileSize)
+            ) { best = longArrayOf(jOff, jLen); bestLen = jLen }
+            val nxt = bb.getInt(base + 2 + cnt * 12)
+            if (nxt > 0) queue.add(nxt)
+        }
+        return if (best.size == 2) best else null
     }
 
     /* ---------- 事件轮询 + 失联检测 ---------- */

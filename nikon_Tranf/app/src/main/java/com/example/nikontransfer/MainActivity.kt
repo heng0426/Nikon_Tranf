@@ -71,6 +71,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -768,8 +770,38 @@ class MainActivity : ComponentActivity() {
         onDownloadNef: (PairRow) -> Unit
     ) {
         val pagerState = rememberPagerState(initialPage = initialIndex) { rows.size }
+        // 高清预览：开关开启时，当前页 ±1 自动预取（合并模式取显示中的那张：JPG 优先）
+        LaunchedEffect(pagerState.currentPage, vm.hiresOn) {
+            if (vm.hiresOn) {
+                val idx = pagerState.currentPage
+                val targets = (maxOf(0, idx - 1)..minOf(rows.lastIndex, idx + 1)).mapNotNull { pi ->
+                    rows.getOrNull(pi)?.let { p -> p.jpg ?: p.nef }
+                }
+                vm.requestHires(targets)
+            }
+        }
+        DisposableEffect(Unit) { onDispose { vm.clearHires() } }
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
+                val topKey = rows.getOrNull(pagerState.currentPage)?.let { p -> (p.jpg ?: p.nef)?.handle }
+                val topProg = topKey?.let { vm.hiresProgress[it] }
+                if (vm.hiresOn && topProg != null) {
+                    if (topProg < 0f) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(3.dp),
+                            color = Color(0xFF4DB6AC),
+                            trackColor = Color(0x334DB6AC)
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            progress = { topProg.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(3.dp),
+                            color = Color(0xFF4DB6AC),
+                            trackColor = Color(0x334DB6AC)
+                        )
+                    }
+                }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -817,7 +849,8 @@ class MainActivity : ComponentActivity() {
                 ) { page ->
                     val pair = rows[page]
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        val bmp = pair.previewBmp
+                        val bmp = (pair.jpg ?: pair.nef)?.handle?.let { vm.hiresBitmap(it) }
+                            ?: pair.previewBmp
                         if (bmp != null) {
                             Image(
                                 bitmap = bmp.asImageBitmap(),
@@ -865,6 +898,16 @@ class MainActivity : ComponentActivity() {
                             }.trim()
                             Text(marks, color = Color(0xFF4DB6AC), style = MaterialTheme.typography.labelSmall)
                         }
+                    }
+                    // 高清加载失败提示（静默回退缩略图，翻回该页自动重试）
+                    val hiKey = (pair.jpg ?: pair.nef)?.handle
+                    if (vm.hiresOn && hiKey != null && vm.hiresFailed.containsKey(hiKey)) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "高清加载失败 · 翻回此页自动重试",
+                            color = Color(0xFF777777),
+                            style = MaterialTheme.typography.labelSmall
+                        )
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1202,8 +1245,36 @@ class MainActivity : ComponentActivity() {
         onDownload: (PhotoRow) -> Unit
     ) {
         val pagerState = rememberPagerState(initialPage = initialIndex) { rows.size }
+        // 高清预览：开关开启时，当前页 ±1 自动预取
+        LaunchedEffect(pagerState.currentPage, vm.hiresOn) {
+            if (vm.hiresOn) {
+                val idx = pagerState.currentPage
+                val targets = (maxOf(0, idx - 1)..minOf(rows.lastIndex, idx + 1)).mapNotNull { rows.getOrNull(it) }
+                vm.requestHires(targets)
+            }
+        }
+        DisposableEffect(Unit) { onDispose { vm.clearHires() } }
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
+                val topRow = rows.getOrNull(pagerState.currentPage)
+                val topProg = topRow?.let { vm.hiresProgress[it.handle] }
+                if (vm.hiresOn && topProg != null) {
+                    if (topProg < 0f) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(3.dp),
+                            color = Color(0xFF4DB6AC),
+                            trackColor = Color(0x334DB6AC)
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            progress = { topProg.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(3.dp),
+                            color = Color(0xFF4DB6AC),
+                            trackColor = Color(0x334DB6AC)
+                        )
+                    }
+                }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -1251,7 +1322,7 @@ class MainActivity : ComponentActivity() {
                 ) { page ->
                     val row = rows[page]
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        val bmp = row.preview.value
+                        val bmp = vm.hiresBitmap(row.handle) ?: row.preview.value
                         if (bmp != null) {
                             Image(
                                 bitmap = bmp.asImageBitmap(),
@@ -1301,6 +1372,15 @@ class MainActivity : ComponentActivity() {
                                 color = Color(0xFF4DB6AC),
                                 style = MaterialTheme.typography.labelSmall
                             )
+                    }
+                    // 高清加载失败提示（静默回退缩略图，翻回该页自动重试）
+                    if (vm.hiresOn && vm.hiresFailed.containsKey(row.handle)) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "高清加载失败 · 翻回此页自动重试",
+                            color = Color(0xFF777777),
+                            style = MaterialTheme.typography.labelSmall
+                        )
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1405,6 +1485,12 @@ class MainActivity : ComponentActivity() {
                     autoPreview = it
                     prefs.edit().putBoolean("set_auto_preview", it).apply()
                 }
+            )
+            SettingSwitch(
+                title = "高清预览",
+                subtitle = "预览时自动加载相机内嵌高清图（每张约 0.7~1MB 流量）",
+                checked = vm.hiresOn,
+                onChange = { vm.setHiresPreview(it) }
             )
             SettingSwitch(
                 title = "传输时保持屏幕常亮",
