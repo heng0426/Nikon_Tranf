@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
@@ -212,6 +214,7 @@ class MainActivity : ComponentActivity() {
         val selMode = selectMode.value
         val visible = vm.visiblePhotos
         var showFilter by remember { mutableStateOf(false) }
+        var hotspotHint by remember { mutableStateOf(false) }
         val mergeOn = vm.mergePairs.value
         val pairs = vm.visiblePairs
         val pairSelCount = vm.pairSelection.value.size
@@ -293,8 +296,15 @@ class MainActivity : ComponentActivity() {
                 Surface(
                     Modifier.fillMaxWidth().clickable(enabled = phase != "connecting") {
                         when (phase) {
-                            "disconnected" -> ensureLocalNetworkPermission {
-                                scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
+                            "disconnected" -> {
+                                if (vm.isHotspotOn()) {
+                                    ensureLocalNetworkPermission {
+                                        scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
+                                    }
+                                } else {
+                                    Log.i("GPhoto2", "热点未开启，弹窗提示")
+                                    hotspotHint = true
+                                }
                             }
                             "connected" -> {
                                 showConnDetail.value = !showConnDetail.value
@@ -491,6 +501,51 @@ class MainActivity : ComponentActivity() {
             }
             // 筛选卡片（底部弹出，实时生效）
             if (showFilter) FilterSheet(onDismiss = { showFilter = false })
+            // 热点未开启提醒（本 App 主拓扑 = 相机连手机热点）
+            if (hotspotHint) {
+                AlertDialog(
+                    onDismissRequest = { hotspotHint = false },
+                    title = { Text("手机热点未开启") },
+                    text = {
+                        Text(
+                            "相机需要连接到手机热点才能传图。\n\n" +
+                                "请打开手机热点，再到相机菜单「连接至 PC (Wi-Fi)」选择本热点，然后点状态条重试。\n\n" +
+                                "（若你使用的是相机开热点的另一组网方式，可点「仍然连接」跳过此提醒）"
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            hotspotHint = false
+                            openHotspotSettings()
+                        }) { Text("打开热点设置") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = {
+                            hotspotHint = false
+                            ensureLocalNetworkPermission {
+                                scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
+                            }
+                        }) { Text("仍然连接") }
+                    }
+                )
+            }
+        }
+    }
+
+    /** 直达系统热点设置：先试 TetherSettings 页（多数机型可用），失败逐级退到系统面板 */
+    private fun openHotspotSettings() {
+        try {
+            startActivity(
+                Intent().setComponent(
+                    android.content.ComponentName("com.android.settings", "com.android.settings.TetherSettings")
+                )
+            )
+        } catch (e: Throwable) {
+            try {
+                startActivity(Intent(android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY))
+            } catch (e2: Throwable) {
+                startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
+            }
         }
     }
 

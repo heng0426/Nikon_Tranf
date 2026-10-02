@@ -313,6 +313,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return (p.getOrNull(0)?.ifEmpty { "Nikon" } ?: "Nikon") to (p.getOrNull(1)?.ifEmpty { "?" } ?: "?")
     }
 
+    /** 手机热点是否开启（本 App 的主拓扑 = 相机连手机热点，热点是前提）。
+     *  getWifiApState 是隐藏 API，走反射取；WIFI_AP_STATE_ENABLED = 13。
+     *  检测失败（机型差异/权限）一律视为开启，绝不误拦连接。 */
+    fun isHotspotOn(): Boolean {
+        return try {
+            val wm = ctx.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            val state = wm.javaClass.getMethod("getWifiApState").invoke(wm) as Int
+            state == 13
+        } catch (t: Throwable) {
+            Log.w("GPhoto2", "热点状态检测失败（按开启处理）: ${t.message}")
+            true
+        }
+    }
+
     /* ---------- 扫描 ---------- */
 
     /** 收集所有 Wi-Fi 接口的 /24 网段前缀（如 "10.19.161"） */
