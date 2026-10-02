@@ -33,6 +33,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -105,19 +111,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.nikontransfer.ui.theme.NikonTransferTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -1008,6 +1019,100 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 预览缩放状态：1x 时手势让位翻页；放大后归图片；松手 ≤1.2 自动吸附回 1x */
+    private class PreviewZoomState {
+        var scale by mutableStateOf(1f)
+        var offset by mutableStateOf(Offset.Zero)
+        var container by mutableStateOf(IntSize.Zero)
+
+        fun clampOffset() {
+            val maxX = (scale - 1f) * container.width / 2f
+            val maxY = (scale - 1f) * container.height / 2f
+            offset = Offset(offset.x.coerceIn(-maxX, maxX), offset.y.coerceIn(-maxY, maxY))
+        }
+
+        /** 松手吸附回 1x */
+        suspend fun settle() {
+            val s0 = scale
+            val o0 = offset
+            val anim = Animatable(0f)
+            anim.animateTo(1f, tween(160)) {
+                val t = value
+                scale = s0 + (1f - s0) * t
+                offset = Offset(o0.x * (1f - t), o0.y * (1f - t))
+            }
+            scale = 1f
+            offset = Offset.Zero
+        }
+
+        /** 以 tapPoint 为锚点动画缩放到目标倍率（双击定位放大/还原） */
+        suspend fun zoomTo(targetScale: Float, tapPoint: Offset) {
+            val s0 = scale
+            val o0 = offset
+            val center = Offset(container.width / 2f, container.height / 2f)
+            val targetOffset = (tapPoint - center) * (1f - targetScale / s0) + o0 * (targetScale / s0)
+            val anim = Animatable(0f)
+            anim.animateTo(1f, tween(220)) {
+                val t = value
+                scale = s0 + (targetScale - s0) * t
+                offset = Offset(
+                    o0.x + (targetOffset.x - o0.x) * t,
+                    o0.y + (targetOffset.y - o0.y) * t
+                )
+            }
+            scale = targetScale
+            clampOffset()
+        }
+    }
+
+    /** 预览缩放手势：1x 纯滑动不消费（翻页处理）；放大后/捏合时消费（归图片），松手 ≤1.2 吸附回 1x */
+    private fun Modifier.previewZoomGestures(zoom: PreviewZoomState): Modifier = this
+        .onSizeChanged { zoom.container = it }
+        .pointerInput(zoom) {
+            coroutineScope {
+                launch {
+                    detectTapGestures(onDoubleTap = { tapPoint ->
+                        launch {
+                            if (zoom.scale > 1.01f) zoom.settle() else zoom.zoomTo(2.5f, tapPoint)
+                        }
+                    })
+                }
+                launch {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        var consuming = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.any { it.pressed }
+                            if (!pressed) break
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            // 放大状态或出现捏合 → 手势归图片；1x 纯滑动不消费（让翻页处理）
+                            if (zoom.scale > 1.01f || zoomChange != 1f) consuming = true
+                            if (consuming) {
+                                val newScale = (zoom.scale * zoomChange).coerceIn(1f, 5f)
+                                val centroid = event.calculateCentroid(useCurrent = false)
+                                val center = Offset(zoom.container.width / 2f, zoom.container.height / 2f)
+                                val ratio = if (zoom.scale > 0f) newScale / zoom.scale else 1f
+                                var newOffset = (centroid - center) * (1f - ratio) +
+                                    zoom.offset * ratio + panChange
+                                val maxX = (newScale - 1f) * zoom.container.width / 2f
+                                val maxY = (newScale - 1f) * zoom.container.height / 2f
+                                newOffset = Offset(
+                                    newOffset.x.coerceIn(-maxX, maxX),
+                                    newOffset.y.coerceIn(-maxY, maxY)
+                                )
+                                zoom.scale = newScale
+                                zoom.offset = newOffset
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                        if (zoom.scale in 1.01f..1.2f) launch { zoom.settle() }
+                    }
+                }
+            }
+        }
+
     /** 合并模式全屏预览：JPG 大图 + 双格式下载按钮 + 加入选择 */
     @Composable
     private fun PairPager(
@@ -1032,7 +1137,7 @@ class MainActivity : ComponentActivity() {
         DisposableEffect(Unit) {
             onDispose { onClose(pagerState.currentPage) }
         }
-        Surface(Modifier.fillMaxSize(), color = Color.Black) {
+        Surface(Modifier.fillMaxSize(), color = Color(0x99000000)) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                 // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
                 val topKey = rows.getOrNull(pagerState.currentPage)?.let { p -> (p.jpg ?: p.nef)?.handle }
@@ -1099,14 +1204,28 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth().weight(1f)
                 ) { page ->
                     val pair = rows[page]
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    val zoom = remember { PreviewZoomState() }
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .onSizeChanged { zoom.container = it }
+                            .previewZoomGestures(zoom),
+                        contentAlignment = Alignment.Center
+                    ) {
                         val bmp = (pair.jpg ?: pair.nef)?.handle?.let { vm.hiresBitmap(it) }
                             ?: pair.previewBmp
                         if (bmp != null) {
                             Image(
                                 bitmap = bmp.asImageBitmap(),
                                 contentDescription = pair.stamp,
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        scaleX = zoom.scale
+                                        scaleY = zoom.scale
+                                        translationX = zoom.offset.x
+                                        translationY = zoom.offset.y
+                                    },
                                 contentScale = ContentScale.Fit
                             )
                         } else {
@@ -1527,7 +1646,7 @@ class MainActivity : ComponentActivity() {
         DisposableEffect(Unit) {
             onDispose { onClose(pagerState.currentPage) }
         }
-        Surface(Modifier.fillMaxSize(), color = Color.Black) {
+        Surface(Modifier.fillMaxSize(), color = Color(0x99000000)) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                 // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
                 val topRow = rows.getOrNull(pagerState.currentPage)
@@ -1594,13 +1713,27 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth().weight(1f)
                 ) { page ->
                     val row = rows[page]
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    val zoom = remember { PreviewZoomState() }
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .onSizeChanged { zoom.container = it }
+                            .previewZoomGestures(zoom),
+                        contentAlignment = Alignment.Center
+                    ) {
                         val bmp = vm.hiresBitmap(row.handle) ?: row.preview.value
                         if (bmp != null) {
                             Image(
                                 bitmap = bmp.asImageBitmap(),
                                 contentDescription = row.name,
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        scaleX = zoom.scale
+                                        scaleY = zoom.scale
+                                        translationX = zoom.offset.x
+                                        translationY = zoom.offset.y
+                                    },
                                 contentScale = ContentScale.Fit
                             )
                         } else {
