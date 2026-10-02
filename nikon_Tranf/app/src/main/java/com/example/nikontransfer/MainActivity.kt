@@ -219,6 +219,22 @@ class MainActivity : ComponentActivity() {
         BackHandler(enabled = showDownloads) { showDownloads = false }
         BackHandler(enabled = showSettings) { showSettings = false }
 
+        // 打开 App 自动连接（设置项，默认关）：仅未连接且热点已开启时触发；
+        // 热点未开静默跳过不打扰；已连接/连接中（含 MIUI 重建后 VM 会话存活）不重复触发
+        LaunchedEffect(Unit) {
+            if (prefs.getBoolean("set_auto_connect", false) &&
+                !connected && !connecting && connPhase.value == "disconnected"
+            ) {
+                if (vm.isHotspotOn()) {
+                    ensureLocalNetworkPermission {
+                        scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
+                    }
+                } else {
+                    Log.i("GPhoto2", "自动连接：热点未开启，跳过")
+                }
+            }
+        }
+
         if (showDownloads) {
             DownloadsScreen(onBack = { showDownloads = false })
             return
@@ -1442,6 +1458,7 @@ class MainActivity : ComponentActivity() {
         onPickDir: () -> Unit
     ) {
         var keepOn by remember { mutableStateOf(prefs.getBoolean("set_keep_on", false)) }
+        var autoConnect by remember { mutableStateOf(prefs.getBoolean("set_auto_connect", false)) }
         var autoPreview by remember { mutableStateOf(prefs.getBoolean("set_auto_preview", true)) }
         val scope = rememberCoroutineScope()
 
@@ -1496,6 +1513,15 @@ class MainActivity : ComponentActivity() {
                         Text("已连接 ✓", color = Color(0xFF00695C), style = MaterialTheme.typography.labelSmall)
                 }
             }
+            SettingSwitch(
+                title = "打开 App 自动连接相机",
+                subtitle = "启动后若手机热点已开启，自动扫描并连接相机（热点未开则跳过）",
+                checked = autoConnect,
+                onChange = {
+                    autoConnect = it
+                    prefs.edit().putBoolean("set_auto_connect", it).apply()
+                }
+            )
             Spacer(Modifier.height(16.dp))
             Text("传输", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             SettingSwitch(

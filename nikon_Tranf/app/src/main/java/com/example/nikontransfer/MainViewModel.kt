@@ -301,12 +301,79 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadDownloaded() {
         downloadedNames.value =
             prefs.getStringSet("downloaded_names", emptySet()) ?: emptySet()
+        syncDownloadedNames()   // 本地文件可能已被用户删除，先与磁盘对齐
     }
 
     private fun markDownloaded(name: String) {
         val s = downloadedNames.value + name
         downloadedNames.value = s
         prefs.edit().putStringSet("downloaded_names", s).apply()
+    }
+
+    /** 扫描本地实际存在的文件名：MediaStore 默认位置 + SAF 自定义目录（含一级日期子夹） */
+    private fun queryLocalFileNames(): Set<String> {
+        val out = HashSet<String>()
+        try {
+            val col = MediaStore.Files.getContentUri("external_primary")
+            ctx.contentResolver.query(
+                col,
+                arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
+                "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? OR ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
+                arrayOf("Pictures/NikonTransfer%", "Download/NikonTransfer%"),
+                null
+            )?.use { c ->
+                while (c.moveToNext()) c.getString(0)?.let { out.add(it) }
+            }
+        } catch (t: Throwable) {
+            Log.w("GPhoto2", "MediaStore 已下载扫描失败", t)
+        }
+        customDirUri.value?.let { uriStr ->
+            try {
+                val treeUri = android.net.Uri.parse(uriStr)
+                val rootId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                val subDirs = mutableListOf<String>()
+                ctx.contentResolver.query(
+                    android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, rootId),
+                    arrayOf(
+                        android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE
+                    ),
+                    null, null, null
+                )?.use { c ->
+                    while (c.moveToNext()) {
+                        if (c.getString(2) == android.provider.DocumentsContract.Document.MIME_TYPE_DIR)
+                            subDirs.add(c.getString(0))
+                        else c.getString(1)?.let { out.add(it) }
+                    }
+                }
+                for (docId in subDirs) {
+                    ctx.contentResolver.query(
+                        android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId),
+                        arrayOf(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                        null, null, null
+                    )?.use { c ->
+                        while (c.moveToNext()) c.getString(0)?.let { out.add(it) }
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w("GPhoto2", "SAF 已下载扫描失败", t)
+            }
+        }
+        return out
+    }
+
+    /** 已下载状态与本地文件对齐：磁盘上已不存在的条目从 downloaded_names 移除 */
+    private fun syncDownloadedNames() {
+        val before = downloadedNames.value
+        if (before.isEmpty()) return
+        val disk = queryLocalFileNames()
+        val valid = before.filterTo(HashSet()) { it in disk }
+        if (valid.size != before.size) {
+            downloadedNames.value = valid
+            prefs.edit().putStringSet("downloaded_names", valid).apply()
+            Log.i("GPhoto2", "已下载同步：${before.size} → ${valid.size}（本地已删除的条目已清除）")
+        }
     }
 
     /* ---------- 高清预览开关（默认关，持久化；Q3 定案）---------- */
@@ -602,6 +669,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val name = "IMG_${stamp}_${p[0].takeLast(4).padStart(4, '0')}.${type.lowercase()}"
             PhotoRow(name, handle, type, stamp)
         }.sortedByDescending { it.stamp }              // 从新到旧
+        syncDownloadedNames()                          // 本地删除过的照片不再标记已下载
         parsed.forEach { it.downloaded.value = it.name in downloadedNames.value }
         photoRows.clear()
         photoRows.addAll(parsed)
