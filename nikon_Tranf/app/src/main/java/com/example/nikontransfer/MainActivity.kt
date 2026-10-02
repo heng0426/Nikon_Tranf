@@ -78,6 +78,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -228,25 +229,12 @@ class MainActivity : ComponentActivity() {
                 // 顶部栏：浏览模式（占位logo+选择+齿轮）/ 多选模式（关闭+已选N+全选）
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     if (!selMode) {
-                        // 占位 logo（正式 logo 后续开发中提供）：圆角方块 + 镜头圆环
-                        Box(
-                            Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(9.dp))
-                                .background(Color(0xFF00695C)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Box(
-                                Modifier
-                                    .size(17.dp)
-                                    .border(2.5.dp, Color.White, CircleShape)
-                            )
-                            Box(
-                                Modifier
-                                    .size(5.dp)
-                                    .background(Color.White, CircleShape)
-                            )
-                        }
+                        // 顶部 logo（用户提供图片，透明底 PNG）
+                        Image(
+                            painter = painterResource(R.drawable.logo),
+                            contentDescription = "logo",
+                            modifier = Modifier.height(34.dp)
+                        )
                         // 筛选按钮（logo 右侧，同款圆角外框）：有筛选生效时漏斗变色
                         Box(
                             Modifier
