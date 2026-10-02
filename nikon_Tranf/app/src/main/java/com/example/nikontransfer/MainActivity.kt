@@ -54,6 +54,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -642,7 +643,34 @@ class MainActivity : ComponentActivity() {
     ) {
         val st = qItem?.status?.value
         when {
-            downloaded -> Button(onClick = {}, enabled = false, modifier = modifier) { Text("已下载") }
+            // 已下载：正常可点按钮（灰禁用态在黑底上几乎不可见），点击弹确认窗重新下载
+            downloaded || (qItem != null && st == QStatus.DONE) -> {
+                var confirmRedownload by remember { mutableStateOf(false) }
+                Button(
+                    onClick = { confirmRedownload = true },
+                    modifier = modifier,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF00695C),
+                        contentColor = Color.White
+                    )
+                ) { Text("已下载") }
+                if (confirmRedownload) {
+                    AlertDialog(
+                        onDismissRequest = { confirmRedownload = false },
+                        title = { Text("重新下载") },
+                        text = { Text("当前图片已下载，是否重新下载？") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirmRedownload = false
+                                onDownload()
+                            }) { Text("重新下载") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmRedownload = false }) { Text("取消") }
+                        }
+                    )
+                }
+            }
             qItem != null && st == QStatus.RUNNING -> Column(modifier) {
                 if (qItem.total.value > 0) {
                     LinearProgressIndicator(
@@ -911,23 +939,22 @@ class MainActivity : ComponentActivity() {
                     }
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        DownloadStateSlot(
+                        // 单格式成对：唯一按钮占满整排；双格式：各占一半
+                        if (pair.hasJpg) DownloadStateSlot(
                             downloaded = pair.jpgDownloaded,
                             qItem = pair.jpg?.let { j ->
                                 vm.downloadQueue.firstOrNull { it.handle == j.handle }
                             },
                             label = "下载 JPG",
-                            enabled = pair.hasJpg,
                             onDownload = { onDownloadJpg(pair) },
                             modifier = Modifier.weight(1f)
                         )
-                        DownloadStateSlot(
+                        if (pair.hasNef) DownloadStateSlot(
                             downloaded = pair.nefDownloaded,
                             qItem = pair.nef?.let { n ->
                                 vm.downloadQueue.firstOrNull { it.handle == n.handle }
                             },
                             label = "下载 NEF",
-                            enabled = pair.hasNef,
                             onDownload = { onDownloadNef(pair) },
                             modifier = Modifier.weight(1f)
                         )

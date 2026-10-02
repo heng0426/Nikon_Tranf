@@ -762,6 +762,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     it.handle == row.handle &&
                         it.status.value in setOf(QStatus.QUEUED, QStatus.RUNNING)
                 }) return
+            // 重新下载：清掉同句柄旧的已完成/已取消条目，避免槽位读到陈旧状态
+            downloadQueue.removeAll {
+                it.handle == row.handle && it.status.value in setOf(QStatus.DONE, QStatus.CANCELED)
+            }
             downloadQueue.add(QueueItem(row.handle, row.name, row.type, row.stamp))
         }
         ensureWorker()
