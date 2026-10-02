@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,8 +17,14 @@ import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -25,25 +32,35 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -91,6 +108,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -178,7 +196,7 @@ class MainActivity : ComponentActivity() {
                 != PackageManager.PERMISSION_GRANTED
         ) notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         setContent {
-            NikonTransferTheme {
+            NikonTransferTheme(dark = vm.darkModeOn) {
                 Surface(Modifier.fillMaxSize()) {
                     MainScreen()
                 }
@@ -212,6 +230,11 @@ class MainActivity : ComponentActivity() {
         var showDownloads by remember { mutableStateOf(false) }
         var previewIndex by remember { mutableStateOf(-1) }
         var pairPreviewIndex by remember { mutableStateOf(-1) }
+        // 预览返回高亮：记住刚预览的那张（句柄/时间戳），返回网格时脉冲提示
+        var highlightHandle by remember { mutableStateOf<Int?>(null) }
+        var highlightStamp by remember { mutableStateOf<String?>(null) }
+        val mergeGridState = rememberLazyGridState()
+        val fileGridState = rememberLazyGridState()
 
         // 返回键：全屏预览 → 关预览；下载页/设置页 → 回主页
         BackHandler(enabled = pairPreviewIndex >= 0) { pairPreviewIndex = -1 }
@@ -235,19 +258,23 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        if (showDownloads) {
-            DownloadsScreen(onBack = { showDownloads = false })
-            return
-        }
-
-        if (showSettings) {
-            SettingsScreen(
-                prefs = prefs,
-                onBack = { showSettings = false },
-                onKeepScreenOnChanged = { applyKeepScreenOn(it) },
-                onPickDir = { dirPicker.launch(null) }
-            )
-            return
+        // 深浅色切换时同步系统栏图标颜色（深色=白图标，浅色=黑图标）
+        LaunchedEffect(vm.darkModeOn) {
+            if (vm.darkModeOn) {
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+                    navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                )
+            } else {
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.light(
+                        android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT
+                    ),
+                    navigationBarStyle = SystemBarStyle.light(
+                        android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT
+                    )
+                )
+            }
         }
 
         val visible = vm.visiblePhotos
@@ -260,7 +287,15 @@ class MainActivity : ComponentActivity() {
 
         Box(Modifier.fillMaxSize()) {
             Column(
-                Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
+                Modifier.fillMaxSize()
+                    // ★ 顶栏高度只改这里：top 的数字越大越往下，越小越往上，0 = 紧贴状态栏
+                    .windowInsetsPadding(
+                        WindowInsets.safeDrawing.only(
+                            WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal
+                        )
+                    )
+                    .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                    .padding(top = 36.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // 顶部栏：logo + 筛选 + 队列（多选操作全部在底部弹出条，顶栏不再有模式切换）
@@ -279,11 +314,11 @@ class MainActivity : ComponentActivity() {
                             .padding(start = 10.dp)
                             .size(34.dp)
                             .clip(RoundedCornerShape(9.dp))
-                            .background(Color(0xFFF1F3F5))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
                             .clickable { showFilter = true },
                         contentAlignment = Alignment.Center
                     ) {
-                        FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else Color(0xFF9E9E9E))
+                        FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.weight(1f))
                     // 下载队列按钮（原齿轮位）：有活跃任务时显示数量角标
@@ -327,9 +362,9 @@ class MainActivity : ComponentActivity() {
                     },
                     shape = MaterialTheme.shapes.medium,
                     color = when (phase) {
-                        "connected" -> Color(0xFFE0F2F1)
-                        "connecting" -> Color(0xFFFFF8E1)
-                        else -> Color(0xFFFFEBEE)
+                        "connected" -> if (vm.darkModeOn) Color(0xFF10312D) else Color(0xFFE0F2F1)
+                        "connecting" -> if (vm.darkModeOn) Color(0xFF332B12) else Color(0xFFFFF8E1)
+                        else -> if (vm.darkModeOn) Color(0xFF38201F) else Color(0xFFFFEBEE)
                     }
                 ) {
                     Text(
@@ -337,9 +372,9 @@ class MainActivity : ComponentActivity() {
                         Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = when (phase) {
-                            "connected" -> Color(0xFF00695C)
-                            "connecting" -> Color(0xFF8D6E00)
-                            else -> Color(0xFFB71C1C)
+                            "connected" -> if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                            "connecting" -> if (vm.darkModeOn) Color(0xFFFFD54F) else Color(0xFF8D6E00)
+                            else -> if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
                         }
                     )
                 }
@@ -349,7 +384,7 @@ class MainActivity : ComponentActivity() {
                         "连接相机后即可浏览与下载照片\n（相机菜单 → 连接至 PC (Wi-Fi) → 建立连接）",
                         Modifier.fillMaxWidth().padding(vertical = 32.dp),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF999999),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
                 }
@@ -363,7 +398,7 @@ class MainActivity : ComponentActivity() {
                         Text(
                             "无符合筛选条件的照片",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = Color(0xFF999999)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         TextButton(onClick = { vm.resetFilter() }) { Text("清除筛选") }
                     }
@@ -373,22 +408,28 @@ class MainActivity : ComponentActivity() {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
                         modifier = Modifier.fillMaxWidth().weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                        state = mergeGridState,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         vm.pairSections.forEach { sec ->
                             item(key = "phdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }) {
                                 Text(
                                     vm.dateLabel(sec.dateKey, sec.rows.size),
                                     style = MaterialTheme.typography.titleSmall,
-                                    color = Color(0xFF444444),
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.padding(top = 8.dp, bottom = 2.dp, start = 2.dp)
                                 )
                             }
                             items(sec.rows, key = { it.stamp }) { pair ->
                                 PairCell(
                                     pair = pair,
-                                    onTap = { pairPreviewIndex = pairs.indexOf(pair) },
+                                    highlight = pair.stamp == highlightStamp,
+                                    onTap = {
+                                        highlightHandle = null
+                                        highlightStamp = null
+                                        pairPreviewIndex = pairs.indexOf(pair)
+                                    },
                                     onLongPress = { vm.togglePair(pair.stamp) }
                                 )
                             }
@@ -398,22 +439,28 @@ class MainActivity : ComponentActivity() {
                     LazyVerticalGrid(
                     columns = GridCells.Fixed(3),
                     modifier = Modifier.fillMaxWidth().weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                    state = fileGridState,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     vm.visibleSections.forEach { sec ->
                         item(key = "hdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }) {
                             Text(
                                 vm.dateLabel(sec.dateKey, sec.rows.size),
                                 style = MaterialTheme.typography.titleSmall,
-                                color = Color(0xFF444444),
+                                color = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.padding(top = 8.dp, bottom = 2.dp, start = 2.dp)
                             )
                         }
                         items(sec.rows, key = { it.handle }) { row ->
                             GridCell(
                                 row = row,
-                                onTap = { previewIndex = visible.indexOf(row) },
+                                highlight = row.handle == highlightHandle,
+                                onTap = {
+                                    highlightHandle = null
+                                    highlightStamp = null
+                                    previewIndex = visible.indexOf(row)
+                                },
                                 onLongPress = { row.selected.value = !row.selected.value }
                             )
                         }
@@ -486,7 +533,7 @@ class MainActivity : ComponentActivity() {
                                 Text(
                                     "JPG $jpgCount · NEF $nefCount",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF888888)
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -504,7 +551,31 @@ class MainActivity : ComponentActivity() {
                 PairPager(
                     initialIndex = pairPreviewIndex,
                     rows = pairs.toList(),
-                    onClose = { pairPreviewIndex = -1 },
+                    onClose = { page ->
+                        highlightHandle = null
+                        val stamp = pairs.getOrNull(page)?.stamp
+                        highlightStamp = stamp
+                        // 网格跳到刚预览的对所在位置（已在可视区则不动）
+                        if (stamp != null) {
+                            var idx = 0
+                            var found = false
+                            for (sec in vm.pairSections) {
+                                if (found) break
+                                idx++   // 日期分组头
+                                val pos = sec.rows.indexOfFirst { it.stamp == stamp }
+                                if (pos >= 0) { idx += pos; found = true } else idx += sec.rows.size
+                            }
+                            if (found) {
+                                // 只露出边缘也算不可见，必须完整可见才不跳
+                                val item = mergeGridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == idx }
+                                val fullyVisible = item != null &&
+                                    item.offset.y >= mergeGridState.layoutInfo.viewportStartOffset &&
+                                    item.offset.y + item.size.height <= mergeGridState.layoutInfo.viewportEndOffset
+                                if (!fullyVisible) scope.launch { mergeGridState.scrollToItem(idx) }
+                            }
+                        }
+                        pairPreviewIndex = -1
+                    },
                     onDownloadJpg = { row ->
                         row.jpg?.let { p ->
                             scope.launch { withContext(Dispatchers.IO) { vm.downloadOne(p) } }
@@ -520,7 +591,31 @@ class MainActivity : ComponentActivity() {
                 PreviewPager(
                     initialIndex = previewIndex,
                     rows = visible.toList(),
-                    onClose = { previewIndex = -1 },
+                    onClose = { page ->
+                        highlightStamp = null
+                        val handle = visible.getOrNull(page)?.handle
+                        highlightHandle = handle
+                        // 网格跳到刚预览的照片所在位置（已在可视区则不动）
+                        if (handle != null) {
+                            var idx = 0
+                            var found = false
+                            for (sec in vm.visibleSections) {
+                                if (found) break
+                                idx++   // 日期分组头
+                                val pos = sec.rows.indexOfFirst { it.handle == handle }
+                                if (pos >= 0) { idx += pos; found = true } else idx += sec.rows.size
+                            }
+                            if (found) {
+                                // 只露出边缘也算不可见，必须完整可见才不跳
+                                val item = fileGridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == idx }
+                                val fullyVisible = item != null &&
+                                    item.offset.y >= fileGridState.layoutInfo.viewportStartOffset &&
+                                    item.offset.y + item.size.height <= fileGridState.layoutInfo.viewportEndOffset
+                                if (!fullyVisible) scope.launch { fileGridState.scrollToItem(idx) }
+                            }
+                        }
+                        previewIndex = -1
+                    },
                     onDownload = { row ->
                         scope.launch { withContext(Dispatchers.IO) { vm.downloadOne(row) } }
                     }
@@ -555,6 +650,83 @@ class MainActivity : ComponentActivity() {
                         }) { Text("仍然连接") }
                     }
                 )
+            }
+            // 设置：从左侧滑出的卡片式面板（蒙层点击关闭，主界面保留在底下）
+            AnimatedVisibility(
+                visible = showSettings,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.matchParentSize()
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color(0x66000000))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { showSettings = false }
+                )
+            }
+            AnimatedVisibility(
+                visible = showSettings,
+                enter = slideInHorizontally { -it },
+                exit = slideOutHorizontally { -it },
+                modifier = Modifier.matchParentSize()
+            ) {
+                Box(Modifier.fillMaxSize()) {
+                    Surface(
+                        Modifier
+                            .align(Alignment.CenterStart)
+                            .fillMaxHeight()
+                            .fillMaxWidth(0.88f),
+                        shape = RoundedCornerShape(topEnd = 20.dp, bottomEnd = 20.dp),
+                        shadowElevation = 8.dp
+                    ) {
+                        SettingsScreen(
+                            prefs = prefs,
+                            onBack = { showSettings = false },
+                            onKeepScreenOnChanged = { applyKeepScreenOn(it) },
+                            onPickDir = { dirPicker.launch(null) }
+                        )
+                    }
+                }
+            }
+            // 下载队列：从右侧滑出的卡片面板（样式同设置侧板）
+            AnimatedVisibility(
+                visible = showDownloads,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.matchParentSize()
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color(0x66000000))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { showDownloads = false }
+                )
+            }
+            AnimatedVisibility(
+                visible = showDownloads,
+                enter = slideInHorizontally { it },
+                exit = slideOutHorizontally { it },
+                modifier = Modifier.matchParentSize()
+            ) {
+                Box(Modifier.fillMaxSize()) {
+                    Surface(
+                        Modifier
+                            .align(Alignment.CenterEnd)
+                            .fillMaxHeight()
+                            .fillMaxWidth(0.88f),
+                        shape = RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp),
+                        shadowElevation = 8.dp
+                    ) {
+                        DownloadsScreen(onBack = { showDownloads = false })
+                    }
+                }
             }
         }
     }
@@ -600,7 +772,7 @@ class MainActivity : ComponentActivity() {
                     "暂无下载任务\n\n点按照片或批量下载后，任务会出现在这里",
                     Modifier.fillMaxWidth().padding(vertical = 48.dp),
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFF999999),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
@@ -628,15 +800,15 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.width(8.dp))
                 Text(item.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                 when (st) {
-                    QStatus.QUEUED -> Text("排队中", color = Color(0xFF999999), style = MaterialTheme.typography.labelSmall)
+                    QStatus.QUEUED -> Text("排队中", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                     QStatus.RUNNING -> Text(
                         "${humanSize(item.got.value)} / ${humanSize(item.total.value)} · ${item.speed.value}",
                         color = MaterialTheme.colorScheme.primary,
                         style = MaterialTheme.typography.labelSmall
                     )
                     QStatus.DONE -> Text("已完成 ✓", color = Color(0xFF00695C), style = MaterialTheme.typography.labelSmall)
-                    QStatus.FAILED -> Text("失败", color = Color(0xFFB71C1C), style = MaterialTheme.typography.labelSmall)
-                    QStatus.CANCELED -> Text("已取消", color = Color(0xFF999999), style = MaterialTheme.typography.labelSmall)
+                    QStatus.FAILED -> Text("失败", color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C), style = MaterialTheme.typography.labelSmall)
+                    QStatus.CANCELED -> Text("已取消", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                 }
             }
             if (st == QStatus.RUNNING && item.total.value > 0) {
@@ -733,13 +905,34 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun PairCell(
         pair: PairRow,
+        highlight: Boolean,
         onTap: () -> Unit,
         onLongPress: () -> Unit
     ) {
         val haptic = LocalHapticFeedback.current
         val selected = pair.stamp in vm.pairSelection.value
+        // 返回指示：缩放脉冲（小-大-小-大-小，1s，精确归位）+ 持续青色描边标出刚预览的照片
+        val pulse = remember { Animatable(0f) }
+        LaunchedEffect(highlight) {
+            if (highlight) {
+                pulse.snapTo(0f)
+                pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
+                pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
+                pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
+                pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
+            } else pulse.snapTo(0f)
+        }
         Box(
             Modifier
+                .graphicsLayer {
+                    val s = 1f + 0.06f * pulse.value
+                    scaleX = s
+                    scaleY = s
+                }
+                .then(
+                    if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp))
+                    else Modifier
+                )
                 .fillMaxWidth()
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(10.dp))
@@ -761,8 +954,8 @@ class MainActivity : ComponentActivity() {
                     contentScale = ContentScale.Crop
                 )
             } else {
-                Box(Modifier.fillMaxSize().background(Color(0xFFE0E0E0)))
-                Text("RAW+JPG", color = Color(0xFF9E9E9E), style = MaterialTheme.typography.labelSmall)
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant))
+                Text("RAW+JPG", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             }
             // 左上格式徽章：JPG(青) + NEF(紫) 相邻
             Row(Modifier.align(Alignment.TopStart)) {
@@ -820,7 +1013,7 @@ class MainActivity : ComponentActivity() {
     private fun PairPager(
         initialIndex: Int,
         rows: List<PairRow>,
-        onClose: () -> Unit,
+        onClose: (Int) -> Unit,
         onDownloadJpg: (PairRow) -> Unit,
         onDownloadNef: (PairRow) -> Unit
     ) {
@@ -836,6 +1029,9 @@ class MainActivity : ComponentActivity() {
             }
         }
         DisposableEffect(Unit) { onDispose { vm.clearHires() } }
+        DisposableEffect(Unit) {
+            onDispose { onClose(pagerState.currentPage) }
+        }
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                 // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
@@ -861,7 +1057,7 @@ class MainActivity : ComponentActivity() {
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onClose) {
+                    IconButton(onClick = { onClose(pagerState.currentPage) }) {
                         Icon(Icons.Filled.Close, contentDescription = "关闭", tint = Color.White)
                     }
                     Text(
@@ -997,12 +1193,33 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun GridCell(
         row: PhotoRow,
+        highlight: Boolean,
         onTap: () -> Unit,
         onLongPress: () -> Unit
     ) {
         val haptic = LocalHapticFeedback.current
+        // 返回指示：缩放脉冲（小-大-小-大-小，1s，精确归位）+ 持续青色描边标出刚预览的照片
+        val pulse = remember { Animatable(0f) }
+        LaunchedEffect(highlight) {
+            if (highlight) {
+                pulse.snapTo(0f)
+                pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
+                pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
+                pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
+                pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
+            } else pulse.snapTo(0f)
+        }
         Box(
             Modifier
+                .graphicsLayer {
+                    val s = 1f + 0.06f * pulse.value
+                    scaleX = s
+                    scaleY = s
+                }
+                .then(
+                    if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp))
+                    else Modifier
+                )
                 .fillMaxWidth()
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(10.dp))
@@ -1024,8 +1241,8 @@ class MainActivity : ComponentActivity() {
                     contentScale = ContentScale.Crop
                 )
             } else {
-                Box(Modifier.fillMaxSize().background(Color(0xFFE0E0E0)))
-                Text(row.type, color = Color(0xFF9E9E9E), style = MaterialTheme.typography.labelSmall)
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant))
+                Text(row.type, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
             }
             // 左上格式角标
             Text(
@@ -1108,7 +1325,7 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(6.dp))
                 // 合并模式下每个格子已同时呈现 JPG+NEF，格式筛选行隐藏（①b）
                 if (!vm.mergePairs.value) {
-                    Text("文件类型", style = MaterialTheme.typography.titleSmall, color = Color(0xFF888888))
+                    Text("文件类型", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         FilterBigButton("全部", vm.filterFormat.value == "全部", Modifier.weight(1f)) {
@@ -1123,11 +1340,11 @@ class MainActivity : ComponentActivity() {
                     }
                     HorizontalDivider(
                         thickness = 1.dp,
-                        color = Color(0xFFEEEEEE),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.padding(vertical = 14.dp)
                     )
                 }
-                Text("下载状态", style = MaterialTheme.typography.titleSmall, color = Color(0xFF888888))
+                Text("下载状态", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StateChip("未下载", vm.filterUntransferred.value, Modifier.weight(1f)) {
@@ -1139,10 +1356,10 @@ class MainActivity : ComponentActivity() {
                 }
                 HorizontalDivider(
                     thickness = 1.dp,
-                    color = Color(0xFFEEEEEE),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier.padding(vertical = 14.dp)
                 )
-                Text("拍摄日期", style = MaterialTheme.typography.titleSmall, color = Color(0xFF888888))
+                Text("拍摄日期", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     DateField(
@@ -1187,14 +1404,14 @@ class MainActivity : ComponentActivity() {
         Box(
             modifier
                 .clip(RoundedCornerShape(14.dp))
-                .background(if (selected) Color(0xFF00695C) else Color(0xFFF1F3F5))
+                .background(if (selected) Color(0xFF00695C) else MaterialTheme.colorScheme.surfaceVariant)
                 .clickable(onClick = onClick)
                 .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text,
-                color = if (selected) Color.White else Color(0xFF333333),
+                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.bodyLarge
             )
         }
@@ -1211,14 +1428,14 @@ class MainActivity : ComponentActivity() {
         Box(
             modifier
                 .clip(RoundedCornerShape(14.dp))
-                .background(if (on) Color(0xFF00695C) else Color(0xFFF1F3F5))
+                .background(if (on) Color(0xFF00695C) else MaterialTheme.colorScheme.surfaceVariant)
                 .clickable { onToggle(!on) }
                 .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text,
-                color = if (on) Color.White else Color(0xFF333333),
+                color = if (on) Color.White else MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.bodyLarge
             )
         }
@@ -1238,7 +1455,7 @@ class MainActivity : ComponentActivity() {
         Box(
             modifier
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFFF1F3F5))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
                 .clickable { open = true }
                 .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
@@ -1247,14 +1464,14 @@ class MainActivity : ComponentActivity() {
                     Text(
                         label,
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF888888)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
                         if (value != null && value.length == 8)
                             "${value.substring(0, 4)}-${value.substring(4, 6)}-${value.substring(6, 8)}"
                         else "不限",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (value != null) Color(0xFF222222) else Color(0xFF999999)
+                        color = if (value != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 if (value != null) {
@@ -1264,7 +1481,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier
                             .size(16.dp)
                             .clickable { onClear() },
-                        tint = Color(0xFF999999)
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -1294,7 +1511,7 @@ class MainActivity : ComponentActivity() {
     private fun PreviewPager(
         initialIndex: Int,
         rows: List<PhotoRow>,
-        onClose: () -> Unit,
+        onClose: (Int) -> Unit,
         onDownload: (PhotoRow) -> Unit
     ) {
         val pagerState = rememberPagerState(initialPage = initialIndex) { rows.size }
@@ -1307,6 +1524,9 @@ class MainActivity : ComponentActivity() {
             }
         }
         DisposableEffect(Unit) { onDispose { vm.clearHires() } }
+        DisposableEffect(Unit) {
+            onDispose { onClose(pagerState.currentPage) }
+        }
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                 // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
@@ -1332,7 +1552,7 @@ class MainActivity : ComponentActivity() {
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onClose) {
+                    IconButton(onClick = { onClose(pagerState.currentPage) }) {
                         Icon(Icons.Filled.Close, contentDescription = "关闭", tint = Color.White)
                     }
                     Text(
@@ -1462,7 +1682,7 @@ class MainActivity : ComponentActivity() {
         var autoPreview by remember { mutableStateOf(prefs.getBoolean("set_auto_preview", true)) }
         val scope = rememberCoroutineScope()
 
-        Column(Modifier.fillMaxWidth().safeDrawingPadding().padding(16.dp)) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) {
                     Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
@@ -1470,12 +1690,17 @@ class MainActivity : ComponentActivity() {
                 Text("设置", style = MaterialTheme.typography.titleLarge)
             }
             Spacer(Modifier.height(8.dp))
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            ) {
             Text("连接", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             val (cm, cs) = if (connDetail.value.isNotEmpty()) vm.splitInfo(connDetail.value) else ("Nikon" to "?")
             Text(
                 if (connPhase.value == "connected") "已连接：$cm ($cs) · ${connectedIp.value}" else "未连接",
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (connPhase.value == "connected") Color(0xFF00695C) else Color(0xFFB71C1C)
+                color = if (connPhase.value == "connected")
+                    if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                else if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
             )
             Button(
                 onClick = {
@@ -1507,7 +1732,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text("$model ($serial)", style = MaterialTheme.typography.bodyLarge)
-                        Text(ip, style = MaterialTheme.typography.bodySmall, color = Color(0xFF888888))
+                        Text(ip, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (connected && ip == connectedIp.value)
                         Text("已连接 ✓", color = Color(0xFF00695C), style = MaterialTheme.typography.labelSmall)
@@ -1578,7 +1803,7 @@ class MainActivity : ComponentActivity() {
                     Text(
                         vm.dirDisplay.value,
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF888888)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 TextButton(onClick = onPickDir) { Text("更改目录") }
@@ -1587,6 +1812,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
             Spacer(Modifier.height(16.dp))
+            Text("外观", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            SettingSwitch(
+                title = "深色模式",
+                subtitle = "界面切换为深色配色（默认浅色，开关即时生效）",
+                checked = vm.darkModeOn,
+                onChange = { vm.setDarkMode(it) }
+            )
+            Spacer(Modifier.height(16.dp))
             Text("关于", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(8.dp))
             Text(
@@ -1594,8 +1827,9 @@ class MainActivity : ComponentActivity() {
                     "协议：PTP/IP + Nikon 私有指令（0x941c/0x9421/0x9431/0x9434/0x952b/0x935a）\n" +
                     "注意：配对模式下相机不提供原始文件名，列表名称由拍摄时间+句柄生成",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF888888)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            }
         }
     }
 
@@ -1607,7 +1841,7 @@ class MainActivity : ComponentActivity() {
         ) {
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.bodyLarge)
-                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(0xFF888888))
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(checked = checked, onCheckedChange = onChange)
         }

@@ -392,6 +392,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("set_skip_downloaded", v).apply()
     }
 
+    /* ---------- 外观：深色模式（默认关 = 浅色）---------- */
+    var darkModeOn: Boolean by mutableStateOf(prefs.getBoolean("set_dark_mode", false))
+
+    fun setDarkMode(v: Boolean) {
+        darkModeOn = v
+        prefs.edit().putBoolean("set_dark_mode", v).apply()
+    }
+
     init {
         loadDownloaded()
         mergePairs.value = prefs.getBoolean("set_merge_pairs", false)
