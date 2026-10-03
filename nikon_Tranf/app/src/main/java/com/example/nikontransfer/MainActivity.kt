@@ -318,6 +318,8 @@ class MainActivity : ComponentActivity() {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 val phase = connPhase.value
+                // ★ 日期胶囊槽位高度：只改这个数字——数字越小，胶囊下方留白越小（建议 24~30）
+                val pillSlotHeight = 20.dp
                 // 连接详情切换：显示 3 秒后自动收起（重复点击取消旧计时，避免卡片被旧计时器提前收起）
                 var detailHideJob by remember { mutableStateOf<Job?>(null) }
                 val toggleConnDetail = {
@@ -407,7 +409,7 @@ class MainActivity : ComponentActivity() {
                             animationSpec = tween(200),
                             label = "connIconColor"
                         )
-                        WifiIcon(iconColor)
+                        WifiIcon(iconColor, Modifier.size(20.dp))
                     }
                     Spacer(Modifier.weight(1f))
                     // 下载队列按钮（筛选/连接同款圆角外框）：下载图标 + 活跃任务数量角标
@@ -502,15 +504,35 @@ class MainActivity : ComponentActivity() {
                 }
                 }
                 }
-                Text(uiLog, style = MaterialTheme.typography.bodySmall)
+                // "共 N 个文件"纯文字计数行不显示（总数已在置顶胶囊中）
+                if (uiLog.isNotBlank() && !uiLog.contains("个文件")) {
+                    Text(uiLog, style = MaterialTheme.typography.bodySmall)
+                }
                 if (connPhase.value != "connected" && photoRows.isEmpty()) {
-                    Text(
-                        "连接相机后即可浏览与下载照片\n（相机菜单 → 连接至 PC (Wi-Fi) → 建立连接）",
-                        Modifier.fillMaxWidth().padding(vertical = 32.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
+                    Surface(
+                        Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Column(
+                            Modifier.fillMaxWidth().padding(vertical = 36.dp, horizontal = 16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            WifiIcon(MaterialTheme.colorScheme.onSurfaceVariant, Modifier.size(44.dp))
+                            Spacer(Modifier.height(14.dp))
+                            Text(
+                                "连接相机后即可浏览与下载照片",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "相机菜单 → 连接至 PC (Wi-Fi) → 建立连接",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
                 val emptyByFilter = if (mergeOn) photoRows.isNotEmpty() && pairs.isEmpty()
                                     else photoRows.isNotEmpty() && visible.isEmpty()
@@ -529,6 +551,45 @@ class MainActivity : ComponentActivity() {
                 }
                 // 照片网格：按日期分节（节头占满一行），组内从新到旧；合并模式一格=一对
                 if (mergeOn) {
+                    // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
+                    val firstIdx = mergeGridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
+                    var pillKey: String? = null
+                    if (firstIdx != null) {
+                        var acc = 0
+                        for (sec in vm.pairSections) {
+                            if (firstIdx >= acc && firstIdx <= acc + sec.rows.size) { pillKey = sec.dateKey; break }
+                            acc += 1 + sec.rows.size
+                        }
+                    }
+                    val pillSec = vm.pairSections.firstOrNull { it.dateKey == pillKey }
+                    Box(Modifier.fillMaxWidth().height(pillSlotHeight), contentAlignment = Alignment.CenterStart) {
+                        if (pillSec != null) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
+                                ) {
+                                    Text(
+                                        vm.dateLabel(pillSec.dateKey, pillSec.rows.size),
+                                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
+                                ) {
+                                    Text(
+                                        "共 ${pairs.size} 张",
+                                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
                         modifier = Modifier.fillMaxWidth().weight(1f),
@@ -538,12 +599,20 @@ class MainActivity : ComponentActivity() {
                     ) {
                         vm.pairSections.forEach { sec ->
                             item(key = "phdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }) {
-                                Text(
-                                    vm.dateLabel(sec.dateKey, sec.rows.size),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp, start = 2.dp)
-                                )
+                                Row {
+                                    Surface(
+                                        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant
+                                    ) {
+                                        Text(
+                                            vm.dateLabel(sec.dateKey, sec.rows.size),
+                                            Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
                             }
                             items(sec.rows, key = { it.stamp }) { pair ->
                                 PairCell(
@@ -560,6 +629,45 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 } else {
+                    // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
+                    val firstIdx = fileGridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
+                    var pillKey: String? = null
+                    if (firstIdx != null) {
+                        var acc = 0
+                        for (sec in vm.visibleSections) {
+                            if (firstIdx >= acc && firstIdx <= acc + sec.rows.size) { pillKey = sec.dateKey; break }
+                            acc += 1 + sec.rows.size
+                        }
+                    }
+                    val pillSec = vm.visibleSections.firstOrNull { it.dateKey == pillKey }
+                    Box(Modifier.fillMaxWidth().height(pillSlotHeight), contentAlignment = Alignment.CenterStart) {
+                        if (pillSec != null) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
+                                ) {
+                                    Text(
+                                        vm.dateLabel(pillSec.dateKey, pillSec.rows.size),
+                                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
+                                ) {
+                                    Text(
+                                        "共 ${visible.size} 张",
+                                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
                     LazyVerticalGrid(
                     columns = GridCells.Fixed(3),
                     modifier = Modifier.fillMaxWidth().weight(1f),
@@ -569,12 +677,20 @@ class MainActivity : ComponentActivity() {
                 ) {
                     vm.visibleSections.forEach { sec ->
                         item(key = "hdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }) {
-                            Text(
-                                vm.dateLabel(sec.dateKey, sec.rows.size),
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(top = 8.dp, bottom = 2.dp, start = 2.dp)
-                            )
+                            Row {
+                                Surface(
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant
+                                ) {
+                                    Text(
+                                        vm.dateLabel(sec.dateKey, sec.rows.size),
+                                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
                         }
                         items(sec.rows, key = { it.handle }) { row ->
                             GridCell(
@@ -594,10 +710,15 @@ class MainActivity : ComponentActivity() {
                 // 多选操作条：有选中才从底部弹出（全选 + 格式勾选(合并) + 下载所选）
                 AnimatedVisibility(
                     visible = selCount > 0,
-                    enter = slideInVertically { it } + fadeIn(),
-                    exit = slideOutVertically { it } + fadeOut()
+                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(220)),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(tween(180))
                 ) {
-                    Column {
+                    Surface(
+                        Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                         // 分格式计数（已应用"跳过已下载"过滤；格式勾掉时其标签变灰）
                         val skip = vm.skipDownloadedOn
                         val jpgCount: Int
@@ -667,6 +788,7 @@ class MainActivity : ComponentActivity() {
                             enabled = total > 0,
                             modifier = Modifier.fillMaxWidth()
                         ) { Text(if (allDownloaded) "均已下载" else "下载所选($total)") }
+                        }
                     }
                 }
             }
@@ -1535,10 +1657,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Wi-Fi 形状（三条弧 + 圆点），用于连接状态指示（同漏斗图标的自绘风格） */
+    /** Wi-Fi 形状（三条弧 + 圆点），用于连接状态指示（同漏斗图标的自绘风格）；尺寸由调用方决定 */
     @Composable
     private fun WifiIcon(color: Color, modifier: Modifier = Modifier) {
-        Canvas(modifier.size(20.dp)) {
+        Canvas(modifier) {
             val w = size.width
             val h = size.height
             val stroke = w * 0.14f
