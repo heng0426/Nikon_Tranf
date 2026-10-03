@@ -112,8 +112,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -309,6 +312,37 @@ class MainActivity : ComponentActivity() {
                     .padding(top = 36.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                val phase = connPhase.value
+                // 连接详情切换：显示 3 秒后自动收起（标题栏图标与旧状态条共用）
+                val toggleConnDetail = {
+                    showConnDetail.value = !showConnDetail.value
+                    if (showConnDetail.value) {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                Thread.sleep(3000)
+                                showConnDetail.value = false
+                            }
+                        }
+                    }
+                }
+                // 断开瞬间图标抖动一次提示（仅连接成功过之后断开）
+                val connShake = remember { Animatable(0f) }
+                LaunchedEffect(phase) {
+                    if (phase == "disconnected" && vm.everConnected) {
+                        connShake.snapTo(0f)
+                        connShake.animateTo(
+                            1f,
+                            keyframes {
+                                durationMillis = 450
+                                -1f at 80
+                                1f at 160
+                                -0.7f at 240
+                                0.7f at 320
+                                0f at 450
+                            }
+                        )
+                    }
+                }
                 // 顶部栏：logo + 筛选 + 队列（多选操作全部在底部弹出条，顶栏不再有模式切换）
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     // 顶部 logo（用户提供图片，透明底 PNG）：点击进入设置
@@ -331,6 +365,42 @@ class MainActivity : ComponentActivity() {
                     ) {
                         FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    // 连接指示（常驻，筛选旁，同款圆角外框）：绿=已连接(点看详情)；黄=连接中(禁点)；红=断开(点击重连)
+                    val red = phase == "disconnected"
+                    val amber = phase == "connecting"
+                    Box(
+                        Modifier
+                            .padding(start = 10.dp)
+                            .graphicsLayer { translationX = connShake.value * 6.dp.toPx() }
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable(enabled = !amber) {
+                                if (red) {
+                                    // 重试连接：热点检查 + 权限 + 完整连接流程
+                                    if (vm.isHotspotOn()) {
+                                        ensureLocalNetworkPermission {
+                                            scope.launch {
+                                                withContext(Dispatchers.IO) { vm.connectionFlow() }
+                                            }
+                                        }
+                                    } else {
+                                        Log.i("GPhoto2", "热点未开启，弹窗提示")
+                                        hotspotHint = true
+                                    }
+                                } else toggleConnDetail()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        WifiIcon(
+                            when {
+                                red -> if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
+                                amber -> if (vm.darkModeOn) Color(0xFFFFD54F) else Color(0xFF8D6E00)
+                                vm.darkModeOn -> Color(0xFF4DB6AC)
+                                else -> Color(0xFF00695C)
+                            }
+                        )
+                    }
                     Spacer(Modifier.weight(1f))
                     // 下载队列按钮（原齿轮位）：有活跃任务时显示数量角标
                     IconButton(onClick = { showDownloads = true }) {
@@ -343,31 +413,42 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                // 连接状态条：未连接=点击就地连接；连接中=分步进度；已连接=点击显示详情
-                val phase = connPhase.value
-                Surface(
+                // 连接详情浮层：点击 Wi-Fi 图标后显示 3 秒（修复此前 showConnDetail 无渲染方的问题）
+                if (showConnDetail.value && phase == "connected") {
+                    val (cm, cs) = if (connDetail.value.isNotEmpty()) vm.splitInfo(connDetail.value)
+                    else ("Nikon" to "?")
+                    Surface(
+                        Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium,
+                        color = if (vm.darkModeOn) Color(0xFF10312D) else Color(0xFFE0F2F1)
+                    ) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Text(
+                                "已连接：$cm ($cs)",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                            )
+                            Text(
+                                "IP：${connectedIp.value}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                // 连接状态条：冷启动未连接=点击就地连接；连接中=分步进度；已连接/断开重连=收起为标题栏图标
+                val showConnBar = phase == "connecting" ||
+                    (phase == "disconnected" && !vm.everConnected)
+                if (showConnBar) Surface(
                     Modifier.fillMaxWidth().clickable(enabled = phase != "connecting") {
-                        when (phase) {
-                            "disconnected" -> {
-                                if (vm.isHotspotOn()) {
-                                    ensureLocalNetworkPermission {
-                                        scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
-                                    }
-                                } else {
-                                    Log.i("GPhoto2", "热点未开启，弹窗提示")
-                                    hotspotHint = true
+                        if (phase == "disconnected") {
+                            if (vm.isHotspotOn()) {
+                                ensureLocalNetworkPermission {
+                                    scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
                                 }
-                            }
-                            "connected" -> {
-                                showConnDetail.value = !showConnDetail.value
-                                if (showConnDetail.value) {
-                                    scope.launch {
-                                        withContext(Dispatchers.IO) {
-                                            Thread.sleep(3000)
-                                            showConnDetail.value = false
-                                        }
-                                    }
-                                }
+                            } else {
+                                Log.i("GPhoto2", "热点未开启，弹窗提示")
+                                hotspotHint = true
                             }
                         }
                     },
@@ -1419,6 +1500,32 @@ class MainActivity : ComponentActivity() {
                 close()
             }
             drawPath(p, color)
+        }
+    }
+
+    /** Wi-Fi 形状（三条弧 + 圆点），用于连接状态指示（同漏斗图标的自绘风格） */
+    @Composable
+    private fun WifiIcon(color: Color, modifier: Modifier = Modifier) {
+        Canvas(modifier.size(20.dp)) {
+            val w = size.width
+            val h = size.height
+            val stroke = w * 0.14f
+            val cx = w / 2f
+            val cy = h * 0.80f
+            val style = Stroke(width = stroke, cap = StrokeCap.Round)
+            // 三条弧：由内到外，开口向上
+            listOf(0.18f, 0.34f, 0.50f).forEach { r ->
+                drawArc(
+                    color = color,
+                    startAngle = -135f,
+                    sweepAngle = 90f,
+                    useCenter = false,
+                    topLeft = Offset(cx - w * r, cy - h * r),
+                    size = Size(w * r * 2f, h * r * 2f),
+                    style = style
+                )
+            }
+            drawCircle(color, radius = w * 0.09f, center = Offset(cx, cy))
         }
     }
 

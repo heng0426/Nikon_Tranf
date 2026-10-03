@@ -392,6 +392,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("set_skip_downloaded", v).apply()
     }
 
+    /* ---------- 连接状态机：本会话是否连接成功过（决定断开时用红图标还是状态条）---------- */
+    var everConnected: Boolean by mutableStateOf(false)
+
     /* ---------- 外观：深色模式（默认关 = 浅色）---------- */
     var darkModeOn: Boolean by mutableStateOf(prefs.getBoolean("set_dark_mode", false))
 
@@ -607,6 +610,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         uiLog = listFiles()
         connText.value = "$model ($serial) · $ip"
         connPhase.value = "connected"
+        everConnected = true
         return true
     }
 
