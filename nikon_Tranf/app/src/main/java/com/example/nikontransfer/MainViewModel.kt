@@ -515,7 +515,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /* ---------- 连接流程 ---------- */
 
-    /** 连接总流程（IO 线程）：上次 IP 探测 → 网段扫描 → 命中即连。
+    /** 当前所连 Wi-Fi 的网关 IP（手机连相机热点时 = 相机自身）；无 Wi-Fi 或无网关返回 null */
+    private fun wifiGateway(): String? {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        for (net in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(net) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            val lp = cm.getLinkProperties(net) ?: continue
+            for (r in lp.routes) {
+                if (r.isDefaultRoute) {
+                    val g = r.gateway ?: continue
+                    val a = g.address
+                    if (a.size == 4) {
+                        return "${a[0].toInt() and 0xFF}.${a[1].toInt() and 0xFF}." +
+                            "${a[2].toInt() and 0xFF}.${a[3].toInt() and 0xFF}"
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    /** 连接总流程（IO 线程）：热点 IP 优先 → 上次 IP 探测 → 网段扫描（热点网段优先）→ 命中即连。
      *  多台命中时填充 scanResults 并返回 false（设置页选择）。 */
     fun connectionFlow(): Boolean {
         if (connecting || connected) return false
@@ -523,6 +544,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connPhase.value = "connecting"
         try {
             GPhoto2Bridge.setup(ctx)
+            // ① 优先：热点 IP——手机连相机热点时，Wi-Fi 网关即相机自身，一次探测即可
+            val gw = wifiGateway()
+            if (gw != null) {
+                connText.value = "探测热点网关 $gw …"
+                val info = synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(gw) }
+                if (info != null) return finishConnect(gw, info)
+                Log.i("GPhoto2", "热点网关 $gw 非相机，继续常规检测")
+            }
+            // ② 上次相机 IP
             val lastIp = prefs.getString("camera_ip", null)
             if (lastIp != null) {
                 connText.value = "探测上次相机 $lastIp …"
@@ -530,7 +560,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (info != null) return finishConnect(lastIp, info)
                 Log.i("GPhoto2", "上次 IP $lastIp 不可达，转为网段扫描")
             }
-            val subnets = wifiSubnets()
+            // ③ 网段扫描：热点网段（AOSP 默认 192.168.43.x）优先
+            val subnets = wifiSubnets().toMutableList()
+            if (!subnets.contains("192.168.43")) subnets.add(0, "192.168.43")
+            else { subnets.remove("192.168.43"); subnets.add(0, "192.168.43") }
             if (subnets.isEmpty()) {
                 connText.value = "未发现可用 Wi-Fi 子网"
                 connPhase.value = "disconnected"
