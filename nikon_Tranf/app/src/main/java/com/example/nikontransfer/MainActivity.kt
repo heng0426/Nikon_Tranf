@@ -15,8 +15,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -131,7 +134,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.nikontransfer.ui.theme.NikonTransferTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -313,15 +318,15 @@ class MainActivity : ComponentActivity() {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 val phase = connPhase.value
-                // 连接详情切换：显示 3 秒后自动收起（标题栏图标与旧状态条共用）
+                // 连接详情切换：显示 3 秒后自动收起（重复点击取消旧计时，避免卡片被旧计时器提前收起）
+                var detailHideJob by remember { mutableStateOf<Job?>(null) }
                 val toggleConnDetail = {
+                    detailHideJob?.cancel()
                     showConnDetail.value = !showConnDetail.value
                     if (showConnDetail.value) {
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                Thread.sleep(3000)
-                                showConnDetail.value = false
-                            }
+                        detailHideJob = scope.launch {
+                            delay(3000)
+                            showConnDetail.value = false
                         }
                     }
                 }
@@ -392,33 +397,53 @@ class MainActivity : ComponentActivity() {
                             },
                         contentAlignment = Alignment.Center
                     ) {
-                        WifiIcon(
+                        val iconColor by animateColorAsState(
                             when {
                                 red -> if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
                                 amber -> if (vm.darkModeOn) Color(0xFFFFD54F) else Color(0xFF8D6E00)
                                 vm.darkModeOn -> Color(0xFF4DB6AC)
                                 else -> Color(0xFF00695C)
-                            }
+                            },
+                            animationSpec = tween(200),
+                            label = "connIconColor"
                         )
+                        WifiIcon(iconColor)
                     }
                     Spacer(Modifier.weight(1f))
-                    // 下载队列按钮（原齿轮位）：有活跃任务时显示数量角标
-                    IconButton(onClick = { showDownloads = true }) {
+                    // 下载队列按钮（筛选/连接同款圆角外框）：下载图标 + 活跃任务数量角标
+                    Box(
+                        Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable { showDownloads = true },
+                        contentAlignment = Alignment.Center
+                    ) {
                         BadgedBox(badge = {
                             if (vm.activeDownloadCount > 0) {
                                 Badge { Text("${vm.activeDownloadCount}") }
                             }
                         }) {
-                            Icon(Icons.Filled.List, contentDescription = "下载队列")
+                            DownloadIcon(
+                                if (vm.activeDownloadCount > 0)
+                                    if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
-                // 连接详情浮层：点击 Wi-Fi 图标后显示 3 秒（修复此前 showConnDetail 无渲染方的问题）
-                if (showConnDetail.value && phase == "connected") {
+                // 详情浮层 + 状态条收纳进内层 Column（无 spacedBy：卡片移除时不会带走间距导致下方跳动）
+                Column {
+                // 连接详情浮层：点击 Wi-Fi 图标后显示 3 秒（展开+淡入 / 收起+淡出）
+                AnimatedVisibility(
+                    visible = showConnDetail.value && phase == "connected",
+                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(220)),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(tween(180))
+                ) {
                     val (cm, cs) = if (connDetail.value.isNotEmpty()) vm.splitInfo(connDetail.value)
                     else ("Nikon" to "?")
                     Surface(
-                        Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth().padding(bottom = 8.dp),
                         shape = MaterialTheme.shapes.medium,
                         color = if (vm.darkModeOn) Color(0xFF10312D) else Color(0xFFE0F2F1)
                     ) {
@@ -439,7 +464,12 @@ class MainActivity : ComponentActivity() {
                 // 连接状态条：冷启动未连接=点击就地连接；连接中=分步进度；已连接/断开重连=收起为标题栏图标
                 val showConnBar = phase == "connecting" ||
                     (phase == "disconnected" && !vm.everConnected)
-                if (showConnBar) Surface(
+                AnimatedVisibility(
+                    visible = showConnBar,
+                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(250)),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(tween(200))
+                ) {
+                Surface(
                     Modifier.fillMaxWidth().clickable(enabled = phase != "connecting") {
                         if (phase == "disconnected") {
                             if (vm.isHotspotOn()) {
@@ -469,6 +499,8 @@ class MainActivity : ComponentActivity() {
                             else -> if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
                         }
                     )
+                }
+                }
                 }
                 Text(uiLog, style = MaterialTheme.typography.bodySmall)
                 if (connPhase.value != "connected" && photoRows.isEmpty()) {
@@ -1526,6 +1558,40 @@ class MainActivity : ComponentActivity() {
                 )
             }
             drawCircle(color, radius = w * 0.09f, center = Offset(cx, cy))
+        }
+    }
+
+    /** 下载形状（向下箭头 + 底部托盘），用于下载队列指示（同自绘风格） */
+    @Composable
+    private fun DownloadIcon(color: Color, modifier: Modifier = Modifier) {
+        Canvas(modifier.size(20.dp)) {
+            val w = size.width
+            val h = size.height
+            val stroke = w * 0.13f
+            // 箭杆
+            drawLine(
+                color,
+                start = Offset(w * 0.5f, h * 0.12f),
+                end = Offset(w * 0.5f, h * 0.55f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
+            )
+            // 箭头（实心三角）
+            val arrow = Path().apply {
+                moveTo(w * 0.26f, h * 0.48f)
+                lineTo(w * 0.74f, h * 0.48f)
+                lineTo(w * 0.5f, h * 0.74f)
+                close()
+            }
+            drawPath(arrow, color)
+            // 托盘
+            drawLine(
+                color,
+                start = Offset(w * 0.18f, h * 0.88f),
+                end = Offset(w * 0.82f, h * 0.88f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
+            )
         }
     }
 
