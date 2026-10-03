@@ -314,7 +314,7 @@ class MainActivity : ComponentActivity() {
                         )
                     )
                     .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
-                    .padding(top = 36.dp),
+                    .padding(top = 40.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 val phase = connPhase.value
@@ -1999,142 +1999,281 @@ class MainActivity : ComponentActivity() {
             Column(
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             ) {
-            Text("连接", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            val (cm, cs) = if (connDetail.value.isNotEmpty()) vm.splitInfo(connDetail.value) else ("Nikon" to "?")
-            Text(
-                if (connPhase.value == "connected") "已连接：$cm ($cs) · ${connectedIp.value}" else "未连接",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (connPhase.value == "connected")
-                    if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
-                else if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
-            )
-            Button(
-                onClick = {
-                    ensureLocalNetworkPermission {
-                        scope.launch {
-                            withContext(Dispatchers.IO) { vm.scanForCameras() }
-                        }
-                    }
-                },
-                enabled = !scanning.value && !connecting
-            ) { Text(if (scanning.value) scanText.value else "扫描相机") }
-            for ((ip, info) in scanResults) {
-                val (model, serial) = vm.splitInfo(info)
+            SettingsSection(title = "连接", icon = { SectionIcon("连接") }) {
+                val (cm, cs) = if (connDetail.value.isNotEmpty()) vm.splitInfo(connDetail.value) else ("Nikon" to "?")
                 Row(
-                    Modifier.fillMaxWidth()
-                        .clickable(enabled = !connecting) {
-                            ensureLocalNetworkPermission {
-                                scope.launch {
-                                    val ok = withContext(Dispatchers.IO) { vm.connectToCamera(ip, info) }
-                                    if (ok) {
-                                        kotlinx.coroutines.delay(800)   // 显示 ✓ 已连接，随后自动返回主界面
-                                        onBack()
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val statusColor = when (connPhase.value) {
+                        "connected" -> if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                        "connecting" -> if (vm.darkModeOn) Color(0xFFFFD54F) else Color(0xFF8D6E00)
+                        else -> if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
+                    }
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(statusColor))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        if (connPhase.value == "connected") "已连接：$cm ($cs) · ${connectedIp.value}"
+                        else if (connPhase.value == "connecting") "正在连接相机…"
+                        else "未连接，点击下方扫描相机",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = statusColor
+                    )
+                }
+                Button(
+                    onClick = {
+                        ensureLocalNetworkPermission {
+                            scope.launch {
+                                withContext(Dispatchers.IO) { vm.scanForCameras() }
+                            }
+                        }
+                    },
+                    enabled = !scanning.value && !connecting,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)
+                ) { Text(if (scanning.value) scanText.value else "扫描相机") }
+                for ((ip, info) in scanResults) {
+                    val (model, serial) = vm.splitInfo(info)
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable(enabled = !connecting) {
+                                ensureLocalNetworkPermission {
+                                    scope.launch {
+                                        val ok = withContext(Dispatchers.IO) { vm.connectToCamera(ip, info) }
+                                        if (ok) {
+                                            kotlinx.coroutines.delay(800)   // 显示 ✓ 已连接，随后自动返回主界面
+                                            onBack()
+                                        }
                                     }
                                 }
                             }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("$model ($serial)", style = MaterialTheme.typography.bodyLarge)
+                            Text(ip, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        .padding(vertical = 6.dp),
+                        if (connected && ip == connectedIp.value)
+                            Text("已连接 ✓", color = Color(0xFF00695C), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                SettingsDivider()
+                SettingSwitch(
+                    title = "打开 App 自动连接相机",
+                    subtitle = "启动后若手机热点已开启，自动扫描并连接相机（热点未开则跳过）",
+                    checked = autoConnect,
+                    onChange = {
+                        autoConnect = it
+                        prefs.edit().putBoolean("set_auto_connect", it).apply()
+                    }
+                )
+            }
+            SettingsSection(title = "传输", icon = { SectionIcon("传输") }) {
+                SettingSwitch(
+                    title = "合并 RAW+JPG 展示",
+                    subtitle = "同一时间拍摄的 JPG 与 NEF 合并为一格，预览页/批量下载可分别选格式",
+                    checked = vm.mergePairs.value,
+                    onChange = { vm.setMergePairs(it) }
+                )
+                SettingsDivider()
+                SettingSwitch(
+                    title = "下载时跳过已下载",
+                    subtitle = "批量下载所选时自动排除已下载的文件（预览页重新下载不受影响）",
+                    checked = vm.skipDownloadedOn,
+                    onChange = { vm.setSkipDownloaded(it) }
+                )
+                SettingsDivider()
+                SettingSwitch(
+                    title = "连接后自动加载预览",
+                    subtitle = "关闭后只列文件名，节省流量与时间",
+                    checked = autoPreview,
+                    onChange = {
+                        autoPreview = it
+                        prefs.edit().putBoolean("set_auto_preview", it).apply()
+                    }
+                )
+                SettingsDivider()
+                SettingSwitch(
+                    title = "高清预览",
+                    subtitle = "预览时自动加载相机内嵌高清图（每张约 0.7~1MB 流量）",
+                    checked = vm.hiresOn,
+                    onChange = { vm.setHiresPreview(it) }
+                )
+                SettingsDivider()
+                SettingSwitch(
+                    title = "传输时保持屏幕常亮",
+                    subtitle = "大批量下载时防止锁屏中断",
+                    checked = keepOn,
+                    onChange = {
+                        keepOn = it
+                        prefs.edit().putBoolean("set_keep_on", it).apply()
+                        onKeepScreenOnChanged(it)
+                    }
+                )
+            }
+            SettingsSection(title = "外观", icon = { SectionIcon("外观") }) {
+                SettingSwitch(
+                    title = "深色模式",
+                    subtitle = "界面切换为深色配色（默认浅色，开关即时生效）",
+                    checked = vm.darkModeOn,
+                    onChange = { vm.setDarkMode(it) }
+                )
+            }
+            SettingsSection(title = "存储", icon = { SectionIcon("存储") }) {
+                SettingSwitch(
+                    title = "按拍摄日期文件夹保存",
+                    subtitle = "JPG 与 NEF 存入同一拍摄日期文件夹（如 2026-10-01），取自相机时间",
+                    checked = vm.dateFolderOn.value,
+                    onChange = { vm.setDateFolder(it) }
+                )
+                SettingsDivider()
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("$model ($serial)", style = MaterialTheme.typography.bodyLarge)
-                        Text(ip, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("存储目录", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            vm.dirDisplay.value,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                    if (connected && ip == connectedIp.value)
-                        Text("已连接 ✓", color = Color(0xFF00695C), style = MaterialTheme.typography.labelSmall)
+                    TextButton(onClick = onPickDir) { Text("更改目录") }
+                    if (vm.customDirUri.value != null) {
+                        TextButton(onClick = { vm.setCustomDir(null) }) { Text("恢复默认") }
+                    }
                 }
             }
-            SettingSwitch(
-                title = "打开 App 自动连接相机",
-                subtitle = "启动后若手机热点已开启，自动扫描并连接相机（热点未开则跳过）",
-                checked = autoConnect,
-                onChange = {
-                    autoConnect = it
-                    prefs.edit().putBoolean("set_auto_connect", it).apply()
-                }
-            )
-            Spacer(Modifier.height(16.dp))
-            Text("传输", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            SettingSwitch(
-                title = "合并 RAW+JPG 展示",
-                subtitle = "同一时间拍摄的 JPG 与 NEF 合并为一格，预览页/批量下载可分别选格式",
-                checked = vm.mergePairs.value,
-                onChange = { vm.setMergePairs(it) }
-            )
-            SettingSwitch(
-                title = "下载时跳过已下载",
-                subtitle = "批量下载所选时自动排除已下载的文件（预览页重新下载不受影响）",
-                checked = vm.skipDownloadedOn,
-                onChange = { vm.setSkipDownloaded(it) }
-            )
-            SettingSwitch(
-                title = "连接后自动加载预览",
-                subtitle = "关闭后只列文件名，节省流量与时间",
-                checked = autoPreview,
-                onChange = {
-                    autoPreview = it
-                    prefs.edit().putBoolean("set_auto_preview", it).apply()
-                }
-            )
-            SettingSwitch(
-                title = "高清预览",
-                subtitle = "预览时自动加载相机内嵌高清图（每张约 0.7~1MB 流量）",
-                checked = vm.hiresOn,
-                onChange = { vm.setHiresPreview(it) }
-            )
-            SettingSwitch(
-                title = "传输时保持屏幕常亮",
-                subtitle = "大批量下载时防止锁屏中断",
-                checked = keepOn,
-                onChange = {
-                    keepOn = it
-                    prefs.edit().putBoolean("set_keep_on", it).apply()
-                    onKeepScreenOnChanged(it)
-                }
-            )
-            Spacer(Modifier.height(16.dp))
-            Text("存储", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            SettingSwitch(
-                title = "按拍摄日期文件夹保存",
-                subtitle = "JPG 与 NEF 存入同一拍摄日期文件夹（如 2026-10-01），取自相机时间",
-                checked = vm.dateFolderOn.value,
-                onChange = { vm.setDateFolder(it) }
-            )
+            SettingsSection(title = "关于", icon = { SectionIcon("关于") }) {
+                Text(
+                    "尼康 Z 系列 Wi-Fi 传图 · 配对模式原生协议\n" +
+                        "协议：PTP/IP + Nikon 私有指令（0x941c/0x9421/0x9431/0x9434/0x952b/0x935a）\n" +
+                        "注意：配对模式下相机不提供原始文件名，列表名称由拍摄时间+句柄生成",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                )
+            }
+            }
+        }
+    }
+
+    /** 设置分组：组标题（自绘小图标 + 文字）在外，内容包进圆角卡片 */
+    @Composable
+    private fun SettingsSection(
+        title: String,
+        icon: @Composable () -> Unit,
+        content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
+    ) {
+        Column(Modifier.fillMaxWidth()) {
             Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("存储目录", style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        vm.dirDisplay.value,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                icon()
+                Spacer(Modifier.width(8.dp))
+                Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            }
+            Surface(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Column(content = content)
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+    }
+
+    /** 卡片内行分隔线（左右内缩） */
+    @Composable
+    private fun SettingsDivider() {
+        HorizontalDivider(
+            thickness = 0.8.dp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f),
+            modifier = Modifier.padding(horizontal = 14.dp)
+        )
+    }
+
+    /** 分组小图标（16dp 自绘，与主界面漏斗/WiFi/下载同风格） */
+    @Composable
+    private fun SectionIcon(kind: String) {
+        val color = MaterialTheme.colorScheme.primary
+        val surface = MaterialTheme.colorScheme.surface
+        Canvas(Modifier.size(16.dp)) {
+            val w = size.width
+            val h = size.height
+            when (kind) {
+                "连接" -> {
+                    val style = Stroke(width = w * 0.12f, cap = StrokeCap.Round)
+                    val cx = w / 2f
+                    val cy = h * 0.78f
+                    listOf(0.2f, 0.38f).forEach { r ->
+                        drawArc(
+                            color,
+                            -135f, 90f, false,
+                            topLeft = Offset(cx - w * r, cy - h * r),
+                            size = Size(w * r * 2f, h * r * 2f),
+                            style = style
+                        )
+                    }
+                    drawCircle(color, radius = w * 0.08f, center = Offset(cx, cy))
+                }
+                "传输" -> {
+                    val style = Stroke(width = w * 0.13f, cap = StrokeCap.Round)
+                    // 右向箭头（上）
+                    drawLine(color, Offset(w * 0.08f, h * 0.28f), Offset(w * 0.9f, h * 0.28f), style.width, cap = StrokeCap.Round)
+                    val right = Path().apply {
+                        moveTo(w * 0.6f, h * 0.1f)
+                        lineTo(w * 0.92f, h * 0.28f)
+                        lineTo(w * 0.6f, h * 0.46f)
+                        close()
+                    }
+                    drawPath(right, color)
+                    // 左向箭头（下）
+                    drawLine(color, Offset(w * 0.92f, h * 0.72f), Offset(w * 0.08f, h * 0.72f), style.width, cap = StrokeCap.Round)
+                    val left = Path().apply {
+                        moveTo(w * 0.4f, h * 0.54f)
+                        lineTo(w * 0.08f, h * 0.72f)
+                        lineTo(w * 0.4f, h * 0.9f)
+                        close()
+                    }
+                    drawPath(left, color)
+                }
+                "外观" -> {
+                    // 月牙：主圆 + 表面色圆裁出月牙
+                    drawCircle(color, radius = w * 0.42f, center = Offset(w * 0.45f, h * 0.52f))
+                    drawCircle(surface, radius = w * 0.36f, center = Offset(w * 0.66f, h * 0.38f))
+                }
+                "存储" -> {
+                    val folder = Path().apply {
+                        moveTo(w * 0.06f, h * 0.2f)
+                        lineTo(w * 0.38f, h * 0.2f)
+                        lineTo(w * 0.46f, h * 0.32f)
+                        lineTo(w * 0.94f, h * 0.32f)
+                        lineTo(w * 0.94f, h * 0.8f)
+                        lineTo(w * 0.06f, h * 0.8f)
+                        close()
+                    }
+                    drawPath(folder, color)
+                }
+                "关于" -> {
+                    drawCircle(
+                        color,
+                        radius = w * 0.44f,
+                        center = Offset(w / 2f, h / 2f),
+                        style = Stroke(width = w * 0.1f, cap = StrokeCap.Round)
+                    )
+                    drawCircle(color, radius = w * 0.06f, center = Offset(w / 2f, h * 0.3f))
+                    drawLine(
+                        color,
+                        start = Offset(w / 2f, h * 0.44f),
+                        end = Offset(w / 2f, h * 0.7f),
+                        strokeWidth = w * 0.11f,
+                        cap = StrokeCap.Round
                     )
                 }
-                TextButton(onClick = onPickDir) { Text("更改目录") }
-                if (vm.customDirUri.value != null) {
-                    TextButton(onClick = { vm.setCustomDir(null) }) { Text("恢复默认") }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Text("外观", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            SettingSwitch(
-                title = "深色模式",
-                subtitle = "界面切换为深色配色（默认浅色，开关即时生效）",
-                checked = vm.darkModeOn,
-                onChange = { vm.setDarkMode(it) }
-            )
-            Spacer(Modifier.height(16.dp))
-            Text("关于", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "尼康 Z 系列 Wi-Fi 传图 · 配对模式原生协议\n" +
-                    "协议：PTP/IP + Nikon 私有指令（0x941c/0x9421/0x9431/0x9434/0x952b/0x935a）\n" +
-                    "注意：配对模式下相机不提供原始文件名，列表名称由拍摄时间+句柄生成",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
             }
         }
     }
@@ -2142,11 +2281,17 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun SettingSwitch(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
         Row(
-            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.bodyLarge)
+                // 开启 = 正常字色；关闭 = 灰字（快速扫出哪些功能在用）
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (checked) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(checked = checked, onCheckedChange = onChange)
