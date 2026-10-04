@@ -1,11 +1,15 @@
 package com.example.nikontransfer
 
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
 import android.net.ConnectivityManager
 import android.net.LinkAddress
 import android.net.NetworkCapabilities
@@ -78,6 +82,9 @@ fun humanSize(b: Long): String = when {
  *  ViewModel 跨重建存活 —— 前台服务维持的相机会话不会被 UI 重置丢掉。 */
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
+    private val ACTION_USB_PERMISSION = "com.example.nikontransfer.USB_PERMISSION"
+
+
     private val ctx: Context get() = getApplication()
     private val prefs get() = ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
 
@@ -94,6 +101,110 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val scanResults = mutableStateListOf<Pair<String, String>>()  // ip to "型号|序列号"
     val scanning = mutableStateOf(false)
     val scanText = mutableStateOf("")
+
+    /* ---------- USB 直连通道（PTP over bulk，照搬 Z传 路线）---------- */
+    @Volatile var usbSession: UsbPtpSession? = null  // 非空 = 当前走 USB
+    private val usbPermissionPending = mutableStateOf(false)
+    private val usbManager get() = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
+
+    private val usbReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            val dev: UsbDevice? = i.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+            when (i.action) {
+                UsbManager.ACTION_USB_DEVICE_ATTACHED ->
+                    if (dev?.vendorId == UsbPtpSession.VENDOR_NIKON) onUsbAttached(dev)
+                UsbManager.ACTION_USB_DEVICE_DETACHED ->
+                    if (dev?.vendorId == UsbPtpSession.VENDOR_NIKON) onUsbDetached()
+                ACTION_USB_PERMISSION -> {
+                    usbPermissionPending.value = false
+                    if (i.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && dev != null) {
+                        onUsbAttached(dev)
+                    } else {
+                        connText.value = "USB 权限被拒 · 插拔数据线重试"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun registerUsbReceiver() {
+        val f = IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED).apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            addAction(ACTION_USB_PERMISSION)
+        }
+        // ATTACHED/DETACHED 为系统广播、权限回执发自本 app —— NOT_EXPORTED 即可（13+ 强制）
+        ctx.registerReceiver(usbReceiver, f, Context.RECEIVER_NOT_EXPORTED)
+    }
+
+    // receiver 字段声明之后才能注册（init 块按源码顺序执行，提前注册会拿到未初始化的 receiver → NPE）
+    init { registerUsbReceiver() }
+
+    private fun onUsbAttached(dev: UsbDevice) {
+        if (connecting) return
+        if (usbManager.hasPermission(dev)) {
+            Thread { tryConnectUsbCore(dev, auto = true) }.start()
+        } else {
+            usbPermissionPending.value = true
+            val pi = android.app.PendingIntent.getBroadcast(
+                ctx, 0,
+                Intent(ACTION_USB_PERMISSION).setPackage(ctx.packageName),
+                android.app.PendingIntent.FLAG_MUTABLE
+            )
+            connText.value = "USB 相机已插入 · 请授权"
+            usbManager.requestPermission(dev, pi)
+        }
+    }
+
+    private fun onUsbDetached() {
+        if (usbSession == null) return
+        synchronized(camMutex) { usbSession?.close() }
+        usbSession = null
+        connected = false
+        connPhase.value = "disconnected"
+        connText.value = "USB 已拔出 · 正在回退 Wi-Fi …"
+        // 拔线自愈：自动发起现有 Wi-Fi 连接流程
+        Thread { connectionFlow() }.start()
+    }
+
+    /** USB 连接核心：成功返回 true（connPhase/connText/listFiles 全部就位） */
+    private fun tryConnectUsbCore(dev: UsbDevice, auto: Boolean): Boolean {
+        if (connecting) return false
+        // Wi-Fi 已连接时先干净断开（USB 优先切换）
+        if (connected && usbSession == null) {
+            stopEventPolling()
+            stopKeepAlive()
+            synchronized(camMutex) { GPhoto2Bridge.nativeTransferClose() }
+            Thread.sleep(1500)
+            connected = false
+        }
+        connecting = true
+        connPhase.value = "connecting"
+        try {
+            connText.value = "USB 直连相机…"
+            val session = UsbPtpSession(usbManager, dev)
+            synchronized(camMutex) { session.openSession() }
+            usbSession = session
+            connected = true
+            connPhase.value = "connected"
+            connDetail.value = session.modelInfo
+            connectedIp.value = ""
+            connText.value = "枚举照片…"
+            uiLog = listFiles()
+            val model = session.modelInfo.split("|").first()
+            connText.value = "USB 直连 · $model"
+            Log.i("UsbPtp", "USB 直连建立: ${session.modelInfo} (auto=$auto)")
+            return true
+        } catch (t: Throwable) {
+            Log.w("UsbPtp", "USB 连接失败: $t")
+            usbSession = null
+            connected = false
+            connPhase.value = "disconnected"
+            connText.value = "USB 连接失败: ${t.message}"
+            return false
+        } finally {
+            connecting = false
+        }
+    }
 
     /* ---------- 相册 / 下载 / 预览 ---------- */
     val photoRows = mutableStateListOf<PhotoRow>()
@@ -544,6 +655,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  多台命中时填充 scanResults 并返回 false（设置页选择）。 */
     fun connectionFlow(): Boolean {
         if (connecting || connected) return false
+        // ⓪ USB 直连优先：插着已授权的尼康相机 → 直接走 USB，跳过整个 Wi-Fi 流程
+        UsbPtpSession.findCamera(usbManager)?.let { dev ->
+            if (UsbPtpSession.hasPermission(usbManager, dev) && tryConnectUsbCore(dev, auto = false)) return true
+        }
         connecting = true
         connPhase.value = "connecting"
         try {
@@ -620,6 +735,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val (model, serial) = splitInfo(info)
         connText.value = "连接 $model ($serial) …"
         // 已连接则先干净断开旧会话（相机需要时间复位）
+        if (usbSession != null) {          // USB 在连时改走 Wi-Fi：先关 USB 会话
+            synchronized(camMutex) { usbSession?.close() }
+            usbSession = null
+            connected = false
+        }
         if (connected) {
             stopEventPolling()
             synchronized(camMutex) { GPhoto2Bridge.nativeTransferClose() }
@@ -702,11 +822,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /* ---------- 列目录 / 下载 / 预览 ---------- */
 
+    /** 通道分发：对象大小（USB=GetObjectInfo 缓存；Wi-Fi=0x9421 native） */
+    private fun sizeOf(handle: Int): Long = synchronized(camMutex) {
+        usbSession?.objectSize(handle) ?: GPhoto2Bridge.nativeObjectSizeNative(handle)
+    }
+
+    /** 通道分发：偏移读（USB=GetPartialObject；Wi-Fi=native 偏移读） */
+    private fun readOff(handle: Int, off: Long, len: Int): ByteArray? = synchronized(camMutex) {
+        usbSession?.partialRead(handle, off, len)
+            ?: GPhoto2Bridge.nativePreviewNative(handle, off.toInt(), len)
+    }
+
     fun listFiles(): String = synchronized(camMutex) {
         if (!connected) return "未连接相机，请先连接成功后再列目录"
         // 配对模式原生列目录："句柄:YYYYMMDD-HHMMSS:类型|..."
-        val res = GPhoto2Bridge.nativeListNative()
-            ?: return "列目录失败（传输会话可能已断开，请重新连接）"
+        val failMsg = "列目录失败（传输会话可能已断开，请重新连接）"
+        val res: String = if (usbSession != null) {
+            val s = usbSession!!
+            val r = s.enumerate()
+            when {
+                r == null -> return "USB 枚举失败 · ${s.lastDiag}"
+                r.isEmpty() -> return "USB 枚举为空 · ${s.lastDiag}"
+                else -> r
+            }
+        } else {
+            GPhoto2Bridge.nativeListNative() ?: return failMsg
+        }
         val rows = res.split('|').filter { it.isNotBlank() }
         if (rows.isEmpty()) return "相机里没有待传输的照片"
         val parsed = rows.mapNotNull { row ->
@@ -988,7 +1129,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         item.status.value = QStatus.RUNNING
         item.cancelRequested = false
         item.got.value = 0
-        val total = GPhoto2Bridge.nativeObjectSizeNative(item.handle)
+        // USB 通道：优先偏移读分块（0x101B，带进度）；首块失败回退整对象一次取回
+        val usb = usbSession
+        if (usb != null) {
+            val total = sizeOf(item.handle)
+            if (total <= 0) { item.status.value = QStatus.FAILED; return }
+            item.total.value = total
+            val buf = ByteArray(total.toInt())
+            var got = 0L
+            var fallbackWhole = false
+            while (got < total) {
+                if (item.cancelRequested) { item.status.value = QStatus.CANCELED; return }
+                if (!connected) { item.status.value = QStatus.FAILED; return }
+                val want = minOf(0x100000L, total - got).toInt()   // 1MB 粒度（partialRead 内部按 partialLimit 自适应）
+                val chunk = readOff(item.handle, got, want)
+                if (chunk == null) { fallbackWhole = true; break }
+                val len = minOf(chunk.size.toLong(), total - got).toInt()
+                System.arraycopy(chunk, 0, buf, got.toInt(), len)
+                got += len
+                item.got.value = got
+            }
+            if (fallbackWhole) {
+                val whole = usb.getObject(item.handle)
+                if (whole == null) { item.status.value = QStatus.FAILED; return }
+                System.arraycopy(whole, 0, buf, 0, minOf(whole.size, buf.size))
+            }
+            if (savePhoto(item.name, item.type, buf, item.stamp)) {
+                item.status.value = QStatus.DONE
+                photoRows.firstOrNull { it.handle == item.handle }?.downloaded?.value = true
+                markDownloaded(item.name)
+            } else {
+                item.status.value = QStatus.FAILED
+            }
+            return
+        }
+        val total = sizeOf(item.handle)
         if (total <= 0) { item.status.value = QStatus.FAILED; return }
         item.total.value = total
         val buf = ByteArray(total.toInt())
@@ -1001,7 +1176,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         while (got < total) {
             if (item.cancelRequested) { item.status.value = QStatus.CANCELED; return }
             if (!connected) { item.status.value = QStatus.FAILED; return }
-            val chunk = GPhoto2Bridge.nativePreviewNative(item.handle, got.toInt(), 0x20000)
+            // 末块请求长度须精确到文件尾：尼康对 offset+len 超界的 GetPartialObject 直接报错
+            // （gphoto2 native 会自动截断，USB 侧必须自己做）
+            val want = minOf(0x20000L, total - got).toInt()
+            val chunk = readOff(item.handle, got, want)
             if (chunk == null) {
                 retries++
                 if (retries >= 3) { item.status.value = QStatus.FAILED; return }
@@ -1461,8 +1639,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     continue
                 }
                 var bmp: Bitmap? = null
-                val first = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(row.handle, 0, 2 * CH) }
-                if (first != null) {
+                val usb = usbSession
+                val first = if (usb != null) null else synchronized(camMutex) {
+                    GPhoto2Bridge.nativePreviewNative(row.handle, 0, 2 * CH)
+                }
+                if (usb != null) {
+                    // USB：无偏移读能力 → GetThumb 直接取相机内嵌缩略图
+                    val t = synchronized(camMutex) { usb.getThumb(row.handle) }
+                    if (t != null) {
+                        bmp = BitmapFactory.decodeByteArray(t, 0, t.size)?.let { trimBlackBars(it) }
+                        if (bmp == null) Log.w("UsbPtp", "thumb: ${row.name} 解码失败 ${t.size}B")
+                    } else {
+                        Log.w("UsbPtp", "thumb: ${row.name} GetThumb 失败")
+                    }
+                } else if (first != null) {
                     bmp = extractPreviewJpeg(first)
                     if (bmp == null) {
                         val range = tiffThumbRange(first)
@@ -1661,20 +1851,86 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         try {
             if (!connected) throw IllegalStateException("未连接")
             hiresProgress[h] = -1f
-            val fileSize = synchronized(camMutex) { GPhoto2Bridge.nativeObjectSizeNative(h) }
+            // ---------- USB 通道：优先偏移读（0x101B，与 Wi-Fi 管线同构）；失败回退整对象 ----------
+            val usb = usbSession
+            if (usb != null) {
+                try {
+                    val fileSize = sizeOf(h)
+                    val (range, exifSource) = when (task.kind) {
+                        HiresKind.JPG -> {
+                            val head = readOff(h, 0, 0x20000)
+                                ?: throw IllegalStateException("读 JPG 头失败")
+                            mpfLargestRange(head, fileSize)?.let { it to head }
+                                ?: throw IllegalStateException("MPF 无可用大图")
+                        }
+                        HiresKind.NEF -> {
+                            val head = readOff(h, 0, 0x20000)
+                                ?: throw IllegalStateException("读 NEF 头失败")
+                            val mid = readOff(h, 0x20000, 0x60000)
+                                ?: throw IllegalStateException("读 NEF 中段失败")
+                            val joined = ByteArray(head.size + mid.size).also {
+                                System.arraycopy(head, 0, it, 0, head.size)
+                                System.arraycopy(mid, 0, it, head.size, mid.size)
+                            }
+                            nefPreviewRange(head, mid, fileSize)?.let { it to joined }
+                                ?: throw IllegalStateException("TIFF 无嵌入预览")
+                        }
+                    }
+                    if (h !in hiresWanted) throw IllegalStateException("已翻页")
+                    val jpeg = readHiresChunks(h, range[0], range[1])
+                    val bmp = decodeHires(jpeg) ?: throw IllegalStateException("解码失败")
+                    hiresCache.put(h, bmp)
+                    hiresTick.value++
+                    hiresFailed.remove(h)
+                    parseExifParts(exifSource)?.let {
+                        exifLines[h] = it
+                        Log.i("UsbPtp", "exif: handle=$h ${it.joinToString(" · ")}")
+                    }
+                    Log.i("UsbPtp", "hires(0x101B偏移读): ${task.kind} $h ✓")
+                    return
+                } catch (t: Throwable) {
+                    Log.w("UsbPtp", "偏移读管线失败，回退整对象: $t")
+                    hiresProgress[h] = -1f
+                }
+                // 回退：整对象下载 + 内存切片（慢但可用）
+                val full = synchronized(camMutex) { usb.getObject(h) }
+                    ?: throw IllegalStateException("整对象读取失败")
+                if (h !in hiresWanted) throw IllegalStateException("已翻页")
+                val exifSource = full.copyOf(minOf(full.size, 0x80000))
+                val bmp = if (task.kind == HiresKind.JPG) {
+                    decodeHires(full) ?: throw IllegalStateException("JPEG 解码失败")
+                } else {
+                    val probeLen = minOf(full.size, 0x80000)
+                    val probe = full.copyOf(probeLen)
+                    val mid = if (probeLen > 0x20000) probe.copyOfRange(0x20000, probeLen) else ByteArray(0)
+                    val r = nefPreviewRange(probe.copyOf(minOf(probeLen, 0x20000)), mid, full.size.toLong())
+                        ?: throw IllegalStateException("NEF 无嵌入预览")
+                    val off = r[0].toInt(); val len = r[1].toInt()
+                    decodeHires(full.copyOfRange(off, (off + len).coerceAtMost(full.size)))
+                        ?: throw IllegalStateException("NEF 预览解码失败")
+                }
+                hiresCache.put(h, bmp)
+                hiresTick.value++
+                hiresFailed.remove(h)
+                parseExifParts(exifSource)?.let { exifLines[h] = it }
+                Log.i("UsbPtp", "hires(整对象): ${task.kind} $h ✓ (${full.size}B)")
+                return
+            }
+            // ---------- Wi-Fi 通道：偏移读（gphoto2 native 自动截断越界块） ----------
+            val fileSize = sizeOf(h)
             // EXIF 数据源：拍摄参数在主文件头部（大图/嵌入预览的 EXIF 只有尺寸）——
             // JPG=主 JPEG 头部（APP1 完整 EXIF）；NEF=TIFF 头部拼接（ExifInterface 支持 RAW）
             val (range, exifSource) = when (task.kind) {
                 HiresKind.JPG -> {
-                    val head = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(h, 0, 0x20000) }
+                    val head = readOff(h, 0, 0x20000)
                         ?: throw IllegalStateException("读 JPG 头失败")
                     mpfLargestRange(head, fileSize)?.let { it to head }
                         ?: throw IllegalStateException("MPF 无可用大图 (fileSize=$fileSize)")
                 }
                 HiresKind.NEF -> {
-                    val head = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(h, 0, 0x20000) }
+                    val head = readOff(h, 0, 0x20000)
                         ?: throw IllegalStateException("读 NEF 头失败")
-                    val mid = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(h, 0x20000, 0x60000) }
+                    val mid = readOff(h, 0x20000, 0x60000)
                         ?: throw IllegalStateException("读 NEF 中段失败")
                     val joined = ByteArray(head.size + mid.size).also {
                         System.arraycopy(head, 0, it, 0, head.size)
@@ -1717,9 +1973,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         while (done < len) {
             if (handle !in hiresWanted) throw IllegalStateException("已翻页")
             val n = minOf(cap.toLong(), len - done).toInt()
-            val b = synchronized(camMutex) {
-                GPhoto2Bridge.nativePreviewNative(handle, (off + done).toInt(), n)
-            } ?: throw IllegalStateException("读块失败 @${off + done}")
+            val b = readOff(handle, off + done, n)
+            ?: throw IllegalStateException("读块失败 @${off + done}")
             if (b.isEmpty()) throw IllegalStateException("读块为空 @${off + done}")
             System.arraycopy(b, 0, out, done.toInt(), minOf(n, b.size))
             done += b.size
@@ -1950,6 +2205,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 回前台体检：后台期间会话可能已被相机/系统掐掉 */
     fun resumeHealthCheck() {
         if (!connected || connecting) return
+        if (usbSession != null) return   // USB 会话健康由 IO 错误与拔线广播处理，无 Wi-Fi 心跳
         Thread {
             val ok = try {
                 synchronized(camMutex) { GPhoto2Bridge.nativeEventPollNative() == 0 }
@@ -2001,6 +2257,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun shutdown() {
         stopEventPolling()
         stopKeepAlive()
+        usbSession?.let { s -> synchronized(camMutex) { runCatching { s.close() } } }
+        usbSession = null
         GPhoto2Bridge.nativeTransferClose()
         if (ptpPath.isNotEmpty()) GPhoto2Bridge.nativeExit()
     }
