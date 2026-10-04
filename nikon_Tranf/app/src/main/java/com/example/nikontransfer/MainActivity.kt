@@ -1,12 +1,15 @@
 package com.example.nikontransfer
 
 import android.Manifest
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.SystemBarStyle
@@ -25,6 +28,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
@@ -42,9 +46,12 @@ import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -54,6 +61,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -67,6 +77,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -99,6 +110,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -109,6 +121,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -116,6 +129,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -127,16 +141,23 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.nikontransfer.ui.theme.NikonTransferTheme
 import kotlinx.coroutines.Dispatchers
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import my.nanihadesuka.compose.InternalLazyVerticalGridScrollbar
+import my.nanihadesuka.compose.LazyVerticalGridScrollbar
+import my.nanihadesuka.compose.ScrollbarSelectionMode
+import my.nanihadesuka.compose.ScrollbarSettings
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -304,9 +325,20 @@ class MainActivity : ComponentActivity() {
         val pairSelCount = vm.pairSelection.value.size
         val selCount = if (mergeOn) pairSelCount else photoRows.count { it.selected.value }
 
+        // 毛玻璃：预览打开时主界面内容实时模糊（API31+，低版本自动退化为半透明黑）
+        val previewing = (mergeOn && pairPreviewIndex >= 0) || (!mergeOn && previewIndex >= 0)
         Box(Modifier.fillMaxSize()) {
             Column(
                 Modifier.fillMaxSize()
+                    .graphicsLayer {
+                        if (previewing && Build.VERSION.SDK_INT >= 31) {
+                            renderEffect = android.graphics.RenderEffect
+                                .createBlurEffect(24f, 24f, android.graphics.Shader.TileMode.CLAMP)
+                                .asComposeRenderEffect()
+                        } else {
+                            renderEffect = null
+                        }
+                    }
                     // ★ 顶栏高度只改这里：top 的数字越大越往下，越小越往上，0 = 紧贴状态栏
                     .windowInsetsPadding(
                         WindowInsets.safeDrawing.only(
@@ -549,6 +581,21 @@ class MainActivity : ComponentActivity() {
                         TextButton(onClick = { vm.resetFilter() }) { Text("清除筛选") }
                     }
                 }
+                // 快速滚动条（LazyColumnScrollbar 库）：>50 张启用；滚动时自动显现。
+                // 拖动映射自管：库的映射假设每行等高，日期头/照片行高悬殊导致交界跳动——
+                // 这里禁用库手势（Disabled），另叠像素级 scrollBy 拖动层，增量滚动无跳变。
+                val sbSettings = ScrollbarSettings(
+                    selectionMode = ScrollbarSelectionMode.Disabled,
+                    thumbThickness = 9.dp,
+                    scrollbarPadding = 3.dp,
+                    thumbMinLength = 0.05f,
+                    thumbUnselectedColor = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C),
+                    thumbSelectedColor = if (vm.darkModeOn) Color(0xFF80CBC4) else Color(0xFF00897B),
+                    hideDelayMillis = 600
+                )
+                // 拖动滚动条期间强制常显：scrollBy 事件间隙 isScrollInProgress 抖动会导致渐隐
+                var sbDragging by remember { mutableStateOf(false) }
+                val sbActiveSettings = if (sbDragging) sbSettings.copy(alwaysShowScrollbar = true) else sbSettings
                 // 照片网格：按日期分节（节头占满一行），组内从新到旧；合并模式一格=一对
                 if (mergeOn) {
                     // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
@@ -590,9 +637,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                    Box(Modifier.fillMaxWidth().weight(1f)) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
-                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        modifier = Modifier.fillMaxSize(),
                         state = mergeGridState,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -627,6 +675,56 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                         }
+                    }
+                    if (pairs.size > 50) {
+                        // 显示层：库滚动条（拖块位置/动画/日期气泡），手势已禁用
+                        InternalLazyVerticalGridScrollbar(
+                            state = mergeGridState,
+                            modifier = Modifier.fillMaxSize(),
+                            settings = sbActiveSettings,
+                            indicatorContent = { idx, _ ->
+                                var acc = 0
+                                var d: String? = null
+                                for (sec in vm.pairSections) {
+                                    if (idx >= acc && idx <= acc + sec.rows.size) {
+                                        d = vm.dateLabel(sec.dateKey, sec.rows.size)
+                                        break
+                                    }
+                                    acc += 1 + sec.rows.size
+                                }
+                                if (d != null) DateBubble(d)
+                            }
+                        )
+                        // 拖动层：右缘窄条，像素级比例滚动（平滑，无交界跳动）
+                        Box(
+                            Modifier
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight()
+                                .width(24.dp)
+                                .pointerInput(mergeGridState) {
+                                    detectVerticalDragGestures(
+                                        onDragStart = { sbDragging = true },
+                                        onDragEnd = { sbDragging = false },
+                                        onDragCancel = { sbDragging = false },
+                                        onVerticalDrag = { change, dy ->
+                                            change.consume()
+                                            val info = mergeGridState.layoutInfo
+                                            val vis = info.visibleItemsInfo
+                                            if (vis.isNotEmpty()) {
+                                                val avg = vis.sumOf { it.size.height.toDouble() } / vis.size
+                                                val totalPx = avg * info.totalItemsCount / 3.0   // 3 列
+                                                if (totalPx > 0) {
+                                                    val scale = totalPx / size.height
+                                                    scope.launch {
+                                                        mergeGridState.scrollBy((dy * scale).toFloat())
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                        )
+                    }
                     }
                 } else {
                     // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
@@ -668,9 +766,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                    Box(Modifier.fillMaxWidth().weight(1f)) {
                     LazyVerticalGrid(
                     columns = GridCells.Fixed(3),
-                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    modifier = Modifier.fillMaxSize(),
                     state = fileGridState,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -706,6 +805,56 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                    if (visible.size > 50) {
+                        // 显示层：库滚动条（拖块位置/动画/日期气泡），手势已禁用
+                        InternalLazyVerticalGridScrollbar(
+                            state = fileGridState,
+                            modifier = Modifier.fillMaxSize(),
+                            settings = sbActiveSettings,
+                            indicatorContent = { idx, _ ->
+                                var acc = 0
+                                var d: String? = null
+                                for (sec in vm.visibleSections) {
+                                    if (idx >= acc && idx <= acc + sec.rows.size) {
+                                        d = vm.dateLabel(sec.dateKey, sec.rows.size)
+                                        break
+                                    }
+                                    acc += 1 + sec.rows.size
+                                }
+                                if (d != null) DateBubble(d)
+                            }
+                        )
+                        // 拖动层：右缘窄条，像素级比例滚动（平滑，无交界跳动）
+                        Box(
+                            Modifier
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight()
+                                .width(24.dp)
+                                .pointerInput(fileGridState) {
+                                    detectVerticalDragGestures(
+                                        onDragStart = { sbDragging = true },
+                                        onDragEnd = { sbDragging = false },
+                                        onDragCancel = { sbDragging = false },
+                                        onVerticalDrag = { change, dy ->
+                                            change.consume()
+                                            val info = fileGridState.layoutInfo
+                                            val vis = info.visibleItemsInfo
+                                            if (vis.isNotEmpty()) {
+                                                val avg = vis.sumOf { it.size.height.toDouble() } / vis.size
+                                                val totalPx = avg * info.totalItemsCount / 3.0   // 3 列
+                                                if (totalPx > 0) {
+                                                    val scale = totalPx / size.height
+                                                    scope.launch {
+                                                        fileGridState.scrollBy((dy * scale).toFloat())
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                        )
+                    }
+                    }
                 } // else: 文件模式网格结束
                 // 多选操作条：有选中才从底部弹出（全选 + 格式勾选(合并) + 下载所选）
                 AnimatedVisibility(
@@ -977,6 +1126,35 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 按文件名在 MediaStore 查找并用系统相册打开 */
+    private fun openInGallery(name: String, type: String) {
+        try {
+            val uri = MediaStore.Files.getContentUri("external_primary")
+            contentResolver.query(
+                uri,
+                arrayOf(MediaStore.MediaColumns._ID),
+                "${MediaStore.MediaColumns.DISPLAY_NAME}=?",
+                arrayOf(name),
+                null
+            )?.use { c ->
+                if (!c.moveToFirst()) {
+                    Toast.makeText(this, "本地文件未找到（可能已删除）", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                val viewUri = ContentUris.withAppendedId(uri, c.getLong(0))
+                val mime = if (type.equals("NEF", true)) "image/x-nikon-nef" else "image/jpeg"
+                startActivity(
+                    Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(viewUri, mime)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "无法打开：${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     /** 直达系统热点设置：先试 TetherSettings 页（多数机型可用），失败逐级退到系统面板 */
     private fun openHotspotSettings() {
         try {
@@ -1085,6 +1263,7 @@ class MainActivity : ComponentActivity() {
         label: String,
         enabled: Boolean = true,
         onDownload: () -> Unit,
+        onOpenInGallery: (() -> Unit)? = null,
         modifier: Modifier = Modifier
     ) {
         val st = qItem?.status?.value
@@ -1103,13 +1282,21 @@ class MainActivity : ComponentActivity() {
                 if (confirmRedownload) {
                     AlertDialog(
                         onDismissRequest = { confirmRedownload = false },
-                        title = { Text("重新下载") },
-                        text = { Text("当前图片已下载，是否重新下载？") },
+                        title = { Text("已下载") },
+                        text = { Text("当前图片已下载，可打开系统相册查看，或重新下载。") },
                         confirmButton = {
-                            TextButton(onClick = {
-                                confirmRedownload = false
-                                onDownload()
-                            }) { Text("重新下载") }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                if (onOpenInGallery != null) {
+                                    TextButton(onClick = {
+                                        confirmRedownload = false
+                                        onOpenInGallery.invoke()
+                                    }) { Text("打开相册") }
+                                }
+                                TextButton(onClick = {
+                                    confirmRedownload = false
+                                    onDownload()
+                                }) { Text("重新下载") }
+                            }
                         },
                         dismissButton = {
                             TextButton(onClick = { confirmRedownload = false }) { Text("取消") }
@@ -1300,17 +1487,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 预览缩放手势：1x 纯滑动不消费（翻页处理）；放大后/捏合时消费（归图片），松手 ≤1.2 吸附回 1x */
-    private fun Modifier.previewZoomGestures(zoom: PreviewZoomState): Modifier = this
+    /** 预览缩放手势：1x 纯滑动不消费（翻页处理）；放大后/捏合时消费（归图片），松手 ≤1.2 吸附回 1x。
+     *  单击回调用于沉浸模式切换（任何缩放状态均响应）。 */
+    private fun Modifier.previewZoomGestures(
+        zoom: PreviewZoomState,
+        onTap: () -> Unit = {}
+    ): Modifier = this
         .onSizeChanged { zoom.container = it }
         .pointerInput(zoom) {
             coroutineScope {
                 launch {
-                    detectTapGestures(onDoubleTap = { tapPoint ->
-                        launch {
-                            if (zoom.scale > 1.01f) zoom.settle() else zoom.zoomTo(2.5f, tapPoint)
+                    detectTapGestures(
+                        onTap = { onTap() },
+                        onDoubleTap = { tapPoint ->
+                            launch {
+                                if (zoom.scale > 1.01f) zoom.settle() else zoom.zoomTo(2.5f, tapPoint)
+                            }
                         }
-                    })
+                    )
                 }
                 launch {
                     awaitEachGesture {
@@ -1349,6 +1543,7 @@ class MainActivity : ComponentActivity() {
         }
 
     /** 合并模式全屏预览：JPG 大图 + 双格式下载按钮 + 加入选择 */
+    @OptIn(ExperimentalLayoutApi::class)
     @Composable
     private fun PairPager(
         initialIndex: Int,
@@ -1372,8 +1567,15 @@ class MainActivity : ComponentActivity() {
         DisposableEffect(Unit) {
             onDispose { onClose(pagerState.currentPage) }
         }
-        Surface(Modifier.fillMaxSize(), color = Color(0x99000000)) {
+        // 沉浸模式：单击图片切换，翻页保持状态
+        var immersive by remember { mutableStateOf(false) }
+        Surface(Modifier.fillMaxSize(), color = Color(0x66000000)) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                AnimatedVisibility(
+                    visible = !immersive,
+                    enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
+                    exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top)
+                ) {
                 // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
                 val topKey = rows.getOrNull(pagerState.currentPage)?.let { p -> (p.jpg ?: p.nef)?.handle }
                 val topProg = topKey?.let { vm.hiresProgress[it] }
@@ -1434,6 +1636,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                }
                 HorizontalPager(
                     state = pagerState,
                     modifier = Modifier.fillMaxWidth().weight(1f)
@@ -1444,7 +1647,7 @@ class MainActivity : ComponentActivity() {
                         Modifier
                             .fillMaxSize()
                             .onSizeChanged { zoom.container = it }
-                            .previewZoomGestures(zoom),
+                            .previewZoomGestures(zoom, onTap = { immersive = !immersive }),
                         contentAlignment = Alignment.Center
                     ) {
                         val bmp = (pair.jpg ?: pair.nef)?.handle?.let { vm.hiresBitmap(it) }
@@ -1480,7 +1683,12 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                // 底部信息 + 双格式下载
+                // 底部信息 + 双格式下载（沉浸模式隐藏）
+                AnimatedVisibility(
+                    visible = !immersive,
+                    enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
+                    exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom)
+                ) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     val pair = rows[pagerState.currentPage]
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1504,6 +1712,26 @@ class MainActivity : ComponentActivity() {
                             Text(marks, color = Color(0xFF4DB6AC), style = MaterialTheme.typography.labelSmall)
                         }
                     }
+                    // EXIF 参数胶囊（高清加载时解析；末项=镜头型号）
+                    vm.exifLines[(pair.jpg ?: pair.nef)?.handle]?.let { parts ->
+                        Spacer(Modifier.height(6.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            parts.forEach { p ->
+                                Text(
+                                    p,
+                                    Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color.White.copy(alpha = 0.12f))
+                                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                                    color = Color(0xFFDDDDDD),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                    }
                     // 高清加载失败提示（静默回退缩略图，翻回该页自动重试）
                     val hiKey = (pair.jpg ?: pair.nef)?.handle
                     if (vm.hiresOn && hiKey != null && vm.hiresFailed.containsKey(hiKey)) {
@@ -1524,6 +1752,9 @@ class MainActivity : ComponentActivity() {
                             },
                             label = "下载 JPG",
                             onDownload = { onDownloadJpg(pair) },
+                            onOpenInGallery = {
+                                pair.jpg?.let { p -> openInGallery(p.name, p.type) }
+                            },
                             modifier = Modifier.weight(1f)
                         )
                         if (pair.hasNef) DownloadStateSlot(
@@ -1533,9 +1764,13 @@ class MainActivity : ComponentActivity() {
                             },
                             label = "下载 NEF",
                             onDownload = { onDownloadNef(pair) },
+                            onOpenInGallery = {
+                                pair.nef?.let { n -> openInGallery(n.name, n.type) }
+                            },
                             modifier = Modifier.weight(1f)
                         )
                     }
+                }
                 }
             }
         }
@@ -1713,6 +1948,23 @@ class MainActivity : ComponentActivity() {
                 end = Offset(w * 0.82f, h * 0.88f),
                 strokeWidth = stroke,
                 cap = StrokeCap.Round
+            )
+        }
+    }
+
+    /** 快速滚动条拖动/滚动时的日期气泡（LazyColumnScrollbar 的 indicatorContent 回调渲染） */
+    @Composable
+    private fun DateBubble(text: String) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.97f),
+            shadowElevation = 4.dp
+        ) {
+            Text(
+                text,
+                Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
             )
         }
     }
@@ -1921,6 +2173,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 全屏预览：大图 + 横向滑动翻页 + 单张下载 + 加入选择 */
+    @OptIn(ExperimentalLayoutApi::class)
     @Composable
     private fun PreviewPager(
         initialIndex: Int,
@@ -1941,8 +2194,15 @@ class MainActivity : ComponentActivity() {
         DisposableEffect(Unit) {
             onDispose { onClose(pagerState.currentPage) }
         }
-        Surface(Modifier.fillMaxSize(), color = Color(0x99000000)) {
+        // 沉浸模式：单击图片切换，翻页保持状态
+        var immersive by remember { mutableStateOf(false) }
+        Surface(Modifier.fillMaxSize(), color = Color(0x66000000)) {
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                AnimatedVisibility(
+                    visible = !immersive,
+                    enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
+                    exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top)
+                ) {
                 // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
                 val topRow = rows.getOrNull(pagerState.currentPage)
                 val topProg = topRow?.let { vm.hiresProgress[it.handle] }
@@ -2003,6 +2263,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                }
                 HorizontalPager(
                     state = pagerState,
                     modifier = Modifier.fillMaxWidth().weight(1f)
@@ -2013,7 +2274,7 @@ class MainActivity : ComponentActivity() {
                         Modifier
                             .fillMaxSize()
                             .onSizeChanged { zoom.container = it }
-                            .previewZoomGestures(zoom),
+                            .previewZoomGestures(zoom, onTap = { immersive = !immersive }),
                         contentAlignment = Alignment.Center
                     ) {
                         val bmp = vm.hiresBitmap(row.handle) ?: row.preview.value
@@ -2048,7 +2309,12 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                // 底部信息 + 操作
+                // 底部信息 + 操作（沉浸模式隐藏）
+                AnimatedVisibility(
+                    visible = !immersive,
+                    enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
+                    exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom)
+                ) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
                     val row = rows[pagerState.currentPage]
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2074,6 +2340,26 @@ class MainActivity : ComponentActivity() {
                                 style = MaterialTheme.typography.labelSmall
                             )
                     }
+                    // EXIF 参数胶囊（高清加载时解析；末项=镜头型号）
+                    vm.exifLines[row.handle]?.let { parts ->
+                        Spacer(Modifier.height(6.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            parts.forEach { p ->
+                                Text(
+                                    p,
+                                    Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color.White.copy(alpha = 0.12f))
+                                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                                    color = Color(0xFFDDDDDD),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                    }
                     // 高清加载失败提示（静默回退缩略图，翻回该页自动重试）
                     if (vm.hiresOn && vm.hiresFailed.containsKey(row.handle)) {
                         Spacer(Modifier.height(4.dp))
@@ -2090,9 +2376,11 @@ class MainActivity : ComponentActivity() {
                             qItem = vm.downloadQueue.firstOrNull { it.handle == row.handle },
                             label = "下载此照片",
                             onDownload = { onDownload(row) },
+                            onOpenInGallery = { openInGallery(row.name, row.type) },
                             modifier = Modifier.weight(1f)
                         )
                     }
+                }
                 }
             }
         }
@@ -2108,7 +2396,9 @@ class MainActivity : ComponentActivity() {
         var keepOn by remember { mutableStateOf(prefs.getBoolean("set_keep_on", false)) }
         var autoConnect by remember { mutableStateOf(prefs.getBoolean("set_auto_connect", false)) }
         var autoPreview by remember { mutableStateOf(prefs.getBoolean("set_auto_preview", true)) }
+        var showCacheLimitDialog by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
+        LaunchedEffect(Unit) { vm.refreshThumbCacheSize() }
 
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2265,6 +2555,53 @@ class MainActivity : ComponentActivity() {
                     if (vm.customDirUri.value != null) {
                         TextButton(onClick = { vm.setCustomDir(null) }) { Text("恢复默认") }
                     }
+                }
+                SettingsDivider()
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("缩略图缓存", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "当前 ${humanSize(vm.thumbCacheBytes)} · 上限 ${vm.thumbCacheLimitMb}MB",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = { showCacheLimitDialog = true }) { Text("上限") }
+                    TextButton(onClick = { vm.clearThumbCache() }) { Text("清空") }
+                }
+                if (showCacheLimitDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showCacheLimitDialog = false },
+                        title = { Text("缩略图缓存上限") },
+                        text = {
+                            Column {
+                                listOf(100, 200, 500, 1024).forEach { mb ->
+                                    Row(
+                                        Modifier.fillMaxWidth()
+                                            .clickable {
+                                                vm.setThumbCacheMb(mb)
+                                                showCacheLimitDialog = false
+                                            }
+                                            .padding(vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        RadioButton(
+                                            selected = vm.thumbCacheLimitMb == mb,
+                                            onClick = {
+                                                vm.setThumbCacheMb(mb)
+                                                showCacheLimitDialog = false
+                                            }
+                                        )
+                                        Text("${mb}MB" + if (mb == 200) "（默认）" else "", style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {}
+                    )
                 }
             }
             SettingsSection(title = "关于", icon = { SectionIcon("关于") }) {

@@ -57,4 +57,8 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+    // 注意：3.0.0 用 Kotlin 2.4 编译（元数据 2.4.0），本工程 Kotlin 2.2.0 读不了；
+    // 2.2.0 与 3.0.0 API 完全一致（LazyVerticalGridScrollbar/ScrollbarSettings 同签名），用旧坐标
+    implementation("com.github.nanihadesuka:LazyColumnScrollbar:2.2.0")
 }

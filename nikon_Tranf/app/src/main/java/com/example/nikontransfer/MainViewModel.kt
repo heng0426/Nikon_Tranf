@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import kotlin.math.roundToInt
 
 /** 照片行：预览位图异步填充（原生会话单通道，必须串行取块） */
 class PhotoRow(val name: String, val handle: Int, val type: String, val stamp: String) {
@@ -921,17 +922,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /* ---------- 队列完成提醒（震动 + 通知；设置可关，仅批量生效）---------- */
+    var notifyDoneOn: Boolean by mutableStateOf(prefs.getBoolean("set_notify_done", true))
+    fun setNotifyDone(v: Boolean) {
+        notifyDoneOn = v
+        prefs.edit().putBoolean("set_notify_done", v).apply()
+    }
+
+    private var batchMode = false            // 本次批次是否来自批量下载
+    private var batchOk = 0
+    private var batchFail = 0
+    private var batchActive = false
+
+    private fun vibrateOnce() {
+        val v = ctx.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator ?: return
+        if (android.os.Build.VERSION.SDK_INT >= 26)
+            v.vibrate(android.os.VibrationEffect.createOneShot(200, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+        else @Suppress("DEPRECATION") v.vibrate(200)
+    }
+
     private fun ensureWorker() {
         synchronized(queueLock) {
             if (workerRunning) return
             workerRunning = true
         }
+        batchOk = 0
+        batchFail = 0
+        batchActive = true
         Thread {
             while (true) {
                 val item = synchronized(queueLock) {
                     downloadQueue.firstOrNull { it.status.value == QStatus.QUEUED }
                 } ?: break
                 runQueueItem(item)
+                when (item.status.value) {
+                    QStatus.DONE -> batchOk++
+                    QStatus.FAILED -> batchFail++
+                    else -> {}
+                }
+            }
+            if (batchActive && batchMode && (batchOk > 0 || batchFail > 0)) {
+                if (notifyDoneOn) {
+                    vibrateOnce()
+                    CameraKeepAliveService.notifyDone(ctx, "下载完成：成功 $batchOk · 失败 $batchFail")
+                }
+                batchActive = false
             }
             synchronized(queueLock) { workerRunning = false }
             CameraKeepAliveService.clearProgress(ctx)
@@ -997,12 +1032,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 单张下载 → 入队（全屏预览页与网格触发统一走队列） */
-    fun downloadOne(row: PhotoRow) = enqueueDownload(row)
+    /** 单张下载 → 入队（全屏预览页与网格触发统一走队列；单张不触发完成提醒） */
+    fun downloadOne(row: PhotoRow) {
+        batchMode = false
+        enqueueDownload(row)
+    }
 
     /** 批量下载勾选的照片 → 逐条入队（worker 串行消费）。
      *  合并模式：按格式勾选框（JPG/NEF）展开；skipDownloaded 开启时排除已下载文件。 */
     fun downloadSelected() {
+        batchMode = true
         val skip = skipDownloadedOn
         val rows = mutableListOf<PhotoRow>()
         if (mergePairs.value) {
@@ -1226,12 +1265,73 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  ② TIFF/NEF 解析：EXIF 式 0x0201/0x0202 缩略图，或 IFD0 未压缩 RGB 条带
      *  ③ 盲扩块扫描（最多到 768KB），兜底非标准布局
      *  列表变化（重新连接/列目录）会使旧加载线程失效。 */
+    /* ---------- 缩略图磁盘缓存（cache/thumbs，键=时间戳_类型，跨会话稳定）---------- */
+    var thumbCacheLimitMb: Int by mutableStateOf(prefs.getInt("set_thumb_cache_mb", 200))
+    fun setThumbCacheMb(v: Int) {
+        thumbCacheLimitMb = v
+        prefs.edit().putInt("set_thumb_cache_mb", v).apply()
+    }
+
+    var thumbCacheBytes: Long by mutableStateOf(0L)
+    private val thumbDir: java.io.File
+        get() = java.io.File(ctx.cacheDir, "thumbs").apply { mkdirs() }
+    private fun thumbFile(stamp: String, type: String) =
+        java.io.File(thumbDir, "${stamp}_${type.uppercase()}.jpg")
+
+    fun refreshThumbCacheSize() {
+        thumbCacheBytes = thumbDir.listFiles()?.sumOf { it.length() } ?: 0L
+    }
+
+    /** 清空缩略图缓存（设置页手动入口） */
+    fun clearThumbCache() {
+        thumbDir.listFiles()?.forEach { it.delete() }
+        refreshThumbCacheSize()
+    }
+
+    /** 软上限：超过 thumbCacheMb 按最后修改时间从旧到新清理 */
+    private fun enforceThumbCacheLimit() {
+        val max = thumbCacheLimitMb.toLong() * 1024 * 1024
+        val files = thumbDir.listFiles()?.filter { it.isFile } ?: return
+        var total = files.sumOf { it.length() }
+        if (total <= max) return
+        for (f in files.sortedBy { it.lastModified() }) {
+            if (total <= max) break
+            total -= f.length()
+            f.delete()
+        }
+    }
+
+    private fun loadThumbFromCache(stamp: String, type: String): Bitmap? = try {
+        val f = thumbFile(stamp, type)
+        if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun saveThumbToCache(stamp: String, type: String, bmp: Bitmap) {
+        try {
+            java.io.File(thumbDir, "tmp_${System.currentTimeMillis()}.jpg").let { tmp ->
+                tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+                tmp.renameTo(thumbFile(stamp, type)) || tmp.delete()
+            }
+            refreshThumbCacheSize()
+            enforceThumbCacheLimit()
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun startPreviewLoading(rows: List<PhotoRow>) {
         val myGen = ++previewGen
         val CH = 0x10000
         Thread {
             for (row in rows) {
                 if (!connected || previewGen != myGen) return@Thread
+                // 磁盘缓存命中：直接显示，跳过网络拉取
+                val cached = loadThumbFromCache(row.stamp, row.type)
+                if (cached != null) {
+                    row.preview.value = cached
+                    continue
+                }
                 var bmp: Bitmap? = null
                 val first = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(row.handle, 0, 2 * CH) }
                 if (first != null) {
@@ -1296,7 +1396,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                 }
-                if (bmp != null) row.preview.value = bmp
+                if (bmp != null) {
+                    row.preview.value = bmp
+                    saveThumbToCache(row.stamp, row.type, bmp)
+                }
             }
         }.apply {
             isDaemon = true
@@ -1326,6 +1429,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val hiresProgress = mutableStateMapOf<Int, Float>()
     /** 加载失败的句柄：UI 显示小字，翻回该页自动重试 */
     val hiresFailed = mutableStateMapOf<Int, Boolean>()
+    /** EXIF 摘要：handle → "F2.8 · 1/500s · ISO400 · 70mm"（高清加载时解析） */
+    val exifLines = mutableStateMapOf<Int, List<String>>()
 
     private enum class HiresKind { JPG, NEF }
     private data class HiresTask(val handle: Int, val kind: HiresKind)
@@ -1361,11 +1466,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ensureHiresWorker()
     }
 
-    /** 退出预览页：停止一切加载（含中途丢弃），清进度与失败标记 */
+    /** 退出预览页：停止一切加载（含中途丢弃），清进度与失败标记。
+     *  exifLines 不清——退出再进时位图缓存命中不重新解析，保留才能持续显示。 */
     fun clearHires() {
         hiresWanted = emptySet()
         hiresProgress.clear()
         hiresFailed.clear()
+    }
+
+    /** EXIF 参数解析（高清数据源自主文件头）：返回 [F, 快门, ISO, 焦距, (镜头)] 胶囊文本。
+     *  getAttribute 返回有理数字符串（如 "28/10"），必须用 getAttributeDouble/Int 解析；
+     *  Nikon 常写旧 ISO 标签 0x8827（IsoSpeedRatings）而非 0x8830，两者都查。 */
+    private fun parseExifParts(jpeg: ByteArray): List<String>? = try {
+        val ex = androidx.exifinterface.media.ExifInterface(java.io.ByteArrayInputStream(jpeg))
+        fun d(tag: String) = ex.getAttributeDouble(tag, 0.0).takeIf { it > 0.0 }
+        fun i(tag: String) = ex.getAttributeInt(tag, 0).takeIf { it > 0 }
+        val f = d(androidx.exifinterface.media.ExifInterface.TAG_F_NUMBER)
+        val shutter = d(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME)
+        val iso = i(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY)
+            ?: i(androidx.exifinterface.media.ExifInterface.TAG_ISO_SPEED_RATINGS)
+        val fl = d(androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH)
+        val lens = ex.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL)
+            ?.trim()?.takeIf { it.isNotEmpty() }
+        val parts = buildList {
+            f?.let { add("F${"%.1f".format(it)}") }
+            shutter?.let { add(if (it >= 1) "${"%.1f".format(it)}s" else "1/${(1 / it).roundToInt()}s") }
+            iso?.let { add("ISO$it") }
+            fl?.let { add("${fl.roundToInt()}mm") }
+        }
+        if (parts.isEmpty()) null else {
+            val out = parts.toMutableList()
+            lens?.let(out::add)
+            out
+        }
+    } catch (_: Throwable) {
+        null
     }
 
     private fun ensureHiresWorker() {
@@ -1395,11 +1530,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (!connected) throw IllegalStateException("未连接")
             hiresProgress[h] = -1f
             val fileSize = synchronized(camMutex) { GPhoto2Bridge.nativeObjectSizeNative(h) }
-            val range = when (task.kind) {
+            // EXIF 数据源：拍摄参数在主文件头部（大图/嵌入预览的 EXIF 只有尺寸）——
+            // JPG=主 JPEG 头部（APP1 完整 EXIF）；NEF=TIFF 头部拼接（ExifInterface 支持 RAW）
+            val (range, exifSource) = when (task.kind) {
                 HiresKind.JPG -> {
                     val head = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(h, 0, 0x20000) }
                         ?: throw IllegalStateException("读 JPG 头失败")
-                    mpfLargestRange(head, fileSize)
+                    mpfLargestRange(head, fileSize)?.let { it to head }
                         ?: throw IllegalStateException("MPF 无可用大图 (fileSize=$fileSize)")
                 }
                 HiresKind.NEF -> {
@@ -1407,16 +1544,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         ?: throw IllegalStateException("读 NEF 头失败")
                     val mid = synchronized(camMutex) { GPhoto2Bridge.nativePreviewNative(h, 0x20000, 0x60000) }
                         ?: throw IllegalStateException("读 NEF 中段失败")
-                    nefPreviewRange(head, mid, fileSize)
+                    val joined = ByteArray(head.size + mid.size).also {
+                        System.arraycopy(head, 0, it, 0, head.size)
+                        System.arraycopy(mid, 0, it, head.size, mid.size)
+                    }
+                    nefPreviewRange(head, mid, fileSize)?.let { it to joined }
                         ?: throw IllegalStateException("TIFF 无嵌入预览 (fileSize=$fileSize)")
                 }
             }
             if (h !in hiresWanted) throw IllegalStateException("已翻页")
             val jpeg = readHiresChunks(h, range[0], range[1])
-            val bmp = decodeHires(trimJpegTail(jpeg)) ?: throw IllegalStateException("JPEG 解码失败")
+            val full = trimJpegTail(jpeg)
+            val bmp = decodeHires(full) ?: throw IllegalStateException("JPEG 解码失败")
             hiresCache.put(h, bmp)
             hiresTick.value++
             hiresFailed.remove(h)
+            parseExifParts(exifSource)?.let {
+                exifLines[h] = it
+                Log.i("GPhoto2", "exif: handle=$h ${it.joinToString(" · ")}")
+            }
             Log.i("GPhoto2", "hires: ${task.kind} handle=$h @${range[0]}+${range[1]} ✓")
         } catch (t: Throwable) {
             if (h in hiresWanted && connected) {

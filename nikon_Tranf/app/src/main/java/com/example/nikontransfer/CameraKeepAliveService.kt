@@ -79,5 +79,23 @@ class CameraKeepAliveService : Service() {
             (context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
                 .cancel(PROGRESS_NOTIF_ID)
         }
+
+        /** 队列完成：结果通知（可滑动清除）。 */
+        fun notifyDone(context: Context, text: String) {
+            val ch = NotificationChannel(
+                CHANNEL_ID, "相机连接保持", NotificationManager.IMPORTANCE_LOW
+            ).apply { setShowBadge(false) }
+            (context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .createNotificationChannel(ch)
+            val n = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("下载完成")
+                .setContentText(text)
+                .setOngoing(false)
+                .setSilent(true)
+                .build()
+            (context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(PROGRESS_NOTIF_ID + 1, n)
+        }
     }
 }
