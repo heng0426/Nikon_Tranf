@@ -136,6 +136,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -333,6 +334,9 @@ class MainActivity : ComponentActivity() {
         val pairSelCount = vm.pairSelection.value.size
         val selCount = if (mergeOn) pairSelCount else photoRows.count { it.selected.value }
 
+        // 返回键：多选态 → 退出多选，避免直接退出 App
+        BackHandler(enabled = selCount > 0) { vm.clearSelection() }
+
         // 毛玻璃：预览打开时主界面内容实时模糊（API31+，低版本自动退化为半透明黑）
         val previewing = (mergeOn && pairPreviewIndex >= 0) || (!mergeOn && previewIndex >= 0)
         Box(Modifier.fillMaxSize()) {
@@ -390,16 +394,19 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                // 顶部栏：logo + 筛选 + 队列（多选操作全部在底部弹出条，顶栏不再有模式切换）
+                // 顶部栏：设置齿轮 + 筛选 + 队列（多选操作全部在底部弹出条，顶栏不再有模式切换）
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    // 顶部 logo（用户提供图片，透明底 PNG）：点击进入设置
-                    Image(
-                        painter = painterResource(R.drawable.logo),
-                        contentDescription = "logo",
-                        modifier = Modifier
-                            .height(34.dp)
-                            .clickable { showSettings = true }
-                    )
+                    // 设置齿轮按钮（方框圆角，同款 34dp / RoundedCornerShape(9.dp)）
+                    Box(
+                        Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable { showSettings = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        GearIcon(MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     // 筛选按钮（logo 右侧，同款圆角外框）：有筛选生效时漏斗变色
                     Box(
                         Modifier
@@ -1439,7 +1446,7 @@ class MainActivity : ComponentActivity() {
             }
             if (selected) {
                 Box(Modifier.fillMaxSize().background(Color(0x3300695C)))
-                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C)))
+                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp)))
                 Icon(
                     Icons.Filled.Check,
                     contentDescription = "已选择",
@@ -1906,7 +1913,7 @@ class MainActivity : ComponentActivity() {
             // 选中态：绿色边框 + 中央勾
             if (row.selected.value) {
                 Box(Modifier.fillMaxSize().background(Color(0x3300695C)))
-                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C)))
+                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp)))
                 Icon(
                     Icons.Filled.Check,
                     contentDescription = "已选择",
@@ -1936,18 +1943,80 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 齿轮图标（描边风格：8齿外圈 + 双层同心圆孔），风格同图片示例 */
+    @Composable
+    private fun GearIcon(color: Color, modifier: Modifier = Modifier) {
+        Canvas(modifier.size(20.dp)) {
+            val w = size.width
+            val h = size.height
+            val cx = (w / 2f).toDouble()
+            val cy = (h / 2f).toDouble()
+            val s = minOf(w, h).toDouble()
+            val stroke = (s * 0.065).toFloat()
+            val style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+
+            // 外圈齿轮轮廓：8 个齿（平顶），齿间为凹槽，整体成封闭多边形（描边）
+            val rTooth = s * 0.46  // 齿顶半径
+            val rValley = s * 0.34 // 齿根半径
+            val teeth = 8
+            val p = Path()
+            // 每个齿占 45°，齿顶宽约 14°，齿根过渡
+            val toothTop = 14.0
+            val toothGap = 45.0 - toothTop
+            var started = false
+            for (i in 0 until teeth) {
+                val base = i.toDouble() * 45.0 - 22.5
+                val a0 = (base + toothGap / 2.0) * Math.PI / 180.0          // 齿根左
+                val a1 = (base + toothGap / 2.0 + toothTop * 0.55) * Math.PI / 180.0  // 齿顶左
+                val a2 = (base + toothGap / 2.0 + toothTop * 1.45) * Math.PI / 180.0 // 齿顶右
+                val a3 = (base + 45.0 - toothGap / 2.0) * Math.PI / 180.0     // 齿根右
+
+                val x0 = (cx + rValley * Math.cos(a0)).toFloat()
+                val y0 = (cy + rValley * Math.sin(a0)).toFloat()
+                val x1 = (cx + rTooth * Math.cos(a1)).toFloat()
+                val y1 = (cy + rTooth * Math.sin(a1)).toFloat()
+                val x2 = (cx + rTooth * Math.cos(a2)).toFloat()
+                val y2 = (cy + rTooth * Math.sin(a2)).toFloat()
+                val x3 = (cx + rValley * Math.cos(a3)).toFloat()
+                val y3 = (cy + rValley * Math.sin(a3)).toFloat()
+
+                if (!started) { p.moveTo(x0, y0); started = true } else p.lineTo(x0, y0)
+                p.lineTo(x1, y1)
+                p.lineTo(x2, y2)
+                p.lineTo(x3, y3)
+            }
+            p.close()
+            drawPath(p, color, style = style)
+
+            // 中圆环
+            drawCircle(
+                color,
+                radius = (s * 0.20).toFloat(),
+                center = Offset(cx.toFloat(), cy.toFloat()),
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+            // 内圆孔
+            drawCircle(
+                color,
+                radius = (s * 0.09).toFloat(),
+                center = Offset(cx.toFloat(), cy.toFloat()),
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+        }
+    }
+
     /** Wi-Fi 形状（三条弧 + 圆点），用于连接状态指示（同漏斗图标的自绘风格）；尺寸由调用方决定 */
     @Composable
     private fun WifiIcon(color: Color, modifier: Modifier = Modifier) {
         Canvas(modifier) {
             val w = size.width
             val h = size.height
-            val stroke = w * 0.14f
+            val stroke = w * 0.12f
             val cx = w / 2f
-            val cy = h * 0.80f
+            val cy = h * 0.78f
             val style = Stroke(width = stroke, cap = StrokeCap.Round)
             // 三条弧：由内到外，开口向上
-            listOf(0.18f, 0.34f, 0.50f).forEach { r ->
+            listOf(0.24f, 0.42f, 0.60f).forEach { r ->
                 drawArc(
                     color = color,
                     startAngle = -135f,
@@ -1958,7 +2027,7 @@ class MainActivity : ComponentActivity() {
                     style = style
                 )
             }
-            drawCircle(color, radius = w * 0.09f, center = Offset(cx, cy))
+            drawCircle(color, radius = w * 0.11f, center = Offset(cx, cy))
         }
     }
 
@@ -2709,10 +2778,10 @@ class MainActivity : ComponentActivity() {
             val h = size.height
             when (kind) {
                 "连接" -> {
-                    val style = Stroke(width = w * 0.12f, cap = StrokeCap.Round)
+                    val style = Stroke(width = w * 0.11f, cap = StrokeCap.Round)
                     val cx = w / 2f
-                    val cy = h * 0.78f
-                    listOf(0.2f, 0.38f).forEach { r ->
+                    val cy = h * 0.74f
+                    listOf(0.27f, 0.47f).forEach { r ->
                         drawArc(
                             color,
                             -135f, 90f, false,
@@ -2721,7 +2790,7 @@ class MainActivity : ComponentActivity() {
                             style = style
                         )
                     }
-                    drawCircle(color, radius = w * 0.08f, center = Offset(cx, cy))
+                    drawCircle(color, radius = w * 0.10f, center = Offset(cx, cy))
                 }
                 "传输" -> {
                     val style = Stroke(width = w * 0.13f, cap = StrokeCap.Round)
