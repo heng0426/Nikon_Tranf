@@ -23,19 +23,27 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import kotlin.math.roundToInt
 
-/** 照片行：预览位图异步填充（原生会话单通道，必须串行取块） */
-class PhotoRow(val name: String, val handle: Int, val type: String, val stamp: String) {
+/** 照片行：预览位图异步填充（原生会话单通道，必须串行取块）
+ *  fileNo：真实文件编号（文件名去扩展名，如 "DSC_1234"；USB 枚举提供，Wi-Fi 枚举为 null），
+ *  是 RAW+JPG 合并配对的精确键 —— 尼康同一张的 JPG/NEF 同名不同扩展名。 */
+class PhotoRow(val name: String, val handle: Int, val type: String, val stamp: String,
+               val fileNo: String? = null) {
     val preview = mutableStateOf<Bitmap?>(null)
     val selected = mutableStateOf(false)
     val downloaded = mutableStateOf(false)
     /** 格子是否在屏幕上：由 GridCell 进入/离开组合维护。滑动中读回的位图若格子
      *  已滚出屏幕则只写 LRU 缓存、不写 preview —— 避免滑动中位图填充触发的重组风暴。 */
     @Volatile var onScreen = false
+    /** 格子是否曾进入过组合（进入后永不清 false）。区分"首轮加载"（格子尚未组合，
+     *  位图可直接写 preview，无重组成本）与"滑动中滚出"（只写 LRU）。 */
+    @Volatile var enteredOnce = false
 }
 
-/** 合并视图格子：同一时间戳的 JPG+NEF 成对（或孤儿单格式）。
- *  实例每次派生时重建，选中态存在 VM 的 pairSelection 里（键 = stamp）。 */
+/** 合并视图格子：同一拍摄张的 JPG+NEF 成对（或孤儿单格式）。
+ *  实例每次派生时重建，选中态存在 VM 的 pairSelection 里（键 = key，非 stamp ——
+ *  连拍同一秒会产生多格，stamp 不唯一）。 */
 data class PairRow(
+    val key: String,
     val stamp: String,
     val jpg: PhotoRow?,
     val nef: PhotoRow?
@@ -102,6 +110,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val scanning = mutableStateOf(false)
     val scanText = mutableStateOf("")
 
+    /** 当前连接通道（供 UI 决定图标/详情）：usb / wifi / empty（未连接） */
+    val connChannel = mutableStateOf("")
+    /** 双卡选择的通道：usb / wifi / null（null = 未点击，走自动连接偏好） */
+    val pendingChannel = mutableStateOf<String?>(null)
+    /** 最近一次连接失败的原因（显示在双卡下方） */
+    val connFailMsg = mutableStateOf("")
+
     /* ---------- USB 直连通道（PTP over bulk，照搬 Z传 路线）---------- */
     @Volatile var usbSession: UsbPtpSession? = null  // 非空 = 当前走 USB
     private val usbPermissionPending = mutableStateOf(false)
@@ -160,6 +175,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         synchronized(camMutex) { usbSession?.close() }
         usbSession = null
         connected = false
+        connChannel.value = ""
         connPhase.value = "disconnected"
         connText.value = "USB 已拔出 · 正在回退 Wi-Fi …"
         // 拔线自愈：自动发起现有 Wi-Fi 连接流程
@@ -186,6 +202,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             usbSession = session
             connected = true
             connPhase.value = "connected"
+            connChannel.value = "usb"
             connDetail.value = session.modelInfo
             connectedIp.value = ""
             connText.value = "枚举照片…"
@@ -200,6 +217,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             connected = false
             connPhase.value = "disconnected"
             connText.value = "USB 连接失败: ${t.message}"
+            connFailMsg.value = "USB 连接失败 · ${t.message}"
+            pendingChannel.value = null
             return false
         } finally {
             connecting = false
@@ -311,28 +330,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 合并模式的多选（键 = 时间戳），与文件模式的多选相互独立 */
     val pairSelection = mutableStateOf<Set<String>>(emptySet())
 
-    fun togglePair(stamp: String) {
+    /** 折叠的日期（dateKey 集合，会话内有效：切视图/重连保留，退出 App 重置）。
+     *  折叠语义 = 只藏不见：网格不渲染该天照片，但全选/统计口径不变（Q4=B）。 */
+    val collapsedDates = mutableStateOf<Set<String>>(emptySet())
+
+    fun toggleDateCollapsed(dateKey: String) {
+        collapsedDates.value =
+            if (dateKey in collapsedDates.value) collapsedDates.value - dateKey
+            else collapsedDates.value + dateKey
+    }
+
+    fun togglePair(key: String) {
         pairSelection.value =
-            if (stamp in pairSelection.value) pairSelection.value - stamp
-            else pairSelection.value + stamp
+            if (key in pairSelection.value) pairSelection.value - key
+            else pairSelection.value + key
     }
 
     /** 多选批量下载的格式勾选框（合并模式；默认只勾 JPG） */
     val batchFmtJpg = mutableStateOf(true)
     val batchFmtNef = mutableStateOf(false)
 
-    /** 全部照片按时间戳配对（孤儿单格式也成一项），从新到旧 */
+    /** 全部照片按拍摄张配对（孤儿单格式也成一项），从新到旧。
+     *  配对键优先用真实文件编号（尼康同一张的 JPG/NEF 同名不同扩展名，USB 枚举提供）；
+     *  无文件名（Wi-Fi 枚举）退回时间戳。同键同格式多张（连拍同一秒）按句柄升序
+     *  zip 一一配对 —— 旧实现 firstOrNull 会把同秒其余照片整格吞掉（丢图根因）。 */
     val pairRowsAll: List<PairRow>
         get() {
-            val byStamp = LinkedHashMap<String, MutableList<PhotoRow>>()
-            for (r in photoRows) byStamp.getOrPut(r.stamp) { mutableListOf() }.add(r)
-            return byStamp.map { (stamp, list) ->
-                PairRow(
-                    stamp,
-                    list.firstOrNull { it.type.equals("JPG", true) },
-                    list.firstOrNull { it.type.equals("NEF", true) }
-                )
-            }.sortedByDescending { it.stamp }
+            val byKey = LinkedHashMap<String, MutableList<PhotoRow>>()
+            for (r in photoRows) {
+                val key = r.fileNo ?: "T${r.stamp}"
+                byKey.getOrPut(key) { mutableListOf() }.add(r)
+            }
+            val rows = ArrayList<PairRow>()
+            for ((key, list) in byKey) {
+                val jpgs = list.filter { it.type.equals("JPG", true) }.sortedBy { it.handle }
+                val nefs = list.filter { it.type.equals("NEF", true) }.sortedBy { it.handle }
+                for (i in 0 until maxOf(jpgs.size, nefs.size)) {
+                    val jpg = jpgs.getOrNull(i)
+                    val nef = nefs.getOrNull(i)
+                    val stamp = (jpg ?: nef)!!.stamp
+                    rows.add(PairRow("$key#$i", stamp, jpg, nef))
+                }
+            }
+            return rows.sortedByDescending { it.stamp }
         }
 
     /** 合并模式的可见对：格式筛选隐藏（①b）；下载状态=补全语义（②a）；日期照旧 */
@@ -628,6 +668,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 自动连接优先通道：usb（默认）/ wifi。仅影响启动时自动连接的尝试顺序，
+     *  手动点双卡与 USB 插线自动连接均不受影响。 */
+    val autoConnChannel = mutableStateOf(prefs.getString("set_auto_conn_channel", "usb") ?: "usb")
+    fun setAutoConnChannel(v: String) {
+        autoConnChannel.value = v
+        prefs.edit().putString("set_auto_conn_channel", v).apply()
+    }
+
     /* ---------- 连接流程 ---------- */
 
     /** 当前所连 Wi-Fi 的网关 IP（手机连相机热点时 = 相机自身）；无 Wi-Fi 或无网关返回 null */
@@ -651,41 +699,62 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return null
     }
 
-    /** 连接总流程（IO 线程）：热点 IP 优先 → 上次 IP 探测 → 网段扫描（热点网段优先）→ 命中即连。
-     *  多台命中时填充 scanResults 并返回 false（设置页选择）。 */
-    fun connectionFlow(): Boolean {
+    /** 双卡入口（IO 线程）：按选择通道直连；未选则 USB 优先。成功后清双卡状态。 */
+    fun startConnect(channel: String?): Boolean {
         if (connecting || connected) return false
-        // ⓪ USB 直连优先：插着已授权的尼康相机 → 直接走 USB，跳过整个 Wi-Fi 流程
-        UsbPtpSession.findCamera(usbManager)?.let { dev ->
-            if (UsbPtpSession.hasPermission(usbManager, dev) && tryConnectUsbCore(dev, auto = false)) return true
+        connFailMsg.value = ""
+        pendingChannel.value = channel
+        return when (channel) {
+            "usb" -> tryConnectManualUsb()
+            "wifi" -> wifiConnectFlow(preferScan = false)
+            else -> connectionFlow()
         }
+    }
+
+    /** 手动点 USB 卡：已插线→直连；未插线→提示（UI 侧读 connFailMsg） */
+    private fun tryConnectManualUsb(): Boolean {
+        val dev = UsbPtpSession.findCamera(usbManager)
+        if (dev == null) {
+            connFailMsg.value = "未检测到尼康相机 · 请用数据线连接相机与手机"
+            pendingChannel.value = null
+            return false
+        }
+        if (!UsbPtpSession.hasPermission(usbManager, dev)) {
+            UsbPtpSession.requestPermission(ctx, usbManager, dev)
+            connFailMsg.value = "已请求 USB 授权 · 请在弹窗中允许"
+            pendingChannel.value = null
+            return false
+        }
+        return tryConnectUsbCore(dev, auto = false)
+    }
+
+    /** Wi-Fi 连接（IO 线程）：上次 IP → 网段扫描（热点网段优先）→ 命中即连。
+     *  preferScan=true 时跳过上次 IP 直接扫描（Wi-Fi 卡内「扫描相机」按钮）。 */
+    private fun wifiConnectFlow(preferScan: Boolean): Boolean {
         connecting = true
         connPhase.value = "connecting"
+        pendingChannel.value = "wifi"   // 标记当前尝试通道（双卡进度归位用）
         try {
             GPhoto2Bridge.setup(ctx)
-            // ① 优先：热点 IP——手机连相机热点时，Wi-Fi 网关即相机自身，一次探测即可
-            val gw = wifiGateway()
-            if (gw != null) {
-                connText.value = "探测热点网关 $gw …"
-                val info = synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(gw) }
-                if (info != null) return finishConnect(gw, info)
-                Log.i("GPhoto2", "热点网关 $gw 非相机，继续常规检测")
+            if (!preferScan) {
+                // ① 上次相机 IP
+                val lastIp = prefs.getString("camera_ip", null)
+                if (lastIp != null) {
+                    connText.value = "探测上次相机 $lastIp …"
+                    val info = synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(lastIp) }
+                    if (info != null) return finishConnect(lastIp, info)
+                    Log.i("GPhoto2", "上次 IP $lastIp 不可达，转为网段扫描")
+                }
             }
-            // ② 上次相机 IP
-            val lastIp = prefs.getString("camera_ip", null)
-            if (lastIp != null) {
-                connText.value = "探测上次相机 $lastIp …"
-                val info = synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(lastIp) }
-                if (info != null) return finishConnect(lastIp, info)
-                Log.i("GPhoto2", "上次 IP $lastIp 不可达，转为网段扫描")
-            }
-            // ③ 网段扫描：热点网段（AOSP 默认 192.168.43.x）优先
+            // ② 网段扫描：热点网段（AOSP 默认 192.168.43.x）优先，其次路由器网段
             val subnets = wifiSubnets().toMutableList()
             if (!subnets.contains("192.168.43")) subnets.add(0, "192.168.43")
             else { subnets.remove("192.168.43"); subnets.add(0, "192.168.43") }
             if (subnets.isEmpty()) {
                 connText.value = "未发现可用 Wi-Fi 子网"
                 connPhase.value = "disconnected"
+                connFailMsg.value = "未发现可用 Wi-Fi 子网 · 请确认手机已连接 Wi-Fi 或已开热点"
+                pendingChannel.value = null
                 return false
             }
             var candidates: List<String> = emptyList()
@@ -699,6 +768,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (candidates.isEmpty()) {
                 connText.value = "未发现相机 · 请确认相机已进入 Wi-Fi 等待态"
                 connPhase.value = "disconnected"
+                connFailMsg.value = "未发现相机 · 请确认相机已进入 Wi-Fi 等待态"
+                pendingChannel.value = null
                 return false
             }
             val named = candidates.map { ip ->
@@ -710,12 +781,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             scanResults.clear()
             scanResults.addAll(named)
-            connText.value = "发现 ${named.size} 台相机 · 请到设置中选择"
+            connText.value = "发现 ${named.size} 台相机 · 在 Wi-Fi 卡中选择"
             connPhase.value = "disconnected"
+            connFailMsg.value = "发现 ${named.size} 台相机 · 请在下方选择"
+            pendingChannel.value = null
             return false
         } finally {
             connecting = false
         }
+    }
+
+    /** 连接总流程（IO 线程）：USB 直连优先（插线即走 USB）→ 未选通道时按自动连接偏好
+     *  决定先试哪条；Wi-Fi 内部 = 上次 IP → 网段扫描（热点网段优先）→ 命中即连。 */
+    fun connectionFlow(): Boolean {
+        if (connecting || connected) return false
+        // 手动点了 Wi-Fi 卡 → 跳过 USB 直抢（用户意图优先）
+        if (pendingChannel.value == "wifi") {
+            pendingChannel.value = null
+            return wifiConnectFlow(preferScan = false)
+        }
+        connFailMsg.value = ""
+        // ⓪ USB 直连优先：插着已授权的尼康相机 → 直接走 USB，跳过整个 Wi-Fi 流程
+        UsbPtpSession.findCamera(usbManager)?.let { dev ->
+            if (UsbPtpSession.hasPermission(usbManager, dev)) {
+                pendingChannel.value = "usb"   // 标记当前尝试通道（双卡进度归位用）
+                if (tryConnectUsbCore(dev, auto = false)) return true
+            }
+        }
+        // Wi-Fi 已连接 + 自动连接偏好 USB 但没插线 → 维持现状，不折腾
+        if (connected && usbSession == null) return true
+        return wifiConnectFlow(preferScan = false)
     }
 
     /** 连接入口（带防并发守卫，设置页扫描结果点击触发） */
@@ -753,11 +848,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ptpPath = ""
             stopKeepAlive()       // 重连失败时清理可能残留的保活
             connText.value = "连接失败: $ret（相机需处于 Wi-Fi 等待态）"
+            connFailMsg.value = "连接失败 ($ret) · 请确认相机已进入 Wi-Fi 等待态后重试"
             connPhase.value = "disconnected"
+            pendingChannel.value = null
             return false
         }
         connected = true
         ptpPath = "ptpip:$ip"
+        connChannel.value = "wifi"
         startEventPolling()
         startKeepAlive()          // 前台服务 + WifiLock：后台不再被冻结断连
         prefs.edit().putString("camera_ip", ip).apply()
@@ -835,6 +933,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun listFiles(): String = synchronized(camMutex) {
         if (!connected) return "未连接相机，请先连接成功后再列目录"
+        // USB 全量枚举（逐对象 GetObjectInfo）需数秒：立即给出加载提示，替代旧日志（如"就绪"）
+        uiLog = "正在读取照片列表…"
         // 配对模式原生列目录："句柄:YYYYMMDD-HHMMSS:类型|..."
         val failMsg = "列目录失败（传输会话可能已断开，请重新连接）"
         val res: String = if (usbSession != null) {
@@ -851,13 +951,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val rows = res.split('|').filter { it.isNotBlank() }
         if (rows.isEmpty()) return "相机里没有待传输的照片"
         val parsed = rows.mapNotNull { row ->
-            val p = row.split(':')
+            val p = row.split(':', limit = 4)
             if (p.size < 3) return@mapNotNull null
             val handle = p[0].toIntOrNull() ?: return@mapNotNull null
             val stamp = p[1]
             val type = p[2].uppercase()
+            // 第 4 段 = 真实文件名（USB 枚举提供；Wi-Fi 枚举无此段）。仅作配对键，
+            // name 仍用合成名 —— 保持已下载标记（downloadedNames 键）与既有保存名不变。
+            val fileNo = p.getOrNull(3)?.substringBeforeLast('.')
             val name = "IMG_${stamp}_${p[0].takeLast(4).padStart(4, '0')}.${type.lowercase()}"
-            PhotoRow(name, handle, type, stamp)
+            PhotoRow(name, handle, type, stamp, fileNo)
         }.sortedByDescending { it.stamp }              // 从新到旧
         syncDownloadedNames()                          // 本地删除过的照片不再标记已下载
         parsed.forEach { it.downloaded.value = it.name in downloadedNames.value }
@@ -1228,7 +1331,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (mergePairs.value) {
             val wantJpg = batchFmtJpg.value
             val wantNef = batchFmtNef.value
-            visiblePairs.filter { it.stamp in pairSelection.value }.forEach { p ->
+            visiblePairs.filter { it.key in pairSelection.value }.forEach { p ->
                 if (wantJpg) p.jpg?.takeUnless { skip && it.downloaded.value }?.let { rows.add(it) }
                 if (wantNef) p.nef?.takeUnless { skip && it.downloaded.value }?.let { rows.add(it) }
             }
@@ -1466,6 +1569,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putInt("set_thumb_cache_mb", v).apply()
     }
 
+    /** 快速滚动条显示阈值：照片数达到该值才显示右侧滚动条；-1 = 不显示。
+     *  计数口径 = 未折叠的照片数（折叠天不参与，UI 侧按 collapsedDates 计算）。 */
+    val scrollbarThreshold = mutableStateOf(prefs.getInt("set_scrollbar_threshold", 50))
+    fun setScrollbarThreshold(v: Int) {
+        scrollbarThreshold.value = v
+        prefs.edit().putInt("set_scrollbar_threshold", v).apply()
+    }
+
     var thumbCacheBytes: Long by mutableStateOf(0L)
     // lazy 一次性创建：原 getter 每次访问都 mkdirs()，主线程反复系统调用造成滑动 IO 风暴
     private val thumbDir: java.io.File by lazy {
@@ -1522,16 +1633,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun thumbKey(stamp: String, type: String) = "${stamp}_${type.uppercase()}"
 
-    /** 加载完成统一入口：写内存 LRU；仅当格子仍在屏幕上时才写 preview 触发显示——
-     *  滑动中读回的大多数格子已滚出屏幕，写 preview 只会制造无谓的重组（首滑重组风暴源）。
-     *  滚出屏幕的只进 LRU，格子再进屏幕时 ensureThumb 缓存命中秒显。 */
+    /** 加载完成统一入口：写内存 LRU；格子在屏上、或尚未组合过（首轮加载，重连后
+     *  loader 跑在网格重组之前）时直接写 preview 触发显示 —— 旧实现只认 onScreen，
+     *  首轮位图全被压进 LRU，屏上格子留白、要滑出滑回才显示。
+     *  滑动中滚出屏幕的只进 LRU，格子再进屏幕时 ensureThumb 缓存命中秒显。 */
     private fun putThumb(row: PhotoRow, bmp: Bitmap) {
         val key = thumbKey(row.stamp, row.type)
         thumbRowByKey[key] = row
         thumbNoCache.remove(key)
         thumbMem.put(key, bmp)
         thumbFast[key] = bmp
-        if (row.onScreen) row.preview.value = bmp
+        if (row.onScreen || !row.enteredOnce) row.preview.value = bmp
     }
 
     /* ---------- 磁盘读回串行队列：启动后首滑时内存 LRU 是冷的，滑动经过的每个
@@ -1542,9 +1654,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val thumbInFlight = java.util.Collections.newSetFromMap(
         java.util.Collections.synchronizedMap(java.util.IdentityHashMap<PhotoRow, Boolean>())
     )
-    private val thumbNoCache = java.util.Collections.newSetFromMap(
-        java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-    )
+    /** 磁盘 miss 负缓存：key → 记录时刻。带 TTL —— 永不过期会把清缓存/重连后的
+     *  读回路径永久挡死（磁盘刚被清空时打的标记，之后 ensureThumb 一律直接 return）。 */
+    private val thumbNoCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
     @Volatile private var thumbIoRunning = false
 
     private fun pumpThumbIo() {
@@ -1563,7 +1675,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         if (row.preview.value == null && !thumbFast.containsKey(thumbKey(row.stamp, row.type))) {
                             val bmp = loadThumbFromCache(row.stamp, row.type)
                             if (bmp != null) putThumb(row, bmp)
-                            else thumbNoCache.add(thumbKey(row.stamp, row.type))
+                            else thumbNoCache[thumbKey(row.stamp, row.type)] = System.currentTimeMillis()
                         }
                     } catch (_: Throwable) {
                     } finally {
@@ -1587,7 +1699,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (row.preview.value != null) return
         val key = thumbKey(row.stamp, row.type)
         thumbFast[key]?.let { row.preview.value = it; return }
-        if (key in thumbNoCache) return          // 磁盘确认无缓存（loader 会补），不反复空读
+        val now = System.currentTimeMillis()
+        thumbNoCache[key]?.let { marked ->
+            if (now - marked < 15_000L) return     // 磁盘确认无缓存（loader 会补），不反复空读
+            thumbNoCache.remove(key)               // 标记过期放行：清缓存/重连后自愈
+        }
         if (!thumbInFlight.add(row)) return      // 已在队列，去重
         thumbIoQueue.add(row)
         pumpThumbIo()
@@ -2142,6 +2258,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (nxt > 0) queue.add(nxt)
         }
         return if (best.size == 2) best else null
+    }
+
+    /** 手动断开当前连接（USB 关会话 + Wi-Fi 关传输会话 + 清通道状态），供详情浮层「断开」按钮使用。
+     *  断开后保持照片网格（usbSession=null / connected=false），UI 回到双卡/选择条。 */
+    fun disconnect() {
+        if (usbSession != null) {
+            synchronized(camMutex) { runCatching { usbSession?.close() } }
+            usbSession = null
+        }
+        stopEventPolling()
+        stopKeepAlive()
+        if (connected || usbSession != null) {
+            synchronized(camMutex) {
+                GPhoto2Bridge.nativeTransferClose()
+                runCatching { GPhoto2Bridge.nativeExit() }
+            }
+        }
+        connected = false
+        connPhase.value = "disconnected"
+        connChannel.value = ""
+        connDetail.value = ""
+        connectedIp.value = ""
+        connText.value = "已断开 · 选择连接方式"
+        showConnDetail.value = false
+        pendingChannel.value = null
+        Log.i("GPhoto2", "手动断开连接")
+    }
+
+    /** Wi-Fi 卡内「扫描相机」：直接走网段扫描（跳过上次 IP） */
+    fun requestWifiScan() {
+        Thread { wifiConnectFlow(preferScan = true) }.start()
+    }
+
+    /** 双卡失败原因清除（用户重新点卡时调用） */
+    fun clearConnFailure() {
+        connFailMsg.value = ""
+        scanResults.clear()
     }
 
     /* ---------- 事件轮询 + 失联检测 ---------- */

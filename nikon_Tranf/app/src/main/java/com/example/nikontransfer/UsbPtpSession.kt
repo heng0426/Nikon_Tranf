@@ -82,6 +82,17 @@ class UsbPtpSession(
 
         fun hasPermission(usbManager: UsbManager, device: UsbDevice): Boolean =
             usbManager.hasPermission(device)
+
+        /** 请求 USB 设备权限（自定义广播回执由 MainViewModel 的 receiver 处理） */
+        fun requestPermission(ctx: android.content.Context, usbManager: UsbManager, device: UsbDevice) {
+            val pi = android.app.PendingIntent.getBroadcast(
+                ctx, 0,
+                android.content.Intent("com.example.nikontransfer.USB_PERMISSION")
+                    .setPackage(ctx.packageName),
+                android.app.PendingIntent.FLAG_MUTABLE
+            )
+            usbManager.requestPermission(device, pi)
+        }
     }
 
     /** 打开设备并建立 PTP 会话。失败抛异常，由调用方提示。 */
@@ -350,7 +361,9 @@ class UsbPtpSession(
         val size: Long,
         val isAssociation: Boolean
     ) {
-        val row: String get() = "$handle:$stamp:${if (name.endsWith(".NEF", true)) "NEF" else "JPG"}"
+        // 第 4 段 = 真实文件名：RAW+JPG 合并配对需要文件编号（同张 JPG/NEF 同名），
+        // 秒级时间戳在连拍时会撞车。解析处 split(':', limit = 4) 兼容无文件名的 Wi-Fi 行。
+        val row: String get() = "$handle:$stamp:${if (name.endsWith(".NEF", true)) "NEF" else "JPG"}:$name"
     }
 
     private class Resp(val code: Int, val data: ByteArray, val params: IntArray)

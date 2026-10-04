@@ -88,6 +88,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Close
@@ -107,6 +108,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.Surface
@@ -133,13 +135,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
@@ -276,7 +281,12 @@ class MainActivity : ComponentActivity() {
         var pairPreviewIndex by remember { mutableStateOf(-1) }
         // 预览返回高亮：记住刚预览的那张（句柄/时间戳），返回网格时脉冲提示
         var highlightHandle by remember { mutableStateOf<Int?>(null) }
-        var highlightStamp by remember { mutableStateOf<String?>(null) }
+        // 合并模式高亮键 = PairRow.key（唯一）。不能用 stamp：连拍同秒两格会同时命中，
+        // 返回指示脉冲同时跳动。单格式模式用 handle，天然唯一。
+        var highlightPairKey by remember { mutableStateOf<String?>(null) }
+        // 脉冲只播一次的闸门（跨格子组合销毁存活）：预览返回时武装，命中格子播完即消费——
+        // 否则格子滑出屏被 LazyGrid 销毁、滑回重建时 LaunchedEffect 首跑会重播动画
+        var highlightPulseArmed by remember { mutableStateOf(false) }
         val mergeGridState = rememberLazyGridState()
         val fileGridState = rememberLazyGridState()
         // 滑动感知暂停：网格滚动时通知缩略图 loader 挂起重活（停止后自动继续）
@@ -291,18 +301,16 @@ class MainActivity : ComponentActivity() {
         BackHandler(enabled = showDownloads) { showDownloads = false }
         BackHandler(enabled = showSettings) { showSettings = false }
 
-        // 打开 App 自动连接（设置项，默认关）：仅未连接且热点已开启时触发；
-        // 热点未开静默跳过不打扰；已连接/连接中（含 MIUI 重建后 VM 会话存活）不重复触发
+        // 打开 App 自动连接（设置项，默认关）：仅未连接/未连接中时触发；
+        // 优先通道 = 设置项 set_auto_conn_channel（usb 默认 / wifi），由总连接流程分发
         LaunchedEffect(Unit) {
             if (prefs.getBoolean("set_auto_connect", false) &&
                 !connected && !connecting && connPhase.value == "disconnected"
             ) {
-                if (vm.isHotspotOn()) {
-                    ensureLocalNetworkPermission {
-                        scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
-                    }
-                } else {
-                    Log.i("GPhoto2", "自动连接：热点未开启，跳过")
+                val channel = prefs.getString("set_auto_conn_channel", "usb") ?: "usb"
+                vm.pendingChannel.value = if (channel == "wifi") "wifi" else null
+                ensureLocalNetworkPermission {
+                    scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
                 }
             }
         }
@@ -419,9 +427,10 @@ class MainActivity : ComponentActivity() {
                     ) {
                         FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    // 连接指示（常驻，筛选旁，同款圆角外框）：绿=已连接(点看详情)；黄=连接中(禁点)；红=断开(点击重连)
+                    // 连接指示（常驻，筛选旁，同款圆角外框）：已连接=显示通道图标(点看详情)；连接中=禁点；断开=点击重连
                     val red = phase == "disconnected"
                     val amber = phase == "connecting"
+                    val isUsbConn = vm.connChannel.value == "usb"
                     Box(
                         Modifier
                             .padding(start = 10.dp)
@@ -431,16 +440,9 @@ class MainActivity : ComponentActivity() {
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .clickable(enabled = !amber) {
                                 if (red) {
-                                    // 重试连接：热点检查 + 权限 + 完整连接流程
-                                    if (vm.isHotspotOn()) {
-                                        ensureLocalNetworkPermission {
-                                            scope.launch {
-                                                withContext(Dispatchers.IO) { vm.connectionFlow() }
-                                            }
-                                        }
-                                    } else {
-                                        Log.i("GPhoto2", "热点未开启，弹窗提示")
-                                        hotspotHint = true
+                                    // 重试连接：走当前偏好通道（USB 优先默认）
+                                    ensureLocalNetworkPermission {
+                                        scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
                                     }
                                 } else toggleConnDetail()
                             },
@@ -450,13 +452,18 @@ class MainActivity : ComponentActivity() {
                             when {
                                 red -> if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
                                 amber -> if (vm.darkModeOn) Color(0xFFFFD54F) else Color(0xFF8D6E00)
+                                isUsbConn -> if (vm.darkModeOn) Color(0xFF64B5F6) else Color(0xFF1565C0)
                                 vm.darkModeOn -> Color(0xFF4DB6AC)
                                 else -> Color(0xFF00695C)
                             },
                             animationSpec = tween(200),
                             label = "connIconColor"
                         )
-                        WifiIcon(iconColor, Modifier.size(20.dp))
+                        if (isUsbConn) {
+                            UsbIcon(iconColor, Modifier.size(20.dp))
+                        } else {
+                            WifiIcon(iconColor, Modifier.size(20.dp))
+                        }
                     }
                     Spacer(Modifier.weight(1f))
                     // 下载队列按钮（筛选/连接同款圆角外框）：下载图标 + 活跃任务数量角标
@@ -491,94 +498,233 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val (cm, cs) = if (connDetail.value.isNotEmpty()) vm.splitInfo(connDetail.value)
                     else ("Nikon" to "?")
+                    val isUsb = vm.connChannel.value == "usb"
                     Surface(
                         Modifier.fillMaxWidth().padding(bottom = 8.dp),
                         shape = MaterialTheme.shapes.medium,
-                        color = if (vm.darkModeOn) Color(0xFF10312D) else Color(0xFFE0F2F1)
+                        color = if (vm.darkModeOn)
+                            (if (isUsb) Color(0xFF101838) else Color(0xFF10312D))
+                        else
+                            (if (isUsb) Color(0xFFE3F2FD) else Color(0xFFE0F2F1))
                     ) {
-                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                            Text(
-                                "已连接：$cm ($cs)",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
-                            )
-                            Text(
-                                "IP：${connectedIp.value}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-                // 连接状态条：冷启动未连接=点击就地连接；连接中=分步进度；已连接/断开重连=收起为标题栏图标
-                val showConnBar = phase == "connecting" ||
-                    (phase == "disconnected" && !vm.everConnected)
-                AnimatedVisibility(
-                    visible = showConnBar,
-                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(250)),
-                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(tween(200))
-                ) {
-                Surface(
-                    Modifier.fillMaxWidth().clickable(enabled = phase != "connecting") {
-                        if (phase == "disconnected") {
-                            if (vm.isHotspotOn()) {
-                                ensureLocalNetworkPermission {
-                                    scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
-                                }
-                            } else {
-                                Log.i("GPhoto2", "热点未开启，弹窗提示")
-                                hotspotHint = true
+                        Row(
+                            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "已连接：$cm ($cs) · ${if (isUsb) "USB 直连" else connectedIp.value}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (vm.darkModeOn)
+                                        (if (isUsb) Color(0xFF64B5F6) else Color(0xFF4DB6AC))
+                                    else
+                                        (if (isUsb) Color(0xFF1565C0) else Color(0xFF00695C))
+                                )
+                            }
+                            TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { vm.disconnect() } } }) {
+                                Text(
+                                    "断开",
+                                    color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
+                                )
                             }
                         }
-                    },
-                    shape = MaterialTheme.shapes.medium,
-                    color = when (phase) {
-                        "connected" -> if (vm.darkModeOn) Color(0xFF10312D) else Color(0xFFE0F2F1)
-                        "connecting" -> if (vm.darkModeOn) Color(0xFF332B12) else Color(0xFFFFF8E1)
-                        else -> if (vm.darkModeOn) Color(0xFF38201F) else Color(0xFFFFEBEE)
                     }
+                }
+                // 连接状态：无照片（冷启动/连接中）= 全屏双卡；有照片（断开/连接中）= 顶部紧凑选择条内动画
+                if (photoRows.isEmpty() &&
+                    (phase == "connecting" || (phase == "disconnected" && !vm.everConnected))
                 ) {
-                    Text(
-                        connText.value,
-                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = when (phase) {
-                            "connected" -> if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
-                            "connecting" -> if (vm.darkModeOn) Color(0xFFFFD54F) else Color(0xFF8D6E00)
-                            else -> if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
+                    // 冷启动/连接中：全屏双卡选择（无照片场景；连接中另一张卡淡出但可点击打断）
+                    val isUsbActive = phase == "connecting" &&
+                        (vm.pendingChannel.value == "usb" || vm.connChannel.value == "usb")
+                    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Spacer(Modifier.height(48.dp))
+                        Text(
+                            if (phase == "connecting") "正在连接相机…" else "选择连接方式",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        // USB 卡（蓝色系）
+                        UsbChannelCard(
+                            onClick = {
+                                scope.launch { withContext(Dispatchers.IO) { vm.startConnect("usb") } }
+                            },
+                            // 进度文案只挂在当前尝试通道的卡上（Wi-Fi 扫描时 USB 卡不显示）
+                            progressText = if (isUsbActive) connText.value else null,
+                            active = isUsbActive,
+                            dimmed = phase == "connecting" && !isUsbActive
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        // Wi-Fi 卡（绿色系）
+                        WifiChannelCard(
+                            onClick = {
+                                ensureLocalNetworkPermission {
+                                    scope.launch { withContext(Dispatchers.IO) { vm.startConnect("wifi") } }
+                                }
+                            },
+                            onScanClick = {
+                                ensureLocalNetworkPermission {
+                                    scope.launch { withContext(Dispatchers.IO) { vm.requestWifiScan() } }
+                                }
+                            },
+                            progressText = if (phase == "connecting" && !isUsbActive) connText.value else null,
+                            active = phase == "connecting" && !isUsbActive,
+                            dimmed = phase == "connecting" && isUsbActive,
+                            hotspotOn = vm.isHotspotOn()
+                        )
+                        // 失败原因 / 多相机选择（连接中不展示旧扫描结果，避免误触）
+                        val failMsg = vm.connFailMsg.value
+                        if (failMsg.isNotEmpty()) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                failMsg,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
+                            )
                         }
+                        if (phase != "connecting" && vm.scanResults.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "发现 ${vm.scanResults.size} 台相机，请选择：",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Column {
+                                vm.scanResults.forEach { (ip, info) ->
+                                    val (m, s) = vm.splitInfo(info)
+                                    Row(
+                                        Modifier.fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                                            .clickable {
+                                                scope.launch {
+                                                    withContext(Dispatchers.IO) { vm.connectToCamera(ip, info) }
+                                                }
+                                            }
+                                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text("$m ($s)", style = MaterialTheme.typography.bodyMedium)
+                                            Text(ip, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        Text("连接", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(48.dp))
+                    }
+                } else if (photoRows.isNotEmpty() && phase != "connected") {
+                    // 有照片 + 断开/连接中：顶部紧凑选择条。点选通道 → 该卡动画展开成整条（带进度），
+                    // 另一张动画收起；连接失败/断开 → 双卡动画恢复。重量动画驱动宽/透明度/间距插值。
+                    val connectingNow = phase == "connecting"
+                    val usbFull = connectingNow &&
+                        (vm.pendingChannel.value == "usb" || vm.connChannel.value == "usb")
+                    val wifiFull = connectingNow && !usbFull
+                    val expandSpec = tween<Float>(320, easing = FastOutSlowInEasing)
+                    val usbW by animateFloatAsState(
+                        when { usbFull -> 2.4f; connectingNow -> 0f; else -> 1f },
+                        animationSpec = expandSpec, label = "usbW"
                     )
+                    val wifiW by animateFloatAsState(
+                        when { wifiFull -> 2.4f; connectingNow -> 0f; else -> 1f },
+                        animationSpec = expandSpec, label = "wifiW"
+                    )
+                    Row(Modifier.fillMaxWidth()) {
+                        Box(
+                            Modifier.weight(usbW.coerceAtLeast(0.001f))
+                                .graphicsLayer { alpha = usbW.coerceIn(0f, 1f) }
+                                .clipToBounds()
+                                .padding(end = (8f * wifiW.coerceIn(0f, 1f)).dp)
+                        ) {
+                            UsbChannelCard(
+                                compact = true,
+                                onClick = {
+                                    scope.launch { withContext(Dispatchers.IO) { vm.startConnect("usb") } }
+                                },
+                                progressText = if (usbFull) connText.value else null,
+                                active = usbFull,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        Box(
+                            Modifier.weight(wifiW.coerceAtLeast(0.001f))
+                                .graphicsLayer { alpha = wifiW.coerceIn(0f, 1f) }
+                                .clipToBounds()
+                        ) {
+                            WifiChannelCard(
+                                compact = true,
+                                onClick = {
+                                    ensureLocalNetworkPermission {
+                                        scope.launch { withContext(Dispatchers.IO) { vm.startConnect("wifi") } }
+                                    }
+                                },
+                                onScanClick = {
+                                    ensureLocalNetworkPermission {
+                                        scope.launch { withContext(Dispatchers.IO) { vm.requestWifiScan() } }
+                                    }
+                                },
+                                hotspotOn = vm.isHotspotOn(),
+                                progressText = if (wifiFull) connText.value else null,
+                                active = wifiFull,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                    if (vm.connFailMsg.value.isNotEmpty()) {
+                        Text(
+                            vm.connFailMsg.value,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C),
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    if (vm.scanResults.isNotEmpty()) {
+                        Column(Modifier.padding(top = 4.dp)) {
+                            vm.scanResults.forEach { (ip, info) ->
+                                val (m, s) = vm.splitInfo(info)
+                                Row(
+                                    Modifier.fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                        .clickable {
+                                            scope.launch { withContext(Dispatchers.IO) { vm.connectToCamera(ip, info) } }
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("$m ($s)", style = MaterialTheme.typography.bodyMedium)
+                                        Text(ip, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Text("连接", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                                }
+                            }
+                        }
+                    }
                 }
                 }
-                }
-                // "共 N 个文件"纯文字计数行不显示（总数已在置顶胶囊中）
+                // 枚举/传输日志行（"共 N 个文件" 已由日期胶囊覆盖，不再重复显示）
                 if (uiLog.isNotBlank() && !uiLog.contains("个文件")) {
                     Text(uiLog, style = MaterialTheme.typography.bodySmall)
                 }
-                if (connPhase.value != "connected" && photoRows.isEmpty()) {
-                    Surface(
-                        Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant
+                // 连接成功但列表还在枚举（USB 逐对象取 ObjectInfo 较慢）：加载占位，替代白屏
+                if (phase == "connected" && photoRows.isEmpty()) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(vertical = 64.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Column(
-                            Modifier.fillMaxWidth().padding(vertical = 36.dp, horizontal = 16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            WifiIcon(MaterialTheme.colorScheme.onSurfaceVariant, Modifier.size(44.dp))
-                            Spacer(Modifier.height(14.dp))
-                            Text(
-                                "连接相机后即可浏览与下载照片",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "相机菜单 → 连接至 PC (Wi-Fi) → 建立连接",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "正在读取照片列表…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 val emptyByFilter = if (mergeOn) photoRows.isNotEmpty() && pairs.isEmpty()
@@ -616,15 +762,17 @@ class MainActivity : ComponentActivity() {
                     // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
                     // derivedStateOf：滑动中每帧的 layoutInfo 变化仅在跨分组时才输出新值，
                     // 避免 MainScreen 每帧重组（那会让所有可见格子跟着重建 → 滑动卡顿）
-                    val pillSec by remember(vm.pairSections) {
+                    val pillSec by remember(vm.pairSections, vm.collapsedDates.value) {
                         derivedStateOf {
                             val firstIdx = mergeGridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
                                 ?: return@derivedStateOf null
                             var acc = 0
                             var key: String? = null
                             for (sec in vm.pairSections) {
-                                if (firstIdx >= acc && firstIdx <= acc + sec.rows.size) { key = sec.dateKey; break }
-                                acc += 1 + sec.rows.size
+                                // 折叠节只渲染节头 1 个 item，映射需同步（否则置顶胶囊日期错位）
+                                val cnt = 1 + if (sec.dateKey in vm.collapsedDates.value) 0 else sec.rows.size
+                                if (firstIdx >= acc && firstIdx <= acc + cnt - 1) { key = sec.dateKey; break }
+                                acc += cnt
                             }
                             vm.pairSections.firstOrNull { it.dateKey == key }
                         }
@@ -670,37 +818,41 @@ class MainActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         vm.pairSections.forEach { sec ->
+                            val dayCollapsed = sec.dateKey in vm.collapsedDates.value
                             item(key = "phdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }, contentType = "hdr") {
-                                Row {
-                                    Surface(
-                                        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
-                                        shape = RoundedCornerShape(14.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant
-                                    ) {
-                                        Text(
-                                            vm.dateLabel(sec.dateKey, sec.rows.size),
-                                            Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                }
-                            }
-                            items(sec.rows, key = { it.stamp }, contentType = { "photo" }) { pair ->
-                                PairCell(
-                                    pair = pair,
-                                    highlight = pair.stamp == highlightStamp,
-                                    onTap = {
-                                        highlightHandle = null
-                                        highlightStamp = null
-                                        pairPreviewIndex = pairs.indexOf(pair)
-                                    },
-                                    onLongPress = { vm.togglePair(pair.stamp) }
+                                DateHeaderPill(
+                                    dateKey = sec.dateKey,
+                                    totalCount = sec.rows.size,
+                                    collapsed = dayCollapsed,
+                                    selectedInDay = sec.rows.count { it.key in vm.pairSelection.value },
+                                    onToggle = { vm.toggleDateCollapsed(sec.dateKey) }
                                 )
+                            }
+                            if (!dayCollapsed) {
+                                items(sec.rows, key = { it.key }, contentType = { "photo" }) { pair ->
+                                    PairCell(
+                                        pair = pair,
+                                        highlight = pair.key == highlightPairKey,
+                                        pulseArmed = highlightPulseArmed,
+                                        onPulsePlayed = { highlightPulseArmed = false },
+                                        onTap = {
+                                            highlightHandle = null
+                                            highlightPairKey = null
+                                            pairPreviewIndex = pairs.indexOf(pair)
+                                        },
+                                        onLongPress = { vm.togglePair(pair.key) }
+                                    )
+                                }
                             }
                         }
                     }
-                    if (pairs.size > 50) {
+                    // 快速滚动条：达到设置阈值才显示；折叠天照片不计入阈值判断
+                    val unfoldedPairs = vm.pairSections
+                        .filter { it.dateKey !in vm.collapsedDates.value }
+                        .sumOf { it.rows.size }
+                    val showMergeScrollbar = vm.scrollbarThreshold.value >= 0 &&
+                        unfoldedPairs >= vm.scrollbarThreshold.value
+                    if (showMergeScrollbar) {
                         // 显示层：库滚动条（拖块位置/动画/日期气泡），手势已禁用
                         InternalLazyVerticalGridScrollbar(
                             state = mergeGridState,
@@ -710,11 +862,12 @@ class MainActivity : ComponentActivity() {
                                 var acc = 0
                                 var d: String? = null
                                 for (sec in vm.pairSections) {
-                                    if (idx >= acc && idx <= acc + sec.rows.size) {
+                                    val cnt = 1 + if (sec.dateKey in vm.collapsedDates.value) 0 else sec.rows.size
+                                    if (idx >= acc && idx <= acc + cnt - 1) {
                                         d = vm.dateLabel(sec.dateKey, sec.rows.size)
                                         break
                                     }
-                                    acc += 1 + sec.rows.size
+                                    acc += cnt
                                 }
                                 if (d != null) DateBubble(d)
                             }
@@ -754,15 +907,17 @@ class MainActivity : ComponentActivity() {
                     // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
                     // derivedStateOf：滑动中每帧的 layoutInfo 变化仅在跨分组时才输出新值，
                     // 避免 MainScreen 每帧重组（那会让所有可见格子跟着重建 → 滑动卡顿）
-                    val pillSec by remember(vm.visibleSections) {
+                    val pillSec by remember(vm.visibleSections, vm.collapsedDates.value) {
                         derivedStateOf {
                             val firstIdx = fileGridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
                                 ?: return@derivedStateOf null
                             var acc = 0
                             var key: String? = null
                             for (sec in vm.visibleSections) {
-                                if (firstIdx >= acc && firstIdx <= acc + sec.rows.size) { key = sec.dateKey; break }
-                                acc += 1 + sec.rows.size
+                                // 折叠节只渲染节头 1 个 item，映射需同步（否则置顶胶囊日期错位）
+                                val cnt = 1 + if (sec.dateKey in vm.collapsedDates.value) 0 else sec.rows.size
+                                if (firstIdx >= acc && firstIdx <= acc + cnt - 1) { key = sec.dateKey; break }
+                                acc += cnt
                             }
                             vm.visibleSections.firstOrNull { it.dateKey == key }
                         }
@@ -806,37 +961,41 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     vm.visibleSections.forEach { sec ->
+                        val dayCollapsed = sec.dateKey in vm.collapsedDates.value
                         item(key = "hdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }, contentType = "hdr") {
-                            Row {
-                                Surface(
-                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant
-                                ) {
-                                    Text(
-                                        vm.dateLabel(sec.dateKey, sec.rows.size),
-                                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            }
-                        }
-                        items(sec.rows, key = { it.handle }, contentType = { "photo" }) { row ->
-                            GridCell(
-                                row = row,
-                                highlight = row.handle == highlightHandle,
-                                onTap = {
-                                    highlightHandle = null
-                                    highlightStamp = null
-                                    previewIndex = visible.indexOf(row)
-                                },
-                                onLongPress = { row.selected.value = !row.selected.value }
+                            DateHeaderPill(
+                                dateKey = sec.dateKey,
+                                totalCount = sec.rows.size,
+                                collapsed = dayCollapsed,
+                                selectedInDay = sec.rows.count { it.selected.value },
+                                onToggle = { vm.toggleDateCollapsed(sec.dateKey) }
                             )
+                        }
+                        if (!dayCollapsed) {
+                            items(sec.rows, key = { it.handle }, contentType = { "photo" }) { row ->
+                                GridCell(
+                                    row = row,
+                                    highlight = row.handle == highlightHandle,
+                                    pulseArmed = highlightPulseArmed,
+                                    onPulsePlayed = { highlightPulseArmed = false },
+                                    onTap = {
+                                        highlightHandle = null
+                                        highlightPairKey = null
+                                        previewIndex = visible.indexOf(row)
+                                    },
+                                    onLongPress = { row.selected.value = !row.selected.value }
+                                )
+                            }
                         }
                     }
                 }
-                    if (visible.size > 50) {
+                    // 快速滚动条：达到设置阈值才显示；折叠天照片不计入阈值判断
+                    val unfoldedFiles = vm.visibleSections
+                        .filter { it.dateKey !in vm.collapsedDates.value }
+                        .sumOf { it.rows.size }
+                    val showFileScrollbar = vm.scrollbarThreshold.value >= 0 &&
+                        unfoldedFiles >= vm.scrollbarThreshold.value
+                    if (showFileScrollbar) {
                         // 显示层：库滚动条（拖块位置/动画/日期气泡），手势已禁用
                         InternalLazyVerticalGridScrollbar(
                             state = fileGridState,
@@ -846,11 +1005,12 @@ class MainActivity : ComponentActivity() {
                                 var acc = 0
                                 var d: String? = null
                                 for (sec in vm.visibleSections) {
-                                    if (idx >= acc && idx <= acc + sec.rows.size) {
+                                    val cnt = 1 + if (sec.dateKey in vm.collapsedDates.value) 0 else sec.rows.size
+                                    if (idx >= acc && idx <= acc + cnt - 1) {
                                         d = vm.dateLabel(sec.dateKey, sec.rows.size)
                                         break
                                     }
-                                    acc += 1 + sec.rows.size
+                                    acc += cnt
                                 }
                                 if (d != null) DateBubble(d)
                             }
@@ -904,7 +1064,7 @@ class MainActivity : ComponentActivity() {
                         val jpgCount: Int
                         val nefCount: Int
                         if (mergeOn) {
-                            val selPairs = pairs.filter { it.stamp in vm.pairSelection.value }
+                            val selPairs = pairs.filter { it.key in vm.pairSelection.value }
                             jpgCount = selPairs.count { it.jpg != null && !(skip && it.jpgDownloaded) }
                             nefCount = selPairs.count { it.nef != null && !(skip && it.nefDownloaded) }
                         } else {
@@ -928,7 +1088,7 @@ class MainActivity : ComponentActivity() {
                             Row(
                                 Modifier.clickable {
                                     if (allSel) vm.clearSelection()
-                                    else if (mergeOn) vm.pairSelection.value = pairs.map { it.stamp }.toSet()
+                                    else if (mergeOn) vm.pairSelection.value = pairs.map { it.key }.toSet()
                                     else visible.forEach { it.selected.value = true }
                                 },
                                 verticalAlignment = Alignment.CenterVertically
@@ -979,16 +1139,17 @@ class MainActivity : ComponentActivity() {
                     rows = pairs.toList(),
                     onClose = { page ->
                         highlightHandle = null
-                        val stamp = pairs.getOrNull(page)?.stamp
-                        highlightStamp = stamp
+                        val pairKey = pairs.getOrNull(page)?.key
+                        highlightPairKey = pairKey
+                        highlightPulseArmed = true
                         // 网格跳到刚预览的对所在位置（已在可视区则不动）
-                        if (stamp != null) {
+                        if (pairKey != null) {
                             var idx = 0
                             var found = false
                             for (sec in vm.pairSections) {
                                 if (found) break
                                 idx++   // 日期分组头
-                                val pos = sec.rows.indexOfFirst { it.stamp == stamp }
+                                val pos = sec.rows.indexOfFirst { it.key == pairKey }
                                 if (pos >= 0) { idx += pos; found = true } else idx += sec.rows.size
                             }
                             if (found) {
@@ -1018,9 +1179,10 @@ class MainActivity : ComponentActivity() {
                     initialIndex = previewIndex,
                     rows = visible.toList(),
                     onClose = { page ->
-                        highlightStamp = null
+                        highlightPairKey = null
                         val handle = visible.getOrNull(page)?.handle
                         highlightHandle = handle
+                        highlightPulseArmed = true
                         // 网格跳到刚预览的照片所在位置（已在可视区则不动）
                         if (handle != null) {
                             var idx = 0
@@ -1286,7 +1448,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 预览页下载槽位：按队列状态渲染（排队/进度条/重试/已下载），与队列单一真相源联动 */
+    /** 预览页下载槽位：按队列状态渲染（排队/按钮内进度/重试/已下载），与队列单一真相源联动。
+     *  未下载=实心主色按钮；下载中=进度直接填充在按钮内（点按取消）；
+     *  已下载=绿色描边空心按钮（与实心未下载态一眼区分），点按弹重新下载确认窗。 */
     @Composable
     private fun DownloadStateSlot(
         downloaded: Boolean,
@@ -1299,17 +1463,25 @@ class MainActivity : ComponentActivity() {
     ) {
         val st = qItem?.status?.value
         when {
-            // 已下载：正常可点按钮（灰禁用态在黑底上几乎不可见），点击弹确认窗重新下载
+            // 已下载：实心绿胶囊 + ✓（未下载=主色实心胶囊），颜色与内容双重区分，实心底在照片背景上清晰
             downloaded || (qItem != null && st == QStatus.DONE) -> {
                 var confirmRedownload by remember { mutableStateOf(false) }
+                val green = if (vm.darkModeOn) Color(0xFF00796B) else Color(0xFF00695C)
                 Button(
                     onClick = { confirmRedownload = true },
                     modifier = modifier,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF00695C),
+                        containerColor = green,
                         contentColor = Color.White
                     )
-                ) { Text("已下载") }
+                ) {
+                    Icon(
+                        Icons.Filled.Check, contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("已下载")
+                }
                 if (confirmRedownload) {
                     AlertDialog(
                         onDismissRequest = { confirmRedownload = false },
@@ -1335,24 +1507,52 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
-            qItem != null && st == QStatus.RUNNING -> Column(modifier) {
-                if (qItem.total.value > 0) {
-                    LinearProgressIndicator(
-                        progress = {
-                            (qItem.got.value.toFloat() / qItem.total.value).coerceIn(0f, 1f)
-                        },
-                        modifier = Modifier.fillMaxWidth()
+            qItem != null && st == QStatus.RUNNING -> {
+                // 进度条直接长在按钮上：胶囊外形不变，左侧绿色填充随进度推进，点按取消
+                val frac = if (qItem.total.value > 0)
+                    (qItem.got.value.toFloat() / qItem.total.value).coerceIn(0f, 1f) else 0f
+                val onFill = if (vm.darkModeOn) Color(0xFFB2DFDB) else Color(0xFF004D40)
+                Box(
+                    modifier
+                        .height(40.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable { vm.cancelDownload(qItem) }
+                ) {
+                    Box(
+                        Modifier.fillMaxHeight().fillMaxWidth(frac)
+                            .background(Color(0xFF00695C).copy(alpha = 0.75f))
                     )
-                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        Modifier.matchParentSize().padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            "${humanSize(qItem.got.value)} / ${humanSize(qItem.total.value)}",
+                            color = onFill,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            Icons.Filled.Close, contentDescription = "取消下载",
+                            tint = onFill, modifier = Modifier.size(14.dp)
+                        )
+                    }
                 }
-                Text(
-                    "${humanSize(qItem.got.value)} / ${humanSize(qItem.total.value)} · ${qItem.speed.value}",
-                    color = Color(0xFFAAAAAA),
-                    style = MaterialTheme.typography.labelSmall
-                )
             }
-            qItem != null && st == QStatus.QUEUED -> Box(modifier, contentAlignment = Alignment.Center) {
-                Text("排队中…", color = Color(0xFFAAAAAA), style = MaterialTheme.typography.bodyMedium)
+            qItem != null && st == QStatus.QUEUED -> {
+                // 排队中：与下载中同款 40dp 胶囊（旧实现是无高度的文字盒，Row 顶对齐下视觉偏上）
+                Box(
+                    modifier
+                        .height(40.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("排队中…", color = Color(0xFF999999), style = MaterialTheme.typography.labelMedium)
+                }
             }
             qItem != null && st == QStatus.FAILED -> Button(
                 onClick = { vm.retryDownload(qItem) }, modifier = modifier
@@ -1370,27 +1570,34 @@ class MainActivity : ComponentActivity() {
     private fun PairCell(
         pair: PairRow,
         highlight: Boolean,
+        pulseArmed: Boolean,
+        onPulsePlayed: () -> Unit,
         onTap: () -> Unit,
         onLongPress: () -> Unit
     ) {
         val haptic = LocalHapticFeedback.current
-        val selected = pair.stamp in vm.pairSelection.value
+        val selected = pair.key in vm.pairSelection.value
         // 进入可视区兜底：位图被内存 LRU 逐出后，滑回时从磁盘缓存自动恢复。
         // onScreen 标志供 VM 判断"读回时是否触发显示重组"（滑动中滚出屏的只进缓存）。
         DisposableEffect(Unit) {
-            (pair.jpg ?: pair.nef)?.onScreen = true
-            onDispose { (pair.jpg ?: pair.nef)?.onScreen = false }
+            pair.jpg?.let { it.onScreen = true; it.enteredOnce = true }
+            pair.nef?.let { it.onScreen = true; it.enteredOnce = true }
+            onDispose {
+                pair.jpg?.onScreen = false
+                pair.nef?.onScreen = false
+            }
         }
         LaunchedEffect(Unit) { (pair.jpg ?: pair.nef)?.let { vm.ensureThumb(it) } }
         // 返回指示：缩放脉冲（小-大-小-大-小，1s，精确归位）+ 持续青色描边标出刚预览的照片
         val pulse = remember { Animatable(0f) }
-        LaunchedEffect(highlight) {
-            if (highlight) {
+        LaunchedEffect(highlight, pulseArmed) {
+            if (highlight && pulseArmed) {
                 pulse.snapTo(0f)
                 pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
                 pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
                 pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
                 pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
+                onPulsePlayed()   // 消费闸门：格子滑出屏重建后不重播
             } else pulse.snapTo(0f)
         }
         Box(
@@ -1611,29 +1818,34 @@ class MainActivity : ComponentActivity() {
         // 沉浸模式：单击图片切换，翻页保持状态
         var immersive by remember { mutableStateOf(false) }
         Surface(Modifier.fillMaxSize(), color = Color(0x66000000)) {
-            Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+            Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                // 图片层铺满整屏垫底，顶/底信息栏浮层叠加——EXIF/按钮高度变化不再挤压图片
+                Column(Modifier.fillMaxWidth().zIndex(1f)) {
                 AnimatedVisibility(
                     visible = !immersive,
                     enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
                     exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top)
                 ) {
-                // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
+                // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）。
+                // 固定 3dp 占位：进度条出现/消失不改变布局高度，图片区域不被推挤跳动。
                 val topKey = rows.getOrNull(pagerState.currentPage)?.let { p -> (p.jpg ?: p.nef)?.handle }
                 val topProg = topKey?.let { vm.hiresProgress[it] }
-                if (vm.hiresOn && topProg != null) {
-                    if (topProg < 0f) {
-                        LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth().height(3.dp),
-                            color = Color(0xFF4DB6AC),
-                            trackColor = Color(0x334DB6AC)
-                        )
-                    } else {
-                        LinearProgressIndicator(
-                            progress = { topProg.coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth().height(3.dp),
-                            color = Color(0xFF4DB6AC),
-                            trackColor = Color(0x334DB6AC)
-                        )
+                Box(Modifier.fillMaxWidth().height(3.dp)) {
+                    if (vm.hiresOn && topProg != null) {
+                        if (topProg < 0f) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxSize(),
+                                color = Color(0xFF4DB6AC),
+                                trackColor = Color(0x334DB6AC)
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                progress = { topProg.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxSize(),
+                                color = Color(0xFF4DB6AC),
+                                trackColor = Color(0x334DB6AC)
+                            )
+                        }
                     }
                 }
                 Row(
@@ -1652,7 +1864,7 @@ class MainActivity : ComponentActivity() {
                     )
                     // 右上角选择框：加入/移出多选（选中打勾）
                     val curPair = rows.getOrNull(pagerState.currentPage)
-                    val selNow = curPair != null && curPair.stamp in vm.pairSelection.value
+                    val selNow = curPair != null && curPair.key in vm.pairSelection.value
                     Box(
                         Modifier
                             .padding(end = 8.dp)
@@ -1664,7 +1876,7 @@ class MainActivity : ComponentActivity() {
                                 if (selNow) Color(0xFF00695C) else Color.White,
                                 RoundedCornerShape(6.dp)
                             )
-                            .clickable { curPair?.let { vm.togglePair(it.stamp) } },
+                            .clickable { curPair?.let { vm.togglePair(it.key) } },
                         contentAlignment = Alignment.Center
                     ) {
                         if (selNow) {
@@ -1678,9 +1890,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 }
+                }
                 HorizontalPager(
                     state = pagerState,
-                    modifier = Modifier.fillMaxWidth().weight(1f)
+                    modifier = Modifier.fillMaxSize()
                 ) { page ->
                     val pair = rows[page]
                     val zoom = remember { PreviewZoomState() }
@@ -1725,6 +1938,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 // 底部信息 + 双格式下载（沉浸模式隐藏）
+                Column(Modifier.fillMaxSize().zIndex(1f)) {
+                Spacer(Modifier.weight(1f))
                 AnimatedVisibility(
                     visible = !immersive,
                     enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
@@ -1784,7 +1999,10 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         // 单格式成对：唯一按钮占满整排；双格式：各占一半
                         if (pair.hasJpg) DownloadStateSlot(
                             downloaded = pair.jpgDownloaded,
@@ -1813,6 +2031,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 }
+                }
             }
         }
     }
@@ -1824,6 +2043,8 @@ class MainActivity : ComponentActivity() {
     private fun GridCell(
         row: PhotoRow,
         highlight: Boolean,
+        pulseArmed: Boolean,
+        onPulsePlayed: () -> Unit,
         onTap: () -> Unit,
         onLongPress: () -> Unit
     ) {
@@ -1832,18 +2053,20 @@ class MainActivity : ComponentActivity() {
         // onScreen 标志供 VM 判断"读回时是否触发显示重组"（滑动中滚出屏的只进缓存）。
         DisposableEffect(Unit) {
             row.onScreen = true
+            row.enteredOnce = true
             onDispose { row.onScreen = false }
         }
         LaunchedEffect(Unit) { vm.ensureThumb(row) }
         // 返回指示：缩放脉冲（小-大-小-大-小，1s，精确归位）+ 持续青色描边标出刚预览的照片
         val pulse = remember { Animatable(0f) }
-        LaunchedEffect(highlight) {
-            if (highlight) {
+        LaunchedEffect(highlight, pulseArmed) {
+            if (highlight && pulseArmed) {
                 pulse.snapTo(0f)
                 pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
                 pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
                 pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
                 pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
+                onPulsePlayed()   // 消费闸门：格子滑出屏重建后不重播
             } else pulse.snapTo(0f)
         }
         Box(
@@ -2065,6 +2288,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** USB 插头形状（描边风格：外壳 + 两针），与漏斗/WiFi/齿轮同自绘风格 */
+    @Composable
+    private fun UsbIcon(color: Color, modifier: Modifier = Modifier) {
+        Canvas(modifier.size(20.dp)) {
+            val w = size.width
+            val h = size.height
+            val cx = w / 2f
+            val cy = h / 2f
+            val s = minOf(w, h)
+            val stroke = (s * 0.07f).toFloat()
+            val style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            // 外壳：上宽下窄的梯形（开口朝下）
+            val shell = Path().apply {
+                moveTo(cx - s * 0.30f, cy - s * 0.22f)
+                lineTo(cx + s * 0.30f, cy - s * 0.22f)
+                lineTo(cx + s * 0.22f, cy + s * 0.20f)
+                lineTo(cx - s * 0.22f, cy + s * 0.20f)
+                close()
+            }
+            drawPath(shell, color, style = style)
+            // 两针（外壳下方伸出）
+            drawLine(color, Offset(cx - s * 0.12f, cy + s * 0.20f), Offset(cx - s * 0.12f, cy + s * 0.36f), style.width, cap = StrokeCap.Round)
+            drawLine(color, Offset(cx + s * 0.12f, cy + s * 0.20f), Offset(cx + s * 0.12f, cy + s * 0.36f), style.width, cap = StrokeCap.Round)
+            // 外壳内横线（细节）
+            drawLine(color, Offset(cx - s * 0.18f, cy - s * 0.10f), Offset(cx + s * 0.18f, cy - s * 0.10f), style.width, cap = StrokeCap.Round)
+        }
+    }
+
     /** 快速滚动条拖动/滚动时的日期气泡（LazyColumnScrollbar 的 indicatorContent 回调渲染） */
     @Composable
     private fun DateBubble(text: String) {
@@ -2079,6 +2330,67 @@ class MainActivity : ComponentActivity() {
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary
             )
+        }
+    }
+
+    /** 节头日期胶囊：点击折叠/展开当天照片（合并/文件模式共用）。
+     *  折叠态：箭头旋转 -90° + 胶囊变淡；当天有已选中照片时，日期胶囊旁独立显示"已选 N"
+     *  计数胶囊（不用 ✓ —— 避免与已下载标记混淆）。
+     *  折叠语义 = 只藏不见：totalCount 始终显示当天原始张数（Q4=B）。 */
+    @Composable
+    private fun DateHeaderPill(
+        dateKey: String,
+        totalCount: Int,
+        collapsed: Boolean,
+        selectedInDay: Int,
+        onToggle: () -> Unit
+    ) {
+        val arrow by animateFloatAsState(
+            if (collapsed) -90f else 0f,
+            animationSpec = tween(250, easing = FastOutSlowInEasing),
+            label = "foldArrow"
+        )
+        Row(
+            Modifier.padding(top = 8.dp, bottom = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (collapsed) 0.55f else 1f),
+                modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick = onToggle)
+            ) {
+                Row(
+                    Modifier.padding(start = 10.dp, end = 5.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        vm.dateLabel(dateKey, totalCount),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Icon(
+                        Icons.Filled.ArrowDropDown,
+                        contentDescription = if (collapsed) "展开当天照片" else "折叠当天照片",
+                        modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = arrow },
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            // 选中计数胶囊：与日期胶囊独立，避免挤占日期/箭头空间；"已选"前缀消除歧义
+            if (collapsed && selectedInDay > 0) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primary
+                ) {
+                    Text(
+                        "已选 $selectedInDay",
+                        Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+            }
         }
     }
 
@@ -2310,29 +2622,33 @@ class MainActivity : ComponentActivity() {
         // 沉浸模式：单击图片切换，翻页保持状态
         var immersive by remember { mutableStateOf(false) }
         Surface(Modifier.fillMaxSize(), color = Color(0x66000000)) {
-            Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+            Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                // 图片层铺满整屏垫底，顶/底信息栏浮层叠加——EXIF/按钮高度变化不再挤压图片
+                Column(Modifier.fillMaxWidth().zIndex(1f)) {
                 AnimatedVisibility(
                     visible = !immersive,
                     enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
                     exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top)
                 ) {
-                // 顶部细进度条：当前页高清加载中（-1=结构解析期不定长，0..1=定向读取）
+                // 顶部细进度条：固定 3dp 占位，出现/消失不推挤图片区域（防跳动）
                 val topRow = rows.getOrNull(pagerState.currentPage)
                 val topProg = topRow?.let { vm.hiresProgress[it.handle] }
-                if (vm.hiresOn && topProg != null) {
-                    if (topProg < 0f) {
-                        LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth().height(3.dp),
-                            color = Color(0xFF4DB6AC),
-                            trackColor = Color(0x334DB6AC)
-                        )
-                    } else {
-                        LinearProgressIndicator(
-                            progress = { topProg.coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth().height(3.dp),
-                            color = Color(0xFF4DB6AC),
-                            trackColor = Color(0x334DB6AC)
-                        )
+                Box(Modifier.fillMaxWidth().height(3.dp)) {
+                    if (vm.hiresOn && topProg != null) {
+                        if (topProg < 0f) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxSize(),
+                                color = Color(0xFF4DB6AC),
+                                trackColor = Color(0x334DB6AC)
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                progress = { topProg.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxSize(),
+                                color = Color(0xFF4DB6AC),
+                                trackColor = Color(0x334DB6AC)
+                            )
+                        }
                     }
                 }
                 Row(
@@ -2377,9 +2693,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 }
+                }
                 HorizontalPager(
                     state = pagerState,
-                    modifier = Modifier.fillMaxWidth().weight(1f)
+                    modifier = Modifier.fillMaxSize()
                 ) { page ->
                     val row = rows[page]
                     val zoom = remember { PreviewZoomState() }
@@ -2423,6 +2740,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 // 底部信息 + 操作（沉浸模式隐藏）
+                Column(Modifier.fillMaxSize().zIndex(1f)) {
+                Spacer(Modifier.weight(1f))
                 AnimatedVisibility(
                     visible = !immersive,
                     enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
@@ -2483,7 +2802,10 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         DownloadStateSlot(
                             downloaded = row.downloaded.value,
                             qItem = vm.downloadQueue.firstOrNull { it.handle == row.handle },
@@ -2493,6 +2815,7 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.weight(1f)
                         )
                     }
+                }
                 }
                 }
             }
@@ -2592,6 +2915,10 @@ class MainActivity : ComponentActivity() {
                         prefs.edit().putBoolean("set_auto_connect", it).apply()
                     }
                 )
+                if (autoConnect) {
+                    SettingsDivider()
+                    AutoConnChannelPicker()
+                }
             }
             SettingsSection(title = "传输", icon = { SectionIcon("传输") }) {
                 SettingSwitch(
@@ -2635,6 +2962,8 @@ class MainActivity : ComponentActivity() {
                         onKeepScreenOnChanged(it)
                     }
                 )
+                SettingsDivider()
+                ScrollbarThresholdPicker()
             }
             SettingsSection(title = "外观", icon = { SectionIcon("外观") }) {
                 SettingSwitch(
@@ -2867,6 +3196,249 @@ class MainActivity : ComponentActivity() {
                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(checked = checked, onCheckedChange = onChange)
+        }
+    }
+
+    /** 快速滚动条显示阈值选择器（不显示 / 30 / 50 / 100 / 200，写入 set_scrollbar_threshold） */
+    @Composable
+    private fun ScrollbarThresholdPicker() {
+        val t = vm.scrollbarThreshold.value
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+            Text("滚动条显示阈值", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "照片数达到阈值后显示右侧快速滚动条；被折叠的照片不计入数量",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ChannelChip("不显示", selected = t == -1) { vm.setScrollbarThreshold(-1) }
+                ChannelChip("30", selected = t == 30) { vm.setScrollbarThreshold(30) }
+                ChannelChip("50", selected = t == 50) { vm.setScrollbarThreshold(50) }
+                ChannelChip("100", selected = t == 100) { vm.setScrollbarThreshold(100) }
+                ChannelChip("200", selected = t == 200) { vm.setScrollbarThreshold(200) }
+            }
+        }
+    }
+
+    /** 自动连接优先通道选择器（USB / Wi-Fi 二选一，写入 set_auto_conn_channel） */
+    @Composable
+    private fun AutoConnChannelPicker() {
+        // 读可观察的 VM 状态：点击后选中态立即刷新（读 prefs 不会触发重组，chip 会"点不动"）
+        val channel = vm.autoConnChannel.value
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("自动连接优先通道", style = MaterialTheme.typography.bodyLarge)
+                Text("仅影响启动自动连接的尝试顺序，手动选择与插线自动连不受影响", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ChannelChip("USB", selected = channel == "usb") {
+                    vm.setAutoConnChannel("usb")
+                }
+                ChannelChip("Wi-Fi", selected = channel == "wifi") {
+                    vm.setAutoConnChannel("wifi")
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun ChannelChip(text: String, selected: Boolean, onClick: () -> Unit) {
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(9.dp))
+                .background(if (selected) Color(0xFF00695C) else MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text,
+                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+    }
+
+    /** 双卡选择 - USB 通道卡（蓝色系）
+     *  compact=false 冷启动全屏卡；compact=true 有照片断开时的顶部紧凑选择条（需调用处传 weight） */
+    @Composable
+    private fun UsbChannelCard(
+        compact: Boolean = false,
+        onClick: () -> Unit = {},
+        progressText: String? = null,
+        active: Boolean = false,
+        dimmed: Boolean = false,
+        modifier: Modifier = Modifier
+    ) {
+        val dark = vm.darkModeOn
+        val primary = if (dark) Color(0xFF64B5F6) else Color(0xFF1565C0)
+        val surface = if (dark) Color(0xFF101838) else Color(0xFFE3F2FD)
+        val onSurface = if (dark) Color(0xFFB3D6F7) else Color(0xFF0D47A1)
+
+        Surface(
+            shape = RoundedCornerShape(if (compact) 12.dp else 16.dp),
+            color = surface,
+            modifier = modifier
+                .fillMaxWidth()
+                .alpha(if (dimmed) 0.45f else 1f)
+                .clickable(enabled = !active) {
+                    vm.clearConnFailure()
+                    onClick()
+                }
+        ) {
+            Row(
+                Modifier.padding(
+                    horizontal = if (compact) 12.dp else 16.dp,
+                    vertical = if (compact) 10.dp else 16.dp
+                ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 图标色块容器（与顶栏按钮同风格）
+                Box(
+                    Modifier.size(if (compact) 34.dp else 46.dp)
+                        .clip(RoundedCornerShape(if (compact) 9.dp else 13.dp))
+                        .background(primary.copy(alpha = if (dark) 0.20f else 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    UsbIcon(primary, Modifier.size(if (compact) 20.dp else 26.dp))
+                }
+                Spacer(Modifier.width(if (compact) 10.dp else 14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (compact) "USB" else "USB 数据线",
+                        style = if (compact) MaterialTheme.typography.titleSmall
+                        else MaterialTheme.typography.titleMedium,
+                        color = onSurface
+                    )
+                    if (!compact) {
+                        Text(
+                            "插线即连 · 传输快 · 更稳定",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    // 当前通道的连接/扫描状态行
+                    if (progressText != null) {
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            progressText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                if (progressText != null) {
+                    CircularProgressIndicator(
+                        color = primary,
+                        strokeWidth = if (compact) 2.dp else 3.dp,
+                        modifier = Modifier.size(if (compact) 18.dp else 24.dp)
+                    )
+                } else if (!compact) {
+                    Text("连接 ›", style = MaterialTheme.typography.labelLarge, color = primary)
+                }
+            }
+        }
+    }
+
+    /** 双卡选择 - Wi-Fi 通道卡（绿色系） */
+    @Composable
+    private fun WifiChannelCard(
+        compact: Boolean = false,
+        onClick: () -> Unit = {},
+        onScanClick: () -> Unit = {},
+        progressText: String? = null,
+        active: Boolean = false,
+        dimmed: Boolean = false,
+        hotspotOn: Boolean = false,
+        modifier: Modifier = Modifier
+    ) {
+        val dark = vm.darkModeOn
+        val primary = if (dark) Color(0xFF4DB6AC) else Color(0xFF00695C)
+        val surface = if (dark) Color(0xFF10312D) else Color(0xFFE0F2F1)
+        val onSurface = if (dark) Color(0xFF80CBC4) else Color(0xFF004D40)
+
+        Surface(
+            shape = RoundedCornerShape(if (compact) 12.dp else 16.dp),
+            color = surface,
+            modifier = modifier
+                .fillMaxWidth()
+                .alpha(if (dimmed) 0.45f else 1f)
+                .clickable(enabled = !active) {
+                    vm.clearConnFailure()
+                    onClick()
+                }
+        ) {
+            Row(
+                Modifier.padding(
+                    horizontal = if (compact) 12.dp else 16.dp,
+                    vertical = if (compact) 10.dp else 16.dp
+                ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier.size(if (compact) 34.dp else 46.dp)
+                        .clip(RoundedCornerShape(if (compact) 9.dp else 13.dp))
+                        .background(primary.copy(alpha = if (dark) 0.20f else 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    WifiIcon(primary, Modifier.size(if (compact) 20.dp else 26.dp))
+                }
+                Spacer(Modifier.width(if (compact) 10.dp else 14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (compact) "Wi-Fi" else "Wi-Fi 无线",
+                        style = if (compact) MaterialTheme.typography.titleSmall
+                        else MaterialTheme.typography.titleMedium,
+                        color = onSurface
+                    )
+                    if (!compact) {
+                        Text(
+                            if (hotspotOn) "已开热点 · 直接连接" else "无线连接 · 手机开热点或同一路由器",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    // 当前通道的连接/扫描状态行
+                    if (progressText != null) {
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            progressText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                if (progressText != null) {
+                    CircularProgressIndicator(
+                        color = primary,
+                        strokeWidth = if (compact) 2.dp else 3.dp,
+                        modifier = Modifier.size(if (compact) 18.dp else 24.dp)
+                    )
+                } else if (!compact) {
+                    // 描边胶囊「扫描相机」：空闲时显示；连接中隐藏（状态行占位）
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(9.dp))
+                            .border(1.dp, primary.copy(alpha = 0.55f), RoundedCornerShape(9.dp))
+                            .clickable(enabled = !dimmed && !active) { onScanClick() }
+                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                    ) {
+                        Text("扫描相机", style = MaterialTheme.typography.labelMedium, color = primary)
+                    }
+                }
+            }
         }
     }
 }
