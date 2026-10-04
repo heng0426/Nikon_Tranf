@@ -24,6 +24,9 @@ class PhotoRow(val name: String, val handle: Int, val type: String, val stamp: S
     val preview = mutableStateOf<Bitmap?>(null)
     val selected = mutableStateOf(false)
     val downloaded = mutableStateOf(false)
+    /** 格子是否在屏幕上：由 GridCell 进入/离开组合维护。滑动中读回的位图若格子
+     *  已滚出屏幕则只写 LRU 缓存、不写 preview —— 避免滑动中位图填充触发的重组风暴。 */
+    @Volatile var onScreen = false
 }
 
 /** 合并视图格子：同一时间戳的 JPG+NEF 成对（或孤儿单格式）。
@@ -1075,14 +1078,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun decodeScaled(buf: ByteArray, off: Int, len: Int): Bitmap? = try {
-        val bmp = BitmapFactory.decodeByteArray(buf, off, len)
-        if (bmp != null) {
-            val trimmed = trimBlackBars(bmp)
-            if (trimmed.width > 640) {
-                val s = 640f / trimmed.width
-                Bitmap.createScaledBitmap(trimmed, 640, (trimmed.height * s).toInt().coerceAtLeast(1), true)
-            } else trimmed
-        } else null
+        // 两步降采样：先量尺寸算 inSampleSize，再直接解出小图（避免全尺寸中间位图引发 GC 抖动）
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(buf, off, len, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= 640) sample *= 2
+            val bmp = BitmapFactory.decodeByteArray(
+                buf, off, len,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+            )
+            if (bmp != null) {
+                val trimmed = trimBlackBars(bmp)
+                if (trimmed.width > 640) {
+                    val s = 640f / trimmed.width
+                    Bitmap.createScaledBitmap(trimmed, 640, (trimmed.height * s).toInt().coerceAtLeast(1), true)
+                } else trimmed
+            } else null
+        }
     } catch (_: Throwable) { null }
 
     /** 裁掉位图上下贴边的纯黑条：Z6_2 内嵌缩略图（JPG 的 EXIF 缩略图与 NEF 的
@@ -1273,8 +1289,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     var thumbCacheBytes: Long by mutableStateOf(0L)
-    private val thumbDir: java.io.File
-        get() = java.io.File(ctx.cacheDir, "thumbs").apply { mkdirs() }
+    // lazy 一次性创建：原 getter 每次访问都 mkdirs()，主线程反复系统调用造成滑动 IO 风暴
+    private val thumbDir: java.io.File by lazy {
+        java.io.File(ctx.cacheDir, "thumbs").apply { mkdirs() }
+    }
     private fun thumbFile(stamp: String, type: String) =
         java.io.File(thumbDir, "${stamp}_${type.uppercase()}.jpg")
 
@@ -1285,6 +1303,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 清空缩略图缓存（设置页手动入口） */
     fun clearThumbCache() {
         thumbDir.listFiles()?.forEach { it.delete() }
+        thumbNoCache.clear()
+        thumbMem.evictAll()
         refreshThumbCacheSize()
     }
 
@@ -1301,9 +1321,106 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /* ---------- 缩略图内存 LRU：防全列表位图常驻内存引发 GC 滑动卡顿。
+     *  预算 = 堆上限/8（≤64MB）；逐出时把对应行 preview 置 null（UI 回退占位），
+     *  行滑回可视区由 ensureThumb 从磁盘缓存自动恢复。 ---------- */
+    private val thumbRowByKey = java.util.concurrent.ConcurrentHashMap<String, PhotoRow>()
+    /** 主线程无锁读路径：ensureThumb 的内存命中走这里（LruCache.get 是 synchronized，
+     *  loader/读回线程高频 put 时主线程 get 会被锁住 → 滑动帧被拉长）。 */
+    private val thumbFast = java.util.concurrent.ConcurrentHashMap<String, Bitmap>()
+    private val thumbMem = object : android.util.LruCache<String, Bitmap>(1) {
+        override fun sizeOf(key: String, value: Bitmap) = value.byteCount
+        override fun entryRemoved(evicted: Boolean, key: String, old: Bitmap?, new: Bitmap?) {
+            thumbFast.remove(key)
+            if (evicted) thumbRowByKey.remove(key)?.preview?.value = null
+        }
+    }
+
+    init {
+        thumbMem.resize(
+            (Runtime.getRuntime().maxMemory() / 8).toInt().coerceAtMost(64 * 1024 * 1024)
+        )
+    }
+
+    private fun thumbKey(stamp: String, type: String) = "${stamp}_${type.uppercase()}"
+
+    /** 加载完成统一入口：写内存 LRU；仅当格子仍在屏幕上时才写 preview 触发显示——
+     *  滑动中读回的大多数格子已滚出屏幕，写 preview 只会制造无谓的重组（首滑重组风暴源）。
+     *  滚出屏幕的只进 LRU，格子再进屏幕时 ensureThumb 缓存命中秒显。 */
+    private fun putThumb(row: PhotoRow, bmp: Bitmap) {
+        val key = thumbKey(row.stamp, row.type)
+        thumbRowByKey[key] = row
+        thumbNoCache.remove(key)
+        thumbMem.put(key, bmp)
+        thumbFast[key] = bmp
+        if (row.onScreen) row.preview.value = bmp
+    }
+
+    /* ---------- 磁盘读回串行队列：启动后首滑时内存 LRU 是冷的，滑动经过的每个
+     *  新格子都会触发读磁盘。原实现"每格子开一个新线程"= 每秒 10~30 个线程创建
+     *  + 并发 IO/解码争抢——首滑卡顿的元凶（多滑几次变流畅 = 格子进了内存缓存）。
+     *  改为常驻单线程串行处理 + in-flight 去重 + 磁盘 miss 负缓存。 ---------- */
+    private val thumbIoQueue = java.util.concurrent.ConcurrentLinkedQueue<PhotoRow>()
+    private val thumbInFlight = java.util.Collections.newSetFromMap(
+        java.util.Collections.synchronizedMap(java.util.IdentityHashMap<PhotoRow, Boolean>())
+    )
+    private val thumbNoCache = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    )
+    @Volatile private var thumbIoRunning = false
+
+    private fun pumpThumbIo() {
+        if (thumbIoRunning) return
+        synchronized(this) {
+            if (thumbIoRunning) return
+            thumbIoRunning = true
+        }
+        Thread {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            try {
+                while (true) {
+                    val row = thumbIoQueue.poll() ?: break
+                    try {
+                        // 排队期间可能已被 loader 填充，再查一次避免重复 IO
+                        if (row.preview.value == null && !thumbFast.containsKey(thumbKey(row.stamp, row.type))) {
+                            val bmp = loadThumbFromCache(row.stamp, row.type)
+                            if (bmp != null) putThumb(row, bmp)
+                            else thumbNoCache.add(thumbKey(row.stamp, row.type))
+                        }
+                    } catch (_: Throwable) {
+                    } finally {
+                        thumbInFlight.remove(row)
+                    }
+                }
+            } finally {
+                synchronized(this) { thumbIoRunning = false }
+                if (thumbIoQueue.isNotEmpty()) pumpThumbIo()   // 收尾空档又进新请求 → 续泵
+            }
+        }.apply {
+            isDaemon = true
+            name = "thumb-io"
+            start()
+        }
+    }
+
+    /** 格子进入可视区的兜底：内存命中走无锁 thumbFast（主线程不与后台 put 抢 LruCache 锁）；
+     *  磁盘缓存经串行队列读回（主线程零文件 IO、零线程创建） */
+    fun ensureThumb(row: PhotoRow) {
+        if (row.preview.value != null) return
+        val key = thumbKey(row.stamp, row.type)
+        thumbFast[key]?.let { row.preview.value = it; return }
+        if (key in thumbNoCache) return          // 磁盘确认无缓存（loader 会补），不反复空读
+        if (!thumbInFlight.add(row)) return      // 已在队列，去重
+        thumbIoQueue.add(row)
+        pumpThumbIo()
+    }
+
     private fun loadThumbFromCache(stamp: String, type: String): Bitmap? = try {
         val f = thumbFile(stamp, type)
-        if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+        if (f.exists()) BitmapFactory.decodeFile(
+            f.absolutePath,
+            BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+        ) else null
     } catch (_: Throwable) {
         null
     }
@@ -1314,22 +1431,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
                 tmp.renameTo(thumbFile(stamp, type)) || tmp.delete()
             }
-            refreshThumbCacheSize()
-            enforceThumbCacheLimit()
+            // 节流：listFiles 全目录扫描较贵，连续写盘时每 25 张刷一次（设置页的显示值允许滞后）
+            if (++thumbCacheWrites % 25 == 0) {
+                refreshThumbCacheSize()
+                enforceThumbCacheLimit()
+            }
         } catch (_: Throwable) {
         }
     }
+    @Volatile private var thumbCacheWrites = 0
 
     private fun startPreviewLoading(rows: List<PhotoRow>) {
         val myGen = ++previewGen
         val CH = 0x10000
         Thread {
+            // 照搬 Z传：BACKGROUND 优先级把线程放进 background cgroup → 调度到小核，
+            // 解码/写盘不与 UI 线程争抢大核（Thread.priority 只调 nice 不换核）
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             for (row in rows) {
                 if (!connected || previewGen != myGen) return@Thread
+                // 滑动感知暂停：网格滚动进行时挂起重活（Glide 式策略），停止后自动继续
+                while (gridScrolling && connected && previewGen == myGen) {
+                    try { Thread.sleep(50) } catch (_: InterruptedException) { return@Thread }
+                }
                 // 磁盘缓存命中：直接显示，跳过网络拉取
                 val cached = loadThumbFromCache(row.stamp, row.type)
                 if (cached != null) {
-                    row.preview.value = cached
+                    putThumb(row, cached)
                     continue
                 }
                 var bmp: Bitmap? = null
@@ -1397,15 +1525,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 if (bmp != null) {
-                    row.preview.value = bmp
+                    putThumb(row, bmp)
                     saveThumbToCache(row.stamp, row.type, bmp)
                 }
             }
-        }.apply {
-            isDaemon = true
-            name = "preview-loader"
-            start()
-        }
+            }.apply {
+                isDaemon = true
+                name = "preview-loader"
+                start()
+            }
     }
 
     /* ---------- 高清预览（复刻 Z传：结构解析 + 0x9431 定向读嵌入大图） ----------
@@ -1431,6 +1559,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val hiresFailed = mutableStateMapOf<Int, Boolean>()
     /** EXIF 摘要：handle → "F2.8 · 1/500s · ISO400 · 70mm"（高清加载时解析） */
     val exifLines = mutableStateMapOf<Int, List<String>>()
+
+    /** 网格滚动进行中（MainScreen 同步写入）：缩略图 loader 循环据此挂起重活 */
+    @Volatile
+    var gridScrolling = false
 
     private enum class HiresKind { JPG, NEF }
     private data class HiresTask(val handle: Int, val kind: HiresKind)

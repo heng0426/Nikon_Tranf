@@ -119,8 +119,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -131,6 +133,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -275,6 +278,11 @@ class MainActivity : ComponentActivity() {
         var highlightStamp by remember { mutableStateOf<String?>(null) }
         val mergeGridState = rememberLazyGridState()
         val fileGridState = rememberLazyGridState()
+        // 滑动感知暂停：网格滚动时通知缩略图 loader 挂起重活（停止后自动继续）
+        LaunchedEffect(mergeGridState, fileGridState) {
+            snapshotFlow { mergeGridState.isScrollInProgress || fileGridState.isScrollInProgress }
+                .collect { vm.gridScrolling = it }
+        }
 
         // 返回键：全屏预览 → 关预览；下载页/设置页 → 回主页
         BackHandler(enabled = pairPreviewIndex >= 0) { pairPreviewIndex = -1 }
@@ -599,25 +607,31 @@ class MainActivity : ComponentActivity() {
                 // 照片网格：按日期分节（节头占满一行），组内从新到旧；合并模式一格=一对
                 if (mergeOn) {
                     // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
-                    val firstIdx = mergeGridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
-                    var pillKey: String? = null
-                    if (firstIdx != null) {
-                        var acc = 0
-                        for (sec in vm.pairSections) {
-                            if (firstIdx >= acc && firstIdx <= acc + sec.rows.size) { pillKey = sec.dateKey; break }
-                            acc += 1 + sec.rows.size
+                    // derivedStateOf：滑动中每帧的 layoutInfo 变化仅在跨分组时才输出新值，
+                    // 避免 MainScreen 每帧重组（那会让所有可见格子跟着重建 → 滑动卡顿）
+                    val pillSec by remember(vm.pairSections) {
+                        derivedStateOf {
+                            val firstIdx = mergeGridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
+                                ?: return@derivedStateOf null
+                            var acc = 0
+                            var key: String? = null
+                            for (sec in vm.pairSections) {
+                                if (firstIdx >= acc && firstIdx <= acc + sec.rows.size) { key = sec.dateKey; break }
+                                acc += 1 + sec.rows.size
+                            }
+                            vm.pairSections.firstOrNull { it.dateKey == key }
                         }
                     }
-                    val pillSec = vm.pairSections.firstOrNull { it.dateKey == pillKey }
+                    val sec = pillSec   // 委托属性无法 smart cast，先固化局部值
                     Box(Modifier.fillMaxWidth().height(pillSlotHeight), contentAlignment = Alignment.CenterStart) {
-                        if (pillSec != null) {
+                        if (sec != null) {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Surface(
                                     shape = RoundedCornerShape(14.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
                                 ) {
                                     Text(
-                                        vm.dateLabel(pillSec.dateKey, pillSec.rows.size),
+                                        vm.dateLabel(sec.dateKey, sec.rows.size),
                                         Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.primary
@@ -637,7 +651,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    Box(Modifier.fillMaxWidth().weight(1f)) {
+                    // 免疫无障碍扫描：GKD/记账类服务监听 CONTENT_CHANGED 且全树遍历坐标，
+                    // 网格几百节点 × 每帧滚动 = 主线程每帧 6-17ms 语义计算（实测 trace 热点）。
+                    // 清空网格子树语义后对外只剩 1 个空节点，服务扫描成本归零（工具类 app 可接受）。
+                    Box(Modifier.fillMaxWidth().weight(1f).clearAndSetSemantics { }) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
                         modifier = Modifier.fillMaxSize(),
@@ -646,7 +663,7 @@ class MainActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         vm.pairSections.forEach { sec ->
-                            item(key = "phdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }) {
+                            item(key = "phdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }, contentType = "hdr") {
                                 Row {
                                     Surface(
                                         modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
@@ -662,7 +679,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             }
-                            items(sec.rows, key = { it.stamp }) { pair ->
+                            items(sec.rows, key = { it.stamp }, contentType = { "photo" }) { pair ->
                                 PairCell(
                                     pair = pair,
                                     highlight = pair.stamp == highlightStamp,
@@ -728,25 +745,31 @@ class MainActivity : ComponentActivity() {
                     }
                 } else {
                     // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
-                    val firstIdx = fileGridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
-                    var pillKey: String? = null
-                    if (firstIdx != null) {
-                        var acc = 0
-                        for (sec in vm.visibleSections) {
-                            if (firstIdx >= acc && firstIdx <= acc + sec.rows.size) { pillKey = sec.dateKey; break }
-                            acc += 1 + sec.rows.size
+                    // derivedStateOf：滑动中每帧的 layoutInfo 变化仅在跨分组时才输出新值，
+                    // 避免 MainScreen 每帧重组（那会让所有可见格子跟着重建 → 滑动卡顿）
+                    val pillSec by remember(vm.visibleSections) {
+                        derivedStateOf {
+                            val firstIdx = fileGridState.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
+                                ?: return@derivedStateOf null
+                            var acc = 0
+                            var key: String? = null
+                            for (sec in vm.visibleSections) {
+                                if (firstIdx >= acc && firstIdx <= acc + sec.rows.size) { key = sec.dateKey; break }
+                                acc += 1 + sec.rows.size
+                            }
+                            vm.visibleSections.firstOrNull { it.dateKey == key }
                         }
                     }
-                    val pillSec = vm.visibleSections.firstOrNull { it.dateKey == pillKey }
+                    val sec = pillSec   // 委托属性无法 smart cast，先固化局部值
                     Box(Modifier.fillMaxWidth().height(pillSlotHeight), contentAlignment = Alignment.CenterStart) {
-                        if (pillSec != null) {
+                        if (sec != null) {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Surface(
                                     shape = RoundedCornerShape(14.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
                                 ) {
                                     Text(
-                                        vm.dateLabel(pillSec.dateKey, pillSec.rows.size),
+                                        vm.dateLabel(sec.dateKey, sec.rows.size),
                                         Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.primary
@@ -766,7 +789,8 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    Box(Modifier.fillMaxWidth().weight(1f)) {
+                    // 免疫无障碍扫描（同合并模式）：语义子树清空，服务扫描成本归零
+                    Box(Modifier.fillMaxWidth().weight(1f).clearAndSetSemantics { }) {
                     LazyVerticalGrid(
                     columns = GridCells.Fixed(3),
                     modifier = Modifier.fillMaxSize(),
@@ -775,7 +799,7 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     vm.visibleSections.forEach { sec ->
-                        item(key = "hdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }) {
+                        item(key = "hdr_${sec.dateKey}", span = { GridItemSpan(maxLineSpan) }, contentType = "hdr") {
                             Row {
                                 Surface(
                                     modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
@@ -791,7 +815,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
-                        items(sec.rows, key = { it.handle }) { row ->
+                        items(sec.rows, key = { it.handle }, contentType = { "photo" }) { row ->
                             GridCell(
                                 row = row,
                                 highlight = row.handle == highlightHandle,
@@ -1344,6 +1368,13 @@ class MainActivity : ComponentActivity() {
     ) {
         val haptic = LocalHapticFeedback.current
         val selected = pair.stamp in vm.pairSelection.value
+        // 进入可视区兜底：位图被内存 LRU 逐出后，滑回时从磁盘缓存自动恢复。
+        // onScreen 标志供 VM 判断"读回时是否触发显示重组"（滑动中滚出屏的只进缓存）。
+        DisposableEffect(Unit) {
+            (pair.jpg ?: pair.nef)?.onScreen = true
+            onDispose { (pair.jpg ?: pair.nef)?.onScreen = false }
+        }
+        LaunchedEffect(Unit) { (pair.jpg ?: pair.nef)?.let { vm.ensureThumb(it) } }
         // 返回指示：缩放脉冲（小-大-小-大-小，1s，精确归位）+ 持续青色描边标出刚预览的照片
         val pulse = remember { Animatable(0f) }
         LaunchedEffect(highlight) {
@@ -1357,11 +1388,14 @@ class MainActivity : ComponentActivity() {
         }
         Box(
             Modifier
-                .graphicsLayer {
-                    val s = 1f + 0.06f * pulse.value
-                    scaleX = s
-                    scaleY = s
-                }
+                .then(
+                    // 高亮时才挂独立渲染层（无条件挂会让每个格子常驻一个 layer，滑动多开销）
+                    if (highlight) Modifier.graphicsLayer {
+                        val s = 1f + 0.06f * pulse.value
+                        scaleX = s
+                        scaleY = s
+                    } else Modifier
+                )
                 .then(
                     if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp))
                     else Modifier
@@ -1787,6 +1821,13 @@ class MainActivity : ComponentActivity() {
         onLongPress: () -> Unit
     ) {
         val haptic = LocalHapticFeedback.current
+        // 进入可视区兜底：位图被内存 LRU 逐出后，滑回时从磁盘缓存自动恢复。
+        // onScreen 标志供 VM 判断"读回时是否触发显示重组"（滑动中滚出屏的只进缓存）。
+        DisposableEffect(Unit) {
+            row.onScreen = true
+            onDispose { row.onScreen = false }
+        }
+        LaunchedEffect(Unit) { vm.ensureThumb(row) }
         // 返回指示：缩放脉冲（小-大-小-大-小，1s，精确归位）+ 持续青色描边标出刚预览的照片
         val pulse = remember { Animatable(0f) }
         LaunchedEffect(highlight) {
@@ -1800,11 +1841,14 @@ class MainActivity : ComponentActivity() {
         }
         Box(
             Modifier
-                .graphicsLayer {
-                    val s = 1f + 0.06f * pulse.value
-                    scaleX = s
-                    scaleY = s
-                }
+                .then(
+                    // 高亮时才挂独立渲染层（无条件挂会让每个格子常驻一个 layer，滑动多开销）
+                    if (highlight) Modifier.graphicsLayer {
+                        val s = 1f + 0.06f * pulse.value
+                        scaleX = s
+                        scaleY = s
+                    } else Modifier
+                )
                 .then(
                     if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp))
                     else Modifier
