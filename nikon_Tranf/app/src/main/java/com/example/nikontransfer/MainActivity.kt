@@ -294,12 +294,6 @@ class MainActivity : ComponentActivity() {
                 .collect { vm.gridScrolling = it }
         }
 
-        // 返回键：全屏预览 → 关预览；下载页/设置页 → 回主页
-        BackHandler(enabled = pairPreviewIndex >= 0) { pairPreviewIndex = -1 }
-        BackHandler(enabled = previewIndex >= 0) { previewIndex = -1 }
-        BackHandler(enabled = showDownloads) { showDownloads = false }
-        BackHandler(enabled = showSettings) { showSettings = false }
-
         // 打开 App 自动连接（设置项，默认关）：仅未连接/未连接中时触发；
         // 优先通道 = 设置项 set_auto_conn_channel（usb 默认 / wifi），由总连接流程分发
         LaunchedEffect(Unit) {
@@ -341,8 +335,15 @@ class MainActivity : ComponentActivity() {
         val pairSelCount = vm.pairSelection.value.size
         val selCount = if (mergeOn) pairSelCount else photoRows.count { it.selected.value }
 
-        // 返回键：多选态 → 退出多选，避免直接退出 App
-        BackHandler(enabled = selCount > 0) { vm.clearSelection() }
+        // 返回键优先级（Compose 中先注册者优先级最低）：多选退出 → 预览关闭 → 下载页/设置页回主页。
+        // 多选时点进预览，按返回先关预览回多选（多选 handler 必须最先注册，否则会抢走预览的返回键）
+        BackHandler(enabled = selCount > 0 && pairPreviewIndex < 0 && previewIndex < 0) {
+            vm.clearSelection()
+        }
+        BackHandler(enabled = pairPreviewIndex >= 0) { pairPreviewIndex = -1 }
+        BackHandler(enabled = previewIndex >= 0) { previewIndex = -1 }
+        BackHandler(enabled = showDownloads) { showDownloads = false }
+        BackHandler(enabled = showSettings) { showSettings = false }
 
         // 毛玻璃：预览打开时主界面内容实时模糊（API31+，低版本自动退化为半透明黑）
         val previewing = (mergeOn && pairPreviewIndex >= 0) || (!mergeOn && previewIndex >= 0)
@@ -1400,24 +1401,38 @@ class MainActivity : ComponentActivity() {
                     TextButton(onClick = { vm.clearFinished() }) { Text("清空已完成") }
                 }
             }
-            // 汇总行 + 总进度条：进度 = (已完成数 + 当前任务字节比例) / 未完成任务总数。
+            // 汇总胶囊 + 总进度条：进度 = (已完成数 + 当前任务字节比例) / 未完成任务总数。
             // 不按字节累加——排队任务在开始下载前 total=0，按字节累加会让分母失真。
             if (vm.downloadQueue.isNotEmpty()) {
                 val running = vm.downloadQueue.count { it.status.value == QStatus.RUNNING }
                 val queued = vm.downloadQueue.count { it.status.value == QStatus.QUEUED }
                 val done = vm.downloadQueue.count { it.status.value == QStatus.DONE }
                 val failed = vm.downloadQueue.count { it.status.value == QStatus.FAILED }
-                Text(
-                    buildString {
-                        if (running > 0) append("下载中 $running")
-                        if (queued > 0) { if (isNotEmpty()) append(" · "); append("排队 $queued") }
-                        if (done > 0) { if (isNotEmpty()) append(" · "); append("已完成 $done") }
-                        if (failed > 0) { if (isNotEmpty()) append(" · "); append("失败 $failed") }
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 val denom = done + running + queued
+                // 统计胶囊：只保留「排队中」「已完成」两项（高度固定，不随任务状态变化）
+                val green = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (queued > 0) {
+                        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)) {
+                            Text(
+                                "排队中 $queued",
+                                Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                    if (done > 0) {
+                        Surface(shape = RoundedCornerShape(8.dp), color = green.copy(alpha = 0.14f)) {
+                            Text(
+                                "已完成 $done",
+                                Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                color = green,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
                 if (denom > 0) {
                     val runningItem = vm.downloadQueue.firstOrNull {
                         it.status.value == QStatus.RUNNING && it.total.value > 0
@@ -1523,7 +1538,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                    // 高度锁定 60dp（原实际高度）：下载中（有取消按钮）与已完成（无按钮）
+                    // 卡片总高一致，状态切换不跳变；各元素在行内垂直居中
+                    Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     QueueThumb(item.handle)
@@ -1547,32 +1564,57 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         Spacer(Modifier.height(2.dp))
-                        when (st) {
-                            QStatus.QUEUED -> Text(
-                                "排队中",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                            QStatus.RUNNING -> Text(
-                                "${humanSize(item.got.value)} / ${humanSize(item.total.value)} · ${item.speed.value}",
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                            QStatus.DONE -> Text(
-                                "已完成 ✓",
-                                color = Color(0xFF00695C),
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                            QStatus.FAILED -> Text(
-                                "失败",
-                                color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C),
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                            QStatus.CANCELED -> Text(
-                                "已取消",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.labelSmall
-                            )
+                        // 状态行固定 20dp 高：下载中胶囊/完成后胶囊/纯文字高度一致，卡片不因状态切换变高
+                        Row(Modifier.height(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                            when (st) {
+                                QStatus.QUEUED -> Text(
+                                    "排队中",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                                QStatus.RUNNING -> {
+                                    // 胶囊显示进度/速度；tnum 等宽数字——数值每帧变化时文字不抖动
+                                    val green = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = green.copy(alpha = 0.14f)
+                                    ) {
+                                        Text(
+                                            "${humanSize(item.got.value)} / ${humanSize(item.total.value)} · ${item.speed.value}",
+                                            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                            color = MaterialTheme.colorScheme.primary,
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontFeatureSettings = "tnum"
+                                            )
+                                        )
+                                    }
+                                }
+                                QStatus.DONE -> {
+                                    // 已完成同样用胶囊（浅绿底绿字），与下载中胶囊同高
+                                    val green = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = green.copy(alpha = 0.14f)
+                                    ) {
+                                        Text(
+                                            "已完成 ✓",
+                                            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                            color = green,
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                }
+                                QStatus.FAILED -> Text(
+                                    "失败",
+                                    color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                                QStatus.CANCELED -> Text(
+                                    "已取消",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
                         }
                     }
                     when (st) {
@@ -1645,10 +1687,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
             qItem != null && st == QStatus.RUNNING -> {
-                // 进度条直接长在按钮上：胶囊外形不变，左侧绿色填充随进度推进，点按取消
+                // 进度条直接长在按钮上：胶囊外形不变，浅绿填充随进度推进（与下载队列同款配色），点按取消
                 val frac = if (qItem.total.value > 0)
                     (qItem.got.value.toFloat() / qItem.total.value).coerceIn(0f, 1f) else 0f
-                val onFill = if (vm.darkModeOn) Color(0xFFB2DFDB) else Color(0xFF004D40)
+                val green = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
                 Box(
                     modifier
                         .height(40.dp)
@@ -1658,7 +1700,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Box(
                         Modifier.fillMaxHeight().fillMaxWidth(frac)
-                            .background(Color(0xFF00695C).copy(alpha = 0.75f))
+                            .background(green.copy(alpha = 0.20f))
                     )
                     Row(
                         Modifier.matchParentSize().padding(horizontal = 14.dp),
@@ -1666,15 +1708,18 @@ class MainActivity : ComponentActivity() {
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Text(
+                            // tnum 等宽数字：数值刷新时文字宽度稳定不抖动
                             "${humanSize(qItem.got.value)} / ${humanSize(qItem.total.value)}",
-                            color = onFill,
-                            style = MaterialTheme.typography.labelMedium,
+                            color = green,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFeatureSettings = "tnum"
+                            ),
                             maxLines = 1
                         )
                         Spacer(Modifier.width(6.dp))
                         Icon(
                             Icons.Filled.Close, contentDescription = "取消下载",
-                            tint = onFill, modifier = Modifier.size(14.dp)
+                            tint = green, modifier = Modifier.size(14.dp)
                         )
                     }
                 }
@@ -2136,7 +2181,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     Spacer(Modifier.height(12.dp))
+                    // 行高锁定 40dp：下载槽在按钮/进度胶囊间切换时信息区高度恒定不跳动
                     Row(
+                        Modifier.fillMaxWidth().height(40.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -2939,7 +2986,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     Spacer(Modifier.height(12.dp))
+                    // 行高锁定 40dp：下载槽在按钮/进度胶囊间切换时信息区高度恒定不跳动
                     Row(
+                        Modifier.fillMaxWidth().height(40.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {

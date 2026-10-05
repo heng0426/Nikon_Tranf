@@ -1590,8 +1590,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val thumbDir: java.io.File by lazy {
         java.io.File(ctx.cacheDir, "thumbs").apply { mkdirs() }
     }
-    private fun thumbFile(stamp: String, type: String) =
-        java.io.File(thumbDir, "${stamp}_${type.uppercase()}.jpg")
+    private fun thumbFile(key: String) =
+        java.io.File(thumbDir, "$key.jpg")
 
     fun refreshThumbCacheSize() {
         thumbCacheBytes = thumbDir.listFiles()?.sumOf { it.length() } ?: 0L
@@ -1639,14 +1639,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private fun thumbKey(stamp: String, type: String) = "${stamp}_${type.uppercase()}"
+    /** 缩略图缓存键：优先真实文件编号（USB 枚举，连拍同秒多张互不冲突）；
+     *  Wi-Fi 枚举无文件名，退回句柄（相机对象 ID，跨会话稳定）。
+     *  旧的 "时间戳_类型" 键在连拍同秒时会让多张照片共用缓存 → 缩略图串图。 */
+    private fun thumbKey(row: PhotoRow) =
+        "${row.fileNo ?: "h${row.handle}"}_${row.type.uppercase()}"
 
     /** 加载完成统一入口：写内存 LRU；格子在屏上、或尚未组合过（首轮加载，重连后
      *  loader 跑在网格重组之前）时直接写 preview 触发显示 —— 旧实现只认 onScreen，
      *  首轮位图全被压进 LRU，屏上格子留白、要滑出滑回才显示。
      *  滑动中滚出屏幕的只进 LRU，格子再进屏幕时 ensureThumb 缓存命中秒显。 */
     private fun putThumb(row: PhotoRow, bmp: Bitmap) {
-        val key = thumbKey(row.stamp, row.type)
+        val key = thumbKey(row)
         thumbRowByKey[key] = row
         thumbNoCache.remove(key)
         thumbMem.put(key, bmp)
@@ -1680,10 +1684,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val row = thumbIoQueue.poll() ?: break
                     try {
                         // 排队期间可能已被 loader 填充，再查一次避免重复 IO
-                        if (row.preview.value == null && !thumbFast.containsKey(thumbKey(row.stamp, row.type))) {
-                            val bmp = loadThumbFromCache(row.stamp, row.type)
+                        if (row.preview.value == null && !thumbFast.containsKey(thumbKey(row))) {
+                            val bmp = loadThumbFromCache(thumbKey(row))
                             if (bmp != null) putThumb(row, bmp)
-                            else thumbNoCache[thumbKey(row.stamp, row.type)] = System.currentTimeMillis()
+                            else thumbNoCache[thumbKey(row)] = System.currentTimeMillis()
                         }
                     } catch (_: Throwable) {
                     } finally {
@@ -1705,7 +1709,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  磁盘缓存经串行队列读回（主线程零文件 IO、零线程创建） */
     fun ensureThumb(row: PhotoRow) {
         if (row.preview.value != null) return
-        val key = thumbKey(row.stamp, row.type)
+        val key = thumbKey(row)
         thumbFast[key]?.let { row.preview.value = it; return }
         val now = System.currentTimeMillis()
         thumbNoCache[key]?.let { marked ->
@@ -1717,8 +1721,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pumpThumbIo()
     }
 
-    private fun loadThumbFromCache(stamp: String, type: String): Bitmap? = try {
-        val f = thumbFile(stamp, type)
+    private fun loadThumbFromCache(key: String): Bitmap? = try {
+        val f = thumbFile(key)
         if (f.exists()) BitmapFactory.decodeFile(
             f.absolutePath,
             BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
@@ -1727,11 +1731,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         null
     }
 
-    private fun saveThumbToCache(stamp: String, type: String, bmp: Bitmap) {
+    private fun saveThumbToCache(key: String, bmp: Bitmap) {
         try {
             java.io.File(thumbDir, "tmp_${System.currentTimeMillis()}.jpg").let { tmp ->
                 tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
-                tmp.renameTo(thumbFile(stamp, type)) || tmp.delete()
+                tmp.renameTo(thumbFile(key)) || tmp.delete()
             }
             // 节流：listFiles 全目录扫描较贵，连续写盘时每 25 张刷一次（设置页的显示值允许滞后）
             if (++thumbCacheWrites % 25 == 0) {
@@ -1757,7 +1761,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     try { Thread.sleep(50) } catch (_: InterruptedException) { return@Thread }
                 }
                 // 磁盘缓存命中：直接显示，跳过网络拉取
-                val cached = loadThumbFromCache(row.stamp, row.type)
+                val cached = loadThumbFromCache(thumbKey(row))
                 if (cached != null) {
                     putThumb(row, cached)
                     continue
@@ -1840,7 +1844,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (bmp != null) {
                     putThumb(row, bmp)
-                    saveThumbToCache(row.stamp, row.type, bmp)
+                    saveThumbToCache(thumbKey(row), bmp)
                 }
             }
             }.apply {
