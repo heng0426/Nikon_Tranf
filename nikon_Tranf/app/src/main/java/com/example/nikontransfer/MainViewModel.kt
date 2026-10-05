@@ -77,6 +77,8 @@ class QueueItem(val handle: Int, val name: String, val type: String, val stamp: 
     val got = mutableStateOf(0L)
     val speed = mutableStateOf("")
     @Volatile var cancelRequested = false
+    /** 实际下载耗时（ms）：DONE 时有效，0 = 未完成/被取消 */
+    var elapsedMs: Long = 0
 }
 
 fun humanSize(b: Long): String = when {
@@ -1240,6 +1242,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         item.status.value = QStatus.RUNNING
         item.cancelRequested = false
         item.got.value = 0
+        val startMs = System.currentTimeMillis()   // 下载耗时统计（DONE 时写入 elapsedMs）
         // USB 通道：优先偏移读分块（0x101B，带进度）；首块失败回退整对象一次取回
         val usb = usbSession
         if (usb != null) {
@@ -1266,6 +1269,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 System.arraycopy(whole, 0, buf, 0, minOf(whole.size, buf.size))
             }
             if (savePhoto(item.name, item.type, buf, item.stamp)) {
+                item.elapsedMs = System.currentTimeMillis() - startMs
                 item.status.value = QStatus.DONE
                 photoRows.firstOrNull { it.handle == item.handle }?.downloaded?.value = true
                 markDownloaded(item.name)
@@ -1316,6 +1320,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         if (savePhoto(item.name, item.type, buf, item.stamp)) {
+            item.elapsedMs = System.currentTimeMillis() - startMs
             item.status.value = QStatus.DONE
             photoRows.firstOrNull { it.handle == item.handle }?.downloaded?.value = true
             markDownloaded(item.name)

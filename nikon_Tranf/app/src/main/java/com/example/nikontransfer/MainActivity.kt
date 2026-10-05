@@ -1590,18 +1590,38 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                                 QStatus.DONE -> {
-                                    // 已完成同样用胶囊（浅绿底绿字），与下载中胶囊同高
+                                    // 已完成胶囊 + 下载耗时胶囊（精确到 0.1s，tnum 等宽不抖动）
                                     val green = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = green.copy(alpha = 0.14f)
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(
-                                            "已完成 ✓",
-                                            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                            color = green,
-                                            style = MaterialTheme.typography.labelSmall
-                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = green.copy(alpha = 0.14f)
+                                        ) {
+                                            Text(
+                                                "已完成 ✓",
+                                                Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                                color = green,
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                        }
+                                        if (item.elapsedMs > 0) {
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                            ) {
+                                                Text(
+                                                    "%.1fs".format(item.elapsedMs / 1000.0),
+                                                    Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        fontFeatureSettings = "tnum"
+                                                    )
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                                 QStatus.FAILED -> Text(
@@ -2127,7 +2147,10 @@ class MainActivity : ComponentActivity() {
                     enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
                     exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom)
                 ) {
-                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                Column(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     val pair = rows[pagerState.currentPage]
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (pair.hasJpg) MiniBadge("JPG", badgeColor("JPG"))
@@ -2136,12 +2159,15 @@ class MainActivity : ComponentActivity() {
                             MiniBadge("NEF", badgeColor("NEF"))
                         }
                         Spacer(Modifier.width(8.dp))
+                        // 原拍摄日期位置改为显示当前图片名称
                         Text(
-                            prettyStamp(pair.stamp),
-                            color = Color(0xFFAAAAAA),
-                            style = MaterialTheme.typography.bodySmall
+                            (pair.jpg ?: pair.nef)?.name ?: "",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
                         )
-                        Spacer(Modifier.weight(1f))
                         if (pair.jpgDownloaded || pair.nefDownloaded) {
                             val marks = buildString {
                                 if (pair.jpgDownloaded) append("✓J ")
@@ -2150,37 +2176,52 @@ class MainActivity : ComponentActivity() {
                             Text(marks, color = Color(0xFF4DB6AC), style = MaterialTheme.typography.labelSmall)
                         }
                     }
-                    // EXIF 参数胶囊（高清加载时解析；末项=镜头型号）
-                    vm.exifLines[(pair.jpg ?: pair.nef)?.handle]?.let { parts ->
-                        Spacer(Modifier.height(6.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            parts.forEach { p ->
-                                Text(
-                                    p,
-                                    Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(Color.White.copy(alpha = 0.12f))
-                                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                                    color = Color(0xFFDDDDDD),
-                                    style = MaterialTheme.typography.labelSmall
-                                )
+                    // 拍摄日期胶囊：与 EXIF 参数同风格（原位置下移，常显）
+                    Text(
+                        prettyStamp(pair.stamp),
+                        Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color.White.copy(alpha = 0.12f))
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                        color = Color(0xFFDDDDDD),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    // EXIF 参数胶囊（高清加载时解析；末项=镜头型号）：淡入+向下展开，出现不生硬
+                    val exifParts = vm.exifLines[(pair.jpg ?: pair.nef)?.handle]
+                    AnimatedVisibility(
+                        visible = exifParts != null,
+                        enter = fadeIn(tween(220)) + expandVertically(expandFrom = Alignment.Top),
+                        exit = fadeOut(tween(160)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                    ) {
+                        if (exifParts != null) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                exifParts.forEach { p ->
+                                    Text(
+                                        p,
+                                        Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(Color.White.copy(alpha = 0.12f))
+                                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                                        color = Color(0xFFDDDDDD),
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
                             }
                         }
                     }
                     // 高清加载失败提示（静默回退缩略图，翻回该页自动重试）
                     val hiKey = (pair.jpg ?: pair.nef)?.handle
                     if (vm.hiresOn && hiKey != null && vm.hiresFailed.containsKey(hiKey)) {
-                        Spacer(Modifier.height(4.dp))
                         Text(
                             "高清加载失败 · 翻回此页自动重试",
                             color = Color(0xFF777777),
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(6.dp))
                     // 行高锁定 40dp：下载槽在按钮/进度胶囊间切换时信息区高度恒定不跳动
                     Row(
                         Modifier.fillMaxWidth().height(40.dp),
@@ -2931,7 +2972,10 @@ class MainActivity : ComponentActivity() {
                     enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom),
                     exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom)
                 ) {
-                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                Column(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     val row = rows[pagerState.currentPage]
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -2943,12 +2987,15 @@ class MainActivity : ComponentActivity() {
                             style = MaterialTheme.typography.labelSmall
                         )
                         Spacer(Modifier.width(8.dp))
+                        // 原拍摄日期位置改为显示当前图片名称
                         Text(
-                            prettyStamp(row.stamp),
-                            color = Color(0xFFAAAAAA),
-                            style = MaterialTheme.typography.bodySmall
+                            row.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
                         )
-                        Spacer(Modifier.weight(1f))
                         if (row.downloaded.value)
                             Text(
                                 "已下载 ✓",
@@ -2956,36 +3003,51 @@ class MainActivity : ComponentActivity() {
                                 style = MaterialTheme.typography.labelSmall
                             )
                     }
-                    // EXIF 参数胶囊（高清加载时解析；末项=镜头型号）
-                    vm.exifLines[row.handle]?.let { parts ->
-                        Spacer(Modifier.height(6.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            parts.forEach { p ->
-                                Text(
-                                    p,
-                                    Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(Color.White.copy(alpha = 0.12f))
-                                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                                    color = Color(0xFFDDDDDD),
-                                    style = MaterialTheme.typography.labelSmall
-                                )
+                    // 拍摄日期胶囊：与 EXIF 参数同风格（原位置下移，常显）
+                    Text(
+                        prettyStamp(row.stamp),
+                        Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color.White.copy(alpha = 0.12f))
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                        color = Color(0xFFDDDDDD),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    // EXIF 参数胶囊（高清加载时解析；末项=镜头型号）：淡入+向下展开，出现不生硬
+                    val exifParts = vm.exifLines[row.handle]
+                    AnimatedVisibility(
+                        visible = exifParts != null,
+                        enter = fadeIn(tween(220)) + expandVertically(expandFrom = Alignment.Top),
+                        exit = fadeOut(tween(160)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                    ) {
+                        if (exifParts != null) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                exifParts.forEach { p ->
+                                    Text(
+                                        p,
+                                        Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(Color.White.copy(alpha = 0.12f))
+                                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                                        color = Color(0xFFDDDDDD),
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
                             }
                         }
                     }
                     // 高清加载失败提示（静默回退缩略图，翻回该页自动重试）
                     if (vm.hiresOn && vm.hiresFailed.containsKey(row.handle)) {
-                        Spacer(Modifier.height(4.dp))
                         Text(
                             "高清加载失败 · 翻回此页自动重试",
                             color = Color(0xFF777777),
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(6.dp))
                     // 行高锁定 40dp：下载槽在按钮/进度胶囊间切换时信息区高度恒定不跳动
                     Row(
                         Modifier.fillMaxWidth().height(40.dp),
