@@ -1169,6 +1169,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 一键取消所有未完成任务：排队中直接移除，下载中置取消标志（当前分块后停止） */
+    fun cancelAllDownloads() {
+        synchronized(queueLock) {
+            downloadQueue.removeAll { it.status.value == QStatus.QUEUED }
+        }
+        downloadQueue.forEach { if (it.status.value == QStatus.RUNNING) it.cancelRequested = true }
+    }
+
     /* ---------- 队列完成提醒（震动 + 通知；设置可关，仅批量生效）---------- */
     var notifyDoneOn: Boolean by mutableStateOf(prefs.getBoolean("set_notify_done", true))
     fun setNotifyDone(v: Boolean) {

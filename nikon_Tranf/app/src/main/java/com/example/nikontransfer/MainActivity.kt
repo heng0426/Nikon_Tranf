@@ -57,6 +57,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -94,8 +95,6 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -466,27 +465,8 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     Spacer(Modifier.weight(1f))
-                    // 下载队列按钮（筛选/连接同款圆角外框）：下载图标 + 活跃任务数量角标
-                    Box(
-                        Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .clickable { showDownloads = true },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        BadgedBox(badge = {
-                            if (vm.activeDownloadCount > 0) {
-                                Badge { Text("${vm.activeDownloadCount}") }
-                            }
-                        }) {
-                            DownloadIcon(
-                                if (vm.activeDownloadCount > 0)
-                                    if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
-                                else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    // 下载队列按钮：无任务=下载图标；有任务=数字直接替换图标（青绿底白字，99+ 封顶）
+                    TopBarDownloadButton(onClick = { showDownloads = true })
                 }
                 // 详情浮层 + 状态条收纳进内层 Column（无 spacedBy：卡片移除时不会带走间距导致下方跳动）
                 Column {
@@ -1365,6 +1345,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 顶栏下载队列按钮（独立函数：缩小 MainScreen 巨型方法体，规避 d8 超大方法 dex 优化 bug）。
+     *  无任务=下载图标；有任务=数字直接替换图标（同款 34dp 方框圆角，青绿底白字，99+ 封顶）。 */
+    @Composable
+    private fun TopBarDownloadButton(onClick: () -> Unit) {
+        val active = vm.activeDownloadCount
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(
+                    if (active > 0)
+                        if (vm.darkModeOn) Color(0xFF00796B) else Color(0xFF00695C)
+                    else MaterialTheme.colorScheme.surfaceVariant
+                )
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            if (active > 0) {
+                Text(
+                    if (active > 99) "99+" else "$active",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White,
+                    maxLines = 1
+                )
+            } else {
+                DownloadIcon(MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+
     /** 下载管理页：队列条目（状态/进度/重试/取消）+ 清空已完成 */
     @Composable
     private fun DownloadsScreen(onBack: () -> Unit) {
@@ -1377,11 +1387,57 @@ class MainActivity : ComponentActivity() {
                     Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
                 }
                 Text("下载队列", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                val hasActive = vm.downloadQueue.any {
+                    it.status.value in setOf(QStatus.QUEUED, QStatus.RUNNING)
+                }
+                if (hasActive) {
+                    TextButton(onClick = { vm.cancelAllDownloads() }) { Text("全部取消") }
+                }
                 val hasFinished = vm.downloadQueue.any {
                     it.status.value in setOf(QStatus.DONE, QStatus.CANCELED)
                 }
                 if (hasFinished) {
                     TextButton(onClick = { vm.clearFinished() }) { Text("清空已完成") }
+                }
+            }
+            // 汇总行 + 总进度条：进度 = (已完成数 + 当前任务字节比例) / 未完成任务总数。
+            // 不按字节累加——排队任务在开始下载前 total=0，按字节累加会让分母失真。
+            if (vm.downloadQueue.isNotEmpty()) {
+                val running = vm.downloadQueue.count { it.status.value == QStatus.RUNNING }
+                val queued = vm.downloadQueue.count { it.status.value == QStatus.QUEUED }
+                val done = vm.downloadQueue.count { it.status.value == QStatus.DONE }
+                val failed = vm.downloadQueue.count { it.status.value == QStatus.FAILED }
+                Text(
+                    buildString {
+                        if (running > 0) append("下载中 $running")
+                        if (queued > 0) { if (isNotEmpty()) append(" · "); append("排队 $queued") }
+                        if (done > 0) { if (isNotEmpty()) append(" · "); append("已完成 $done") }
+                        if (failed > 0) { if (isNotEmpty()) append(" · "); append("失败 $failed") }
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                val denom = done + running + queued
+                if (denom > 0) {
+                    val runningItem = vm.downloadQueue.firstOrNull {
+                        it.status.value == QStatus.RUNNING && it.total.value > 0
+                    }
+                    val runningFrac = runningItem?.let { it.got.value.toFloat() / it.total.value } ?: 0f
+                    val overall = ((done + runningFrac) / denom).coerceIn(0f, 1f)
+                    val green = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        LinearProgressIndicator(
+                            progress = { overall },
+                            modifier = Modifier.weight(1f),
+                            color = green
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "$done/$denom",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
             if (vm.downloadQueue.isEmpty()) {
@@ -1401,48 +1457,129 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 队列行缩略图：handle → photoRows 既有预览位图（网格加载过即命中），无位图时兜底加载 */
+    @Composable
+    private fun QueueThumb(handle: Int) {
+        val row = vm.photoRows.firstOrNull { it.handle == handle }
+        LaunchedEffect(handle) { row?.let { vm.ensureThumb(it) } }
+        val bmp = row?.preview?.value
+        Box(
+            Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                DownloadIcon(MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+
     @Composable
     private fun QueueRow(item: QueueItem) {
         val st = item.status.value
-        Column(Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    item.type,
-                    Modifier
-                        .background(badgeColor(item.type), RoundedCornerShape(4.dp))
-                        .padding(horizontal = 5.dp, vertical = 2.dp),
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(item.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                when (st) {
-                    QStatus.QUEUED -> Text("排队中", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
-                    QStatus.RUNNING -> Text(
-                        "${humanSize(item.got.value)} / ${humanSize(item.total.value)} · ${item.speed.value}",
-                        color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                    QStatus.DONE -> Text("已完成 ✓", color = Color(0xFF00695C), style = MaterialTheme.typography.labelSmall)
-                    QStatus.FAILED -> Text("失败", color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C), style = MaterialTheme.typography.labelSmall)
-                    QStatus.CANCELED -> Text("已取消", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+        // 进度填充直接铺在卡片背景上：下载中按比例推进（浅绿），完成后整卡铺满（绿加深），
+        // 与未下载行一眼区分；排队/失败/取消不铺色
+        val fillFrac: Float
+        val fillAlpha: Float
+        when {
+            st == QStatus.RUNNING && item.total.value > 0 -> {
+                fillFrac = (item.got.value.toFloat() / item.total.value).coerceIn(0f, 1f)
+                fillAlpha = 0.20f
+            }
+            st == QStatus.DONE -> {
+                fillFrac = 1f
+                fillAlpha = 0.30f
+            }
+            else -> {
+                fillFrac = 0f
+                fillAlpha = 0f
+            }
+        }
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        ) {
+            Box(Modifier.fillMaxWidth()) {
+                if (fillFrac > 0f) {
+                    val green = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
+                    // matchParentSize 与 fillMaxWidth 直接链式组合会互相覆盖（填充恒满宽），
+                    // 经 BoxWithConstraints 按比例换算宽度，填充层才能精确停在进度位置
+                    BoxWithConstraints(Modifier.matchParentSize()) {
+                        Box(
+                            Modifier
+                                .fillMaxHeight()
+                                .width(maxWidth * fillFrac)
+                                .background(green.copy(alpha = fillAlpha))
+                        )
+                    }
                 }
-            }
-            if (st == QStatus.RUNNING && item.total.value > 0) {
-                Spacer(Modifier.height(4.dp))
-                LinearProgressIndicator(
-                    progress = {
-                        (item.got.value.toFloat() / item.total.value).coerceIn(0f, 1f)
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                when (st) {
-                    QStatus.QUEUED -> TextButton(onClick = { vm.cancelDownload(item) }) { Text("取消") }
-                    QStatus.RUNNING -> TextButton(onClick = { vm.cancelDownload(item) }) { Text("取消") }
-                    QStatus.FAILED -> TextButton(onClick = { vm.retryDownload(item) }) { Text("重试") }
-                    else -> {}
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    QueueThumb(item.handle)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                item.type,
+                                Modifier
+                                    .background(badgeColor(item.type), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 5.dp, vertical = 2.dp),
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                item.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(Modifier.height(2.dp))
+                        when (st) {
+                            QStatus.QUEUED -> Text(
+                                "排队中",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            QStatus.RUNNING -> Text(
+                                "${humanSize(item.got.value)} / ${humanSize(item.total.value)} · ${item.speed.value}",
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            QStatus.DONE -> Text(
+                                "已完成 ✓",
+                                color = Color(0xFF00695C),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            QStatus.FAILED -> Text(
+                                "失败",
+                                color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            QStatus.CANCELED -> Text(
+                                "已取消",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                    when (st) {
+                        QStatus.QUEUED, QStatus.RUNNING -> TextButton(onClick = { vm.cancelDownload(item) }) { Text("取消") }
+                        QStatus.FAILED -> TextButton(onClick = { vm.retryDownload(item) }) { Text("重试") }
+                        else -> {}
+                    }
                 }
             }
         }
