@@ -571,7 +571,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /* ---------- 日志 ---------- */
-    var uiLog by mutableStateOf("就绪")
+    var uiLog by mutableStateOf("")
 
     /* ---------- 事件轮询 ---------- */
     @Volatile private var pollerRunning = false
@@ -2451,6 +2451,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ptpPath = ""
         connPhase.value = "disconnected"
         connText.value = "连接已断开 · 点按重连"
+        connFailMsg.value = "相机连接已断开（$reason）"
         uiLog = "相机连接已断开（$reason）"
         Log.i("GPhoto2", "markSessionLost: $reason")
         stopKeepAlive()

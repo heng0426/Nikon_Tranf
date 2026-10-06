@@ -402,7 +402,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                // 顶部栏：设置齿轮 + 筛选 + 队列（多选操作全部在底部弹出条，顶栏不再有模式切换）
+                // 顶部栏：双卡连接界面（无照片）只保留设置齿轮；有图片列表时恢复筛选/连接/下载
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     // 设置齿轮按钮（方框圆角，同款 34dp / RoundedCornerShape(9.dp)）
                     Box(
@@ -415,59 +415,61 @@ class MainActivity : ComponentActivity() {
                     ) {
                         GearIcon(MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    // 筛选按钮（logo 右侧，同款圆角外框）：有筛选生效时漏斗变色
-                    Box(
-                        Modifier
-                            .padding(start = 10.dp)
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .clickable { showFilter = true },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    // 连接指示（常驻，筛选旁，同款圆角外框）：已连接=显示通道图标(点看详情)；连接中=禁点；断开=点击重连
-                    val red = phase == "disconnected"
-                    val amber = phase == "connecting"
-                    val isUsbConn = vm.connChannel.value == "usb"
-                    Box(
-                        Modifier
-                            .padding(start = 10.dp)
-                            .graphicsLayer { translationX = connShake.value * 6.dp.toPx() }
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .clickable(enabled = !amber) {
-                                if (red) {
-                                    // 重试连接：走当前偏好通道（USB 优先默认）
-                                    ensureLocalNetworkPermission {
-                                        scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
-                                    }
-                                } else toggleConnDetail()
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        val iconColor by animateColorAsState(
-                            when {
-                                red -> if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
-                                amber -> if (vm.darkModeOn) Color(0xFFFFD54F) else Color(0xFF8D6E00)
-                                isUsbConn -> if (vm.darkModeOn) Color(0xFF64B5F6) else Color(0xFF1565C0)
-                                vm.darkModeOn -> Color(0xFF4DB6AC)
-                                else -> Color(0xFF00695C)
-                            },
-                            animationSpec = tween(200),
-                            label = "connIconColor"
-                        )
-                        if (isUsbConn) {
-                            UsbIcon(iconColor, Modifier.size(20.dp))
-                        } else {
-                            WifiIcon(iconColor, Modifier.size(20.dp))
+                    if (photoRows.isNotEmpty()) {
+                        // 筛选按钮（logo 右侧，同款圆角外框）：有筛选生效时漏斗变色
+                        Box(
+                            Modifier
+                                .padding(start = 10.dp)
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable { showFilter = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                        // 连接指示（常驻，筛选旁，同款圆角外框）：已连接=显示通道图标(点看详情)；连接中=禁点；断开=点击重连
+                        val red = phase == "disconnected"
+                        val amber = phase == "connecting"
+                        val isUsbConn = vm.connChannel.value == "usb"
+                        Box(
+                            Modifier
+                                .padding(start = 10.dp)
+                                .graphicsLayer { translationX = connShake.value * 6.dp.toPx() }
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable(enabled = !amber) {
+                                    if (red) {
+                                        // 重试连接：走当前偏好通道（USB 优先默认）
+                                        ensureLocalNetworkPermission {
+                                            scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
+                                        }
+                                    } else toggleConnDetail()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            val iconColor by animateColorAsState(
+                                when {
+                                    red -> if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
+                                    amber -> if (vm.darkModeOn) Color(0xFFFFD54F) else Color(0xFF8D6E00)
+                                    isUsbConn -> if (vm.darkModeOn) Color(0xFF64B5F6) else Color(0xFF1565C0)
+                                    vm.darkModeOn -> Color(0xFF4DB6AC)
+                                    else -> Color(0xFF00695C)
+                                },
+                                animationSpec = tween(200),
+                                label = "connIconColor"
+                            )
+                            if (isUsbConn) {
+                                UsbIcon(iconColor, Modifier.size(20.dp))
+                            } else {
+                                WifiIcon(iconColor, Modifier.size(20.dp))
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        // 下载队列按钮：无任务=下载图标；有任务=数字直接替换图标（青绿底白字，99+ 封顶）
+                        TopBarDownloadButton(onClick = { showDownloads = true })
                     }
-                    Spacer(Modifier.weight(1f))
-                    // 下载队列按钮：无任务=下载图标；有任务=数字直接替换图标（青绿底白字，99+ 封顶）
-                    TopBarDownloadButton(onClick = { showDownloads = true })
                 }
                 // 详情浮层 + 状态条收纳进内层 Column（无 spacedBy：卡片移除时不会带走间距导致下方跳动）
                 Column {
@@ -532,8 +534,6 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 scope.launch { withContext(Dispatchers.IO) { vm.startConnect("usb") } }
                             },
-                            // 进度文案只挂在当前尝试通道的卡上（Wi-Fi 扫描时 USB 卡不显示）
-                            progressText = if (isUsbActive) connText.value else null,
                             active = isUsbActive,
                             dimmed = phase == "connecting" && !isUsbActive
                         )
@@ -551,22 +551,15 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             onWifiCancel = { vm.cancelWifiConnect() },
-                            // 进度文案只挂在当前尝试通道的卡上（Wi-Fi 扫描时 USB 卡不显示）
-                            progressText = if (phase == "connecting" && !isUsbActive) connText.value else null,
                             active = phase == "connecting" && !isUsbActive,
                             dimmed = phase == "connecting" && isUsbActive,
                             hotspotOn = vm.isHotspotOn()
                         )
-                        // 失败原因 / 多相机选择（连接中不展示旧扫描结果，避免误触）
-                        val failMsg = vm.connFailMsg.value
-                        if (failMsg.isNotEmpty()) {
-                            Spacer(Modifier.height(10.dp))
-                            Text(
-                                failMsg,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
-                            )
-                        }
+                        // 连接中=探测/扫描进度（带转圈）；断开=失败原因/取消提示/失联信息
+                        ConnInfoCard(
+                            text = if (phase == "connecting") connText.value else vm.connFailMsg.value,
+                            loading = phase == "connecting"
+                        )
                         if (phase != "connecting" && vm.scanResults.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
                             Text(
@@ -653,20 +646,16 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onWifiCancel = { vm.cancelWifiConnect() },
                                 hotspotOn = vm.isHotspotOn(),
-                                progressText = if (wifiFull) connText.value else null,
                                 active = wifiFull,
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
-                    if (vm.connFailMsg.value.isNotEmpty()) {
-                        Text(
-                            vm.connFailMsg.value,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C),
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                    }
+                    // 连接中=探测/扫描进度（带转圈）；断开=失败原因/取消提示/失联信息
+                    ConnInfoCard(
+                        text = if (phase == "connecting") connText.value else vm.connFailMsg.value,
+                        loading = phase == "connecting"
+                    )
                     if (vm.scanResults.isNotEmpty()) {
                         Column(Modifier.padding(top = 4.dp)) {
                             vm.scanResults.forEach { (ip, info) ->
@@ -691,10 +680,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                }
-                // 枚举/传输日志行（"共 N 个文件" 已由日期胶囊覆盖，不再重复显示）
-                if (uiLog.isNotBlank() && !uiLog.contains("个文件")) {
-                    Text(uiLog, style = MaterialTheme.typography.bodySmall)
                 }
                 // 连接成功但列表还在枚举（USB 逐对象取 ObjectInfo 较慢）：加载占位，替代白屏
                 if (phase == "connected" && photoRows.isEmpty()) {
@@ -1375,6 +1360,49 @@ class MainActivity : ComponentActivity() {
                 )
             } else {
                 DownloadIcon(MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+
+    /** 连接状态/错误信息卡片：双卡下方统一承载——连接中显示探测/扫描进度（带转圈），
+     *  断开时显示失败原因/取消提示/失联信息。出现 = 淡入+向下展开；消失 = 淡出收起。 */
+    @Composable
+    private fun ConnInfoCard(text: String, loading: Boolean = false) {
+        AnimatedVisibility(
+            visible = text.isNotEmpty(),
+            enter = fadeIn(tween(200)) + expandVertically(expandFrom = Alignment.Top),
+            exit = fadeOut(tween(160)) + shrinkVertically(shrinkTowards = Alignment.Top)
+        ) {
+            Column {
+                Spacer(Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    // 高度锁定 48dp（容两行）：转圈/文字都在其中居中，连接中↔断开切换卡片位置恒定
+                    Row(
+                        Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (loading) {
+                            CircularProgressIndicator(
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(
+                            text,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (loading) MaterialTheme.colorScheme.onSurfaceVariant
+                            else if (vm.darkModeOn) Color(0xFFEF9A9A) else Color(0xFFB71C1C),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
     }
@@ -3542,10 +3570,13 @@ class MainActivity : ComponentActivity() {
                 }
         ) {
             Row(
-                Modifier.padding(
-                    horizontal = if (compact) 12.dp else 16.dp,
-                    vertical = if (compact) 10.dp else 16.dp
-                ),
+                // compact 卡高度锁定 60dp（同 Wi-Fi 卡）：状态行出现不撑高
+                Modifier
+                    .then(if (compact) Modifier.height(60.dp) else Modifier)
+                    .padding(
+                        horizontal = if (compact) 12.dp else 16.dp,
+                        vertical = if (compact) 0.dp else 16.dp
+                    ),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // 图标色块容器（与顶栏按钮同风格）
@@ -3592,7 +3623,8 @@ class MainActivity : ComponentActivity() {
                         strokeWidth = if (compact) 2.dp else 3.dp,
                         modifier = Modifier.size(if (compact) 18.dp else 24.dp)
                     )
-                } else if (!compact) {
+                } else if (!compact && !active) {
+                    // 连接中不显示「连接 ›」（进度状态由下方信息卡片承载），高度不受影响
                     Text("连接 ›", style = MaterialTheme.typography.labelLarge, color = primary)
                 }
             }
@@ -3632,10 +3664,13 @@ class MainActivity : ComponentActivity() {
                 }
         ) {
             Row(
-                Modifier.padding(
-                    horizontal = if (compact) 12.dp else 16.dp,
-                    vertical = if (compact) 10.dp else 16.dp
-                ),
+                // compact 卡高度锁定 60dp（同 USB 卡）：状态行出现不撑高
+                Modifier
+                    .then(if (compact) Modifier.height(60.dp) else Modifier)
+                    .padding(
+                        horizontal = if (compact) 12.dp else 16.dp,
+                        vertical = if (compact) 0.dp else 16.dp
+                    ),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
