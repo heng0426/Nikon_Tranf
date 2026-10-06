@@ -181,9 +181,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connected = false
         connChannel.value = ""
         connPhase.value = "disconnected"
-        connText.value = "USB 已拔出 · 正在回退 Wi-Fi …"
-        // 拔线自愈：自动发起现有 Wi-Fi 连接流程
-        Thread { connectionFlow() }.start()
+        // 已取消"拔线自动回退 Wi-Fi"：拔出仅清理状态，连接方式由用户手动选择
+        connText.value = "USB 已拔出 · 选择连接方式"
+        pendingChannel.value = null
     }
 
     /** USB 连接核心：成功返回 true（connPhase/connText/listFiles 全部就位） */

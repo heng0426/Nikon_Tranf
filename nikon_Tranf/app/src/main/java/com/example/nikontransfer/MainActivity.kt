@@ -3674,15 +3674,6 @@ class MainActivity : ComponentActivity() {
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    // 连接/扫描中提示：再点一次卡片即取消
-                    if (active) {
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "点按取消",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = onSurface
-                        )
-                    }
                 }
                 if (progressText != null) {
                     CircularProgressIndicator(
