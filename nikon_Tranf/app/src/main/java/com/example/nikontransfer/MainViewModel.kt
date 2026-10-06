@@ -118,6 +118,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val pendingChannel = mutableStateOf<String?>(null)
     /** 最近一次连接失败的原因（显示在双卡下方） */
     val connFailMsg = mutableStateOf("")
+    /** Wi-Fi 连接取消请求（探测/扫描阶段检查；进入配对后不可打断） */
+    @Volatile private var wifiCancelRequested = false
 
     /* ---------- USB 直连通道（PTP over bulk，照搬 Z传 路线）---------- */
     @Volatile var usbSession: UsbPtpSession? = null  // 非空 = 当前走 USB
@@ -617,8 +619,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return out.toList()
     }
 
-    /** 并发扫描网段的 15740 端口（PTP/IP），返回开放的 IP 列表 */
-    private fun scanSubnet(subnet: String, progress: (Int, Int) -> Unit): List<String> {
+    /** 并发扫描网段的 15740 端口（PTP/IP），返回开放的 IP 列表。
+     *  abort 非空时逐任务检查，命中即跳过剩余目标提前收尾（Wi-Fi 取消用）。 */
+    private fun scanSubnet(
+        subnet: String,
+        abort: (() -> Boolean)? = null,
+        progress: (Int, Int) -> Unit
+    ): List<String> {
         val found = java.util.Collections.synchronizedList(ArrayList<String>())
         val pool = java.util.concurrent.Executors.newFixedThreadPool(16)
         val ips = (1..254).map { "$subnet.$it" }
@@ -627,6 +634,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         for (ip in ips) {
             pool.execute {
                 try {
+                    if (abort?.invoke() == true) return@execute   // 取消：跳过本目标
                     val s = java.net.Socket()
                     try {
                         s.connect(java.net.InetSocketAddress(ip, 15740), 300)
@@ -701,15 +709,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return null
     }
 
-    /** 双卡入口（IO 线程）：按选择通道直连；未选则 USB 优先。成功后清双卡状态。 */
+    /** 双卡入口（IO 线程）：按选择通道直连；未选则 USB 优先。成功后清双卡状态。
+     *  Wi-Fi 进行中点 USB 卡 = 取消 Wi-Fi（探测/扫描阶段立即生效）+ 接力启动 USB。 */
     fun startConnect(channel: String?): Boolean {
-        if (connecting || connected) return false
+        if (connected) return false
+        // Wi-Fi 进行中点 USB 卡：请求取消 Wi-Fi（①②③ 阶段生效），其退出后自动启动 USB
+        if (connecting && pendingChannel.value == "wifi" && channel == "usb") {
+            wifiCancelRequested = true
+            pendingChannel.value = "usb"
+            connFailMsg.value = "已取消 Wi-Fi · 正在尝试 USB 直连"
+            connText.value = "已取消 Wi-Fi · USB 连接中…"
+            Thread { waitForWifiExitThenUsb() }.start()
+            return true
+        }
+        if (connecting) return false
         connFailMsg.value = ""
         pendingChannel.value = channel
         return when (channel) {
             "usb" -> tryConnectManualUsb()
             "wifi" -> wifiConnectFlow(preferScan = false)
             else -> connectionFlow()
+        }
+    }
+
+    /** Wi-Fi 取消后的 USB 接力：等 Wi-Fi 线程退出后启动 USB 直连。
+     *  不设超时——Wi-Fi 流程内部各调用（probe/扫描）都有自身超时、必然返回；
+     *  旧实现 8s 放弃会导致 probe 长阻塞时永远卡在"连接中"。camMutex 保证两条
+     *  PTP 通道不并发；Wi-Fi 意外成功（connected）则放弃 USB 接力。
+     *  接力终止（无相机/未授权）必须把 connPhase 恢复 disconnected——
+     *  否则 UI 卡在 connecting 转圈且无任何线程在跑。 */
+    private fun waitForWifiExitThenUsb() {
+        while (connecting && !connected) {
+            try { Thread.sleep(20) } catch (_: InterruptedException) { return }
+        }
+        if (connecting || connected) return
+        connFailMsg.value = ""
+        val dev = UsbPtpSession.findCamera(usbManager)
+        if (dev == null) {
+            connPhase.value = "disconnected"
+            connText.value = "未连接 · 选择连接方式"
+            connFailMsg.value = "未检测到尼康相机 · 请用数据线连接相机与手机"
+            pendingChannel.value = null
+            return
+        }
+        if (!UsbPtpSession.hasPermission(usbManager, dev)) {
+            connPhase.value = "disconnected"
+            connText.value = "未连接 · 选择连接方式"
+            UsbPtpSession.requestPermission(ctx, usbManager, dev)
+            connFailMsg.value = "已请求 USB 授权 · 请在弹窗中允许"
+            pendingChannel.value = null
+            return
+        }
+        tryConnectUsbCore(dev, auto = false)
+    }
+
+    /** Wi-Fi 卡连接中再点卡片 = 取消：探测/扫描阶段立即生效；进入配对后不可打断 */
+    fun cancelWifiConnect() {
+        if (connecting && pendingChannel.value == "wifi") {
+            wifiCancelRequested = true
+            connText.value = "正在取消 Wi-Fi 连接…"
         }
     }
 
@@ -730,20 +788,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return tryConnectUsbCore(dev, auto = false)
     }
 
+    /** Wi-Fi 取消检查（①②③ 阶段调用）：命中即收尾退出。
+     *  切换 USB 意图时保持 connecting/pendingChannel，由 USB 接力线程无缝接管。 */
+    private fun wifiCancelled(): Boolean {
+        if (!wifiCancelRequested) return false
+        if (pendingChannel.value == "usb") {
+            connText.value = "已取消 Wi-Fi · USB 连接中…"
+        } else {
+            connText.value = "已取消"
+            connPhase.value = "disconnected"
+            connFailMsg.value = "已取消 Wi-Fi 连接"
+            pendingChannel.value = null
+        }
+        return true
+    }
+
     /** Wi-Fi 连接（IO 线程）：上次 IP → 网段扫描（热点网段优先）→ 命中即连。
-     *  preferScan=true 时跳过上次 IP 直接扫描（Wi-Fi 卡内「扫描相机」按钮）。 */
+     *  preferScan=true 时跳过上次 IP 直接扫描（Wi-Fi 卡内「扫描相机」按钮）。
+     *  探测/扫描阶段可被取消（点 Wi-Fi 卡 / 点 USB 卡切换）；进入配对后跑完。 */
     private fun wifiConnectFlow(preferScan: Boolean): Boolean {
         connecting = true
         connPhase.value = "connecting"
         pendingChannel.value = "wifi"   // 标记当前尝试通道（双卡进度归位用）
         try {
             GPhoto2Bridge.setup(ctx)
+            if (wifiCancelled()) return false
             if (!preferScan) {
                 // ① 上次相机 IP
                 val lastIp = prefs.getString("camera_ip", null)
                 if (lastIp != null) {
                     connText.value = "探测上次相机 $lastIp …"
                     val info = synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(lastIp) }
+                    if (wifiCancelled()) return false
                     if (info != null) return finishConnect(lastIp, info)
                     Log.i("GPhoto2", "上次 IP $lastIp 不可达，转为网段扫描")
                 }
@@ -761,10 +837,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             var candidates: List<String> = emptyList()
             for (subnet in subnets) {
+                if (wifiCancelled()) return false
                 connText.value = "扫描网段 $subnet.x …"
-                candidates = scanSubnet(subnet) { done, total ->
-                    connText.value = "扫描网段 $subnet.x … $done/$total"
+                candidates = scanSubnet(subnet, abort = { wifiCancelRequested }) { done, total ->
+                    if (!wifiCancelRequested)                       // 取消后不再覆盖"已取消/USB 连接中"状态文字
+                        connText.value = "扫描网段 $subnet.x … $done/$total"
                 }
+                if (wifiCancelled()) return false
                 if (candidates.isNotEmpty()) break
             }
             if (candidates.isEmpty()) {
@@ -774,8 +853,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 pendingChannel.value = null
                 return false
             }
-            val named = candidates.map { ip ->
-                ip to (synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(ip) } ?: "|")
+            // ③ 相机信息探测（逐台；可取消）
+            val named = ArrayList<Pair<String, String>>()
+            for (ip in candidates) {
+                if (wifiCancelled()) return false
+                val info = synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(ip) } ?: "|"
+                named.add(ip to info)
             }
             if (named.size == 1) {
                 val (ip, info) = named[0]
@@ -790,6 +873,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return false
         } finally {
             connecting = false
+            wifiCancelRequested = false
         }
     }
 

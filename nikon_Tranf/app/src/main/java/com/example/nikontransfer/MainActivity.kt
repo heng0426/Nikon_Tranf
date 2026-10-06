@@ -550,6 +550,8 @@ class MainActivity : ComponentActivity() {
                                     scope.launch { withContext(Dispatchers.IO) { vm.requestWifiScan() } }
                                 }
                             },
+                            onWifiCancel = { vm.cancelWifiConnect() },
+                            // 进度文案只挂在当前尝试通道的卡上（Wi-Fi 扫描时 USB 卡不显示）
                             progressText = if (phase == "connecting" && !isUsbActive) connText.value else null,
                             active = phase == "connecting" && !isUsbActive,
                             dimmed = phase == "connecting" && isUsbActive,
@@ -649,6 +651,7 @@ class MainActivity : ComponentActivity() {
                                         scope.launch { withContext(Dispatchers.IO) { vm.requestWifiScan() } }
                                     }
                                 },
+                                onWifiCancel = { vm.cancelWifiConnect() },
                                 hotspotOn = vm.isHotspotOn(),
                                 progressText = if (wifiFull) connText.value else null,
                                 active = wifiFull,
@@ -3602,6 +3605,7 @@ class MainActivity : ComponentActivity() {
         compact: Boolean = false,
         onClick: () -> Unit = {},
         onScanClick: () -> Unit = {},
+        onWifiCancel: () -> Unit = {},
         progressText: String? = null,
         active: Boolean = false,
         dimmed: Boolean = false,
@@ -3619,9 +3623,12 @@ class MainActivity : ComponentActivity() {
             modifier = modifier
                 .fillMaxWidth()
                 .alpha(if (dimmed) 0.45f else 1f)
-                .clickable(enabled = !active) {
-                    vm.clearConnFailure()
-                    onClick()
+                .clickable {
+                    if (active) onWifiCancel()      // 连接/扫描中再点卡片 = 取消
+                    else {
+                        vm.clearConnFailure()
+                        onClick()
+                    }
                 }
         ) {
             Row(
@@ -3665,6 +3672,15 @@ class MainActivity : ComponentActivity() {
                             color = primary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    // 连接/扫描中提示：再点一次卡片即取消
+                    if (active) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "点按取消",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = onSurface
                         )
                     }
                 }
