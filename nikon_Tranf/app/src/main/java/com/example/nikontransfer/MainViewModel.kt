@@ -824,10 +824,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     Log.i("GPhoto2", "上次 IP $lastIp 不可达，转为网段扫描")
                 }
             }
-            // ② 网段扫描：热点网段（AOSP 默认 192.168.43.x）优先，其次路由器网段
-            val subnets = wifiSubnets().toMutableList()
-            if (!subnets.contains("192.168.43")) subnets.add(0, "192.168.43")
-            else { subnets.remove("192.168.43"); subnets.add(0, "192.168.43") }
+            // ② 网段扫描：只扫手机当前已连接的 Wi-Fi 网段（热点/路由器均动态探测）
+            val subnets = wifiSubnets()
             if (subnets.isEmpty()) {
                 connText.value = "未发现可用 Wi-Fi 子网"
                 connPhase.value = "disconnected"
