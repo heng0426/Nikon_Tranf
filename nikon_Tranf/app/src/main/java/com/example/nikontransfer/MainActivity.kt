@@ -594,10 +594,16 @@ class MainActivity : ComponentActivity() {
                         }
                         Spacer(Modifier.height(48.dp))
                     }
-                } else if (photoRows.isNotEmpty() && phase != "connected") {
-                    // 有照片 + 断开/连接中：顶部紧凑选择条。点选通道 → 该卡动画展开成整条（带进度），
-                    // 另一张动画收起；连接失败/断开 → 双卡动画恢复。重量动画驱动宽/透明度/间距插值。
-                    val connectingNow = phase == "connecting"
+                } else if (photoRows.isNotEmpty()) {
+                    // 有照片：顶部紧凑重连条——断开时弹出（淡入+向下展开），连接成功后淡出收起。
+                    // 点选通道 → 该卡动画展开成整条（带进度），另一张动画收起；失败 → 双卡动画恢复。
+                    AnimatedVisibility(
+                        visible = phase != "connected",
+                        enter = fadeIn(tween(220)) + expandVertically(expandFrom = Alignment.Top),
+                        exit = fadeOut(tween(180)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                    ) {
+                        Column {
+                            val connectingNow = phase == "connecting"
                     val usbFull = connectingNow &&
                         (vm.pendingChannel.value == "usb" || vm.connChannel.value == "usb")
                     val wifiFull = connectingNow && !usbFull
@@ -622,7 +628,6 @@ class MainActivity : ComponentActivity() {
                                 onClick = {
                                     scope.launch { withContext(Dispatchers.IO) { vm.startConnect("usb") } }
                                 },
-                                progressText = if (usbFull) connText.value else null,
                                 active = usbFull,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -677,6 +682,8 @@ class MainActivity : ComponentActivity() {
                                     Text("连接", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
                                 }
                             }
+                        }
+                    }
                         }
                     }
                 }
