@@ -1064,6 +1064,57 @@ class MainActivity : ComponentActivity() {
                                 Checkbox(checked = allSel, onCheckedChange = null)
                                 Text("全选", style = MaterialTheme.typography.bodyMedium)
                             }
+                            // 选当天：勾上=选中"当前日期"（顶部置顶胶囊所示分节）的全部可见照片；
+                            // 再点一次=取消该天。折叠天照片同样参与（只藏不见语义）。
+                            val curDayKey by remember(mergeOn) {
+                                derivedStateOf {
+                                    val state = if (mergeOn) mergeGridState else fileGridState
+                                    val firstIdx = state.layoutInfo.visibleItemsInfo.minOfOrNull { it.index }
+                                        ?: return@derivedStateOf null
+                                    // 统一投影为 (dateKey, 行数)：PairSection 与 DateSection 是两个类
+                                    val sections: List<Pair<String, Int>> =
+                                        if (mergeOn) vm.pairSections.map { it.dateKey to it.rows.size }
+                                        else vm.visibleSections.map { it.dateKey to it.rows.size }
+                                    var acc = 0
+                                    var key: String? = null
+                                    for ((d, n) in sections) {
+                                        // 折叠节只渲染节头 1 个 item，索引映射需同步
+                                        val cnt = 1 + if (d in vm.collapsedDates.value) 0 else n
+                                        if (firstIdx >= acc && firstIdx <= acc + cnt - 1) { key = d; break }
+                                        acc += cnt
+                                    }
+                                    key
+                                }
+                            }
+                            val dk = curDayKey   // 委托属性无法 smart cast，先固化局部值
+                            if (dk != null) {
+                                val dayAllOn = if (mergeOn) {
+                                    val rows = pairs.filter { it.stamp.startsWith(dk) }
+                                    rows.isNotEmpty() && rows.all { it.key in vm.pairSelection.value }
+                                } else {
+                                    val rows = visible.filter { it.stamp.startsWith(dk) }
+                                    rows.isNotEmpty() && rows.all { it.selected.value }
+                                }
+                                Row(
+                                    Modifier.clickable {
+                                        if (mergeOn) {
+                                            val keys = pairs.filter { it.stamp.startsWith(dk) }.map { it.key }
+                                            val allOn = keys.isNotEmpty() && keys.all { it in vm.pairSelection.value }
+                                            vm.pairSelection.value =
+                                                if (allOn) vm.pairSelection.value - keys.toSet()
+                                                else vm.pairSelection.value + keys.toSet()
+                                        } else {
+                                            val rows = visible.filter { it.stamp.startsWith(dk) }
+                                            val allOn = rows.all { it.selected.value }
+                                            rows.forEach { it.selected.value = !allOn }
+                                        }
+                                    }.padding(start = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(checked = dayAllOn, onCheckedChange = null)
+                                    Text("选当天", style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
                             Spacer(Modifier.weight(1f))
                             if (mergeOn) {
                                 Row(
@@ -2589,8 +2640,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 节头日期胶囊：点击折叠/展开当天照片（合并/文件模式共用）。
-     *  折叠态：箭头旋转 -90° + 胶囊变淡；当天有已选中照片时，日期胶囊旁独立显示"已选 N"
-     *  计数胶囊（不用 ✓ —— 避免与已下载标记混淆）。
+     *  折叠态：箭头旋转 -90° + 胶囊变淡；
+     *  当天有已选中照片时，日期胶囊旁独立显示"已选 N"计数胶囊
+     *  （不用 ✓ —— 避免与已下载标记混淆）。
      *  折叠语义 = 只藏不见：totalCount 始终显示当天原始张数（Q4=B）。 */
     @Composable
     private fun DateHeaderPill(
@@ -2612,7 +2664,8 @@ class MainActivity : ComponentActivity() {
         ) {
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (collapsed) 0.55f else 1f),
+                color = if (collapsed) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                else MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick = onToggle)
             ) {
                 Row(
