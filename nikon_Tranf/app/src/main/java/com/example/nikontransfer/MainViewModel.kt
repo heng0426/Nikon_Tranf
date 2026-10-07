@@ -67,19 +67,7 @@ fun prettyStamp(s: String): String =
         "${s.slice(0..3)}-${s.slice(4..5)}-${s.slice(6..7)} ${s.slice(9..10)}:${s.slice(11..12)}:${s.slice(13..14)}"
     else s
 
-/** 下载队列条目状态 */
-enum class QStatus { QUEUED, RUNNING, DONE, FAILED, CANCELED }
-
-/** 下载队列条目：一个文件一条；状态被下载管理页与全屏预览页共同读取（单一真相源） */
-class QueueItem(val handle: Int, val name: String, val type: String, val stamp: String) {
-    val status = mutableStateOf(QStatus.QUEUED)
-    val total = mutableStateOf(0L)
-    val got = mutableStateOf(0L)
-    val speed = mutableStateOf("")
-    @Volatile var cancelRequested = false
-    /** 实际下载耗时（ms）：DONE 时有效，0 = 未完成/被取消 */
-    var elapsedMs: Long = 0
-}
+/** 下载队列条目状态 / QueueItem / 队列调度：见 DownloadManager.kt */
 
 fun humanSize(b: Long): String = when {
     b >= 1 shl 20 -> "%.1fMB".format(b / 1048576.0)
@@ -1247,67 +1235,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /* ---------- 下载队列（单一真相源：单张/批量全量入队，串行 worker 消费）---------- */
-    val downloadQueue = mutableStateListOf<QueueItem>()
-    private val queueLock = Object()
-    @Volatile private var workerRunning = false
+    /* ---------- 下载队列（状态与调度在 DownloadManager；传输 IO 在本类，注入回调）---------- */
+    val downloads = DownloadManager(
+        runItem = { item -> runQueueItem(item) },
+        onWorkerExit = { ok, fail -> onQueueWorkerExit(ok, fail) }
+    )
+    val downloadQueue get() = downloads.queue
+    val activeDownloadCount get() = downloads.activeCount
 
-    /** 活跃任务数（顶栏队列按钮角标） */
-    val activeDownloadCount: Int
-        get() = downloadQueue.count { it.status.value in setOf(QStatus.QUEUED, QStatus.RUNNING) }
+    /** 入队（单张：全屏预览页与网格触发统一走队列；单张不触发完成提醒） */
+    fun enqueueDownload(row: PhotoRow) = downloads.enqueue(row)
 
-    /** 入队（去重：同一文件已在排队/下载中则忽略） */
-    fun enqueueDownload(row: PhotoRow) {
-        synchronized(queueLock) {
-            if (downloadQueue.any {
-                    it.handle == row.handle &&
-                        it.status.value in setOf(QStatus.QUEUED, QStatus.RUNNING)
-                }) return
-            // 重新下载：清掉同句柄旧的已完成/已取消条目，避免槽位读到陈旧状态
-            downloadQueue.removeAll {
-                it.handle == row.handle && it.status.value in setOf(QStatus.DONE, QStatus.CANCELED)
-            }
-            downloadQueue.add(QueueItem(row.handle, row.name, row.type, row.stamp))
-        }
-        ensureWorker()
-    }
+    fun retryDownload(item: QueueItem) = downloads.retry(item)
 
-    /** 失败/取消后的重试：复用条目，状态复位重新排队 */
-    fun retryDownload(item: QueueItem) {
-        item.cancelRequested = false
-        item.got.value = 0
-        synchronized(queueLock) {
-            if (item.status.value !in setOf(QStatus.QUEUED, QStatus.RUNNING)) {
-                item.status.value = QStatus.QUEUED
-                if (downloadQueue.none { it === item }) downloadQueue.add(item)
-            }
-        }
-        ensureWorker()
-    }
+    fun cancelDownload(item: QueueItem) = downloads.cancel(item)
 
-    /** 取消：排队中 = 直接移除；下载中 = 置取消标志（分块循环丢弃已下字节） */
-    fun cancelDownload(item: QueueItem) {
-        when (item.status.value) {
-            QStatus.QUEUED -> synchronized(queueLock) { downloadQueue.remove(item) }
-            QStatus.RUNNING -> item.cancelRequested = true
-            else -> {}
-        }
-    }
+    fun clearFinished() = downloads.clearFinished()
 
-    /** 清空已完成/已取消条目（失败项保留以便重试） */
-    fun clearFinished() {
-        synchronized(queueLock) {
-            downloadQueue.removeAll { it.status.value in setOf(QStatus.DONE, QStatus.CANCELED) }
-        }
-    }
-
-    /** 一键取消所有未完成任务：排队中直接移除，下载中置取消标志（当前分块后停止） */
-    fun cancelAllDownloads() {
-        synchronized(queueLock) {
-            downloadQueue.removeAll { it.status.value == QStatus.QUEUED }
-        }
-        downloadQueue.forEach { if (it.status.value == QStatus.RUNNING) it.cancelRequested = true }
-    }
+    fun cancelAllDownloads() = downloads.cancelAll()
 
     /* ---------- 队列完成提醒（震动 + 通知；设置可关，仅批量生效）---------- */
     var notifyDoneOn: Boolean by mutableStateOf(prefs.getBoolean("set_notify_done", true))
@@ -1317,9 +1262,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private var batchMode = false            // 本次批次是否来自批量下载
-    private var batchOk = 0
-    private var batchFail = 0
-    private var batchActive = false
 
     private fun vibrateOnce() {
         val v = ctx.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator ?: return
@@ -1328,40 +1270,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         else @Suppress("DEPRECATION") v.vibrate(200)
     }
 
-    private fun ensureWorker() {
-        synchronized(queueLock) {
-            if (workerRunning) return
-            workerRunning = true
+    /** worker 收尾：批量模式弹震动+通知（设置可关）；无论单张/批量都清理通知栏进度 */
+    private fun onQueueWorkerExit(ok: Int, fail: Int) {
+        if (batchMode && (ok > 0 || fail > 0) && notifyDoneOn) {
+            vibrateOnce()
+            CameraKeepAliveService.notifyDone(ctx, "下载完成：成功 $ok · 失败 $fail")
         }
-        batchOk = 0
-        batchFail = 0
-        batchActive = true
-        Thread {
-            while (true) {
-                val item = synchronized(queueLock) {
-                    downloadQueue.firstOrNull { it.status.value == QStatus.QUEUED }
-                } ?: break
-                runQueueItem(item)
-                when (item.status.value) {
-                    QStatus.DONE -> batchOk++
-                    QStatus.FAILED -> batchFail++
-                    else -> {}
-                }
-            }
-            if (batchActive && batchMode && (batchOk > 0 || batchFail > 0)) {
-                if (notifyDoneOn) {
-                    vibrateOnce()
-                    CameraKeepAliveService.notifyDone(ctx, "下载完成：成功 $batchOk · 失败 $batchFail")
-                }
-                batchActive = false
-            }
-            synchronized(queueLock) { workerRunning = false }
-            CameraKeepAliveService.clearProgress(ctx)
-        }.apply {
-            isDaemon = true
-            name = "download-worker"
-            start()
-        }
+        CameraKeepAliveService.clearProgress(ctx)
     }
 
     /** 串行消费一个队列条目：取总大小（0x9421）→ 0x9431 按 128KB 分块拉取拼装 → 保存。
@@ -1493,12 +1408,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 else "所选照片已在下载队列中"
             return
         }
-        synchronized(queueLock) {
-            fresh.forEach { downloadQueue.add(QueueItem(it.handle, it.name, it.type, it.stamp)) }
-        }
+        downloads.enqueueAll(fresh.map { QueueItem(it.handle, it.name, it.type, it.stamp) })
         photoRows.forEach { it.selected.value = false }   // 进度由队列页接管
         pairSelection.value = emptySet()
-        ensureWorker()
     }
 
     private fun decodeScaled(buf: ByteArray, off: Int, len: Int): Bitmap? = try {
