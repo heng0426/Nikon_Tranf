@@ -42,10 +42,19 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 
 ## 3. 源码地图（全部在 `app/src/main/java/com/example/nikontransfer/`）
 
+**UI 层按界面拆成扩展函数文件**（`internal fun MainActivity.Xxx`，共享 Activity 的 internal 成员；改 UI 先定位文件再动手）：
+
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `MainActivity.kt` | ~3800 | 全部 UI：主界面（全屏双卡连接/紧凑重连条/双模式网格/筛选/多选+选当天/日期折叠）、设置页、全屏预览（图层分离/EXIF 胶囊淡入/下载进度进按钮）、下载队列侧板（卡片化进度填充/汇总胶囊）、快速滚动条 |
-| `MainViewModel.kt` | ~2500 | **业务核心**：连接状态机（含 Wi-Fi 取消+USB 接力）、缩略图管线（LRU/磁盘缓存/串行队列）、高清预览管线（hiresCache）、下载队列（QueueItem 单一真相源）、通道分发（USB/Wi-Fi） |
+| `MainActivity.kt` | ~1360 | Activity 本体 + `MainScreen`（全屏双卡连接/紧凑重连条/双模式网格骨架/筛选/多选+选当天/日期折叠）+ TopBarDownloadButton/ConnInfoCard/RollingText |
+| `UiSpec.kt` | ~120 | **设计令牌中心**：动画三档（QUICK/STANDARD/EMPHASIS）、圆角双档（ROUND_SMALL/LARGE）、浅深成对主题色（accent/accentDeep/error/amber/usbBlue/connChip/卡片面/选中遮罩/已下载标/徽章/蒙层/占位灰）、布局尺寸（PILL_SLOT/CONN_INFO_H/QUEUE_ROW_H/PREVIEW_SLOT_H/CHECK_ICON/QUEUE_THUMB/DRAG_STRIP_W/SEL_BORDER_W/SCROLLBAR_THICKNESS）、行为参数（CHUNK_TRIGGER）。**新代码一律取令牌，不写散值** |
+| `GridParts.kt` | ~800 | 双格 PairCell/单格 GridCell/格式徽章/已下载标、置顶日期胶囊与槽位、快速滚动条覆盖层（GridScrollbarOverlay，合并/文件共用）、日期节头胶囊、筛选面板 FilterSheet |
+| `PreviewPagers.kt` | ~790 | 合并/单格式全屏预览 Pager、PreviewZoomState 缩放状态与手势、EXIF/下载槽位 |
+| `SettingsScreens.kt` | ~730 | 设置页 + 全部设置组件（SettingsSection/SettingSwitch/ChannelChip/ActionPill/两个选择器） |
+| `DownloadsQueue.kt` | ~560 | 下载队列侧板 + 队列行/缩略图/下载槽位 |
+| `CardsIcons.kt` | ~530 | USB/Wi-Fi 连接卡（双卡与紧凑条共用）+ 全部 Canvas 自绘图标 |
+| `MainViewModel.kt` | ~2480 | **业务核心**：连接状态机（Wi-Fi 取消+USB 接力）、缩略图管线、高清预览管线、配对缓存 pairRowsCache、分块加载、筛选/折叠/多选状态；下载队列已抽到 DownloadManager（本类保留传输 IO runQueueItem） |
+| `DownloadManager.kt` | ~120 | 下载队列状态与串行调度（QueueItem/QStatus/入队去重/取消/worker）；传输 IO 由 VM 注入 `runItem` 回调，收尾 `onWorkerExit` 回调做批量提醒 |
 | `UsbPtpSession.kt` | ~610 | **USB 通道**：自研 PTP over USB bulk（照搬 Z传 架构，0x9434 快路径枚举），见 §6 |
 | `GPhoto2Bridge.kt` | 65 | Wi-Fi 通道的 JNI 声明（native 实现在 `cpp/gphoto2_jni.c`） |
 | `CameraKeepAliveService.kt` | 101 | 前台服务 + WifiLock（仅 Wi-Fi 连接用，USB 不需要） |
@@ -76,8 +85,8 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 6. **Wi-Fi 可取消 + USB 接力**：探测上次 IP / 网段扫描 / 相机信息探测阶段可打断（`wifiCancelRequested` 检查点），进入配对后跑完；扫描/探测中点 USB 卡 = 取消 Wi-Fi + USB 卡动画展开成整条（`pendingChannel` 标记尝试通道），USB 接力线程**无上限**等 Wi-Fi 退出再连；**接力所有终止出口（未检测到相机/未授权）必须把 connPhase 恢复 disconnected**，否则 UI 卡在转圈；USB 连接中不支持反向切换。
 
 **连接 UI 形态**（MainActivity）：
-- **无照片一律全屏双卡**（冷启动/连接中/枚举中/断开回退）：USB/Wi-Fi 两张连接卡 + 下方 ConnInfoCard 信息卡片（连接中=进度+转圈，断开=失败原因红字，48dp 锁高，200ms 淡入展开/160ms 淡出收起）；标题随状态三态（「正在连接相机…」/「正在读取照片列表…」/「选择连接方式」）。
-- **有照片断开才显示紧凑重连条**（60dp 锁高）：点某卡 weight 1f→2.4f 动画展开成整条、另一卡收 0 淡出，失败自动恢复双卡（animateFloatAsState 320ms FastOutSlowIn）。
+- **无照片一律全屏双卡**（冷启动/连接中/枚举中/断开回退）：USB/Wi-Fi 两张连接卡 + 下方 ConnInfoCard 信息卡片（连接中=进度+转圈，断开=失败原因红字，48dp 锁高（`UiSpec.CONN_INFO_H`），淡入展开 `UiSpec.STANDARD`/淡出收起 `UiSpec.QUICK`）；标题随状态三态（「正在连接相机…」/「正在读取照片列表…」/「选择连接方式」）。
+- **有照片断开才显示紧凑重连条**（60dp 锁高）：点某卡 weight 1f→2.4f 动画展开成整条、另一卡收 0 淡出，失败自动恢复双卡（`UiSpec.EMPHASIS` FastOutSlowIn）。
 - 顶栏：无照片只显示设置齿轮；有照片显示齿轮+筛选+连接状态+下载队列。
 
 ## 5. Wi-Fi 通道要点（gphoto2 PTP/IP）
@@ -119,6 +128,9 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 - `PairRow(key, stamp, jpg, nef)`：合并视图一格 = 同拍摄张 JPG+NEF 成对（孤儿单格式也成项）。**选中态存在 VM 的 `pairSelection`（键 = key 非 stamp，连拍同秒会产生多格）**；实例每次派生时重建。
 - **日期折叠**：`collapsedDates`（dateKey 集合，会话内有效，切视图/重连保留、退 App 重置）。节头日期胶囊点击折叠/展开，语义**"只藏不见"**：仅隐藏网格显示，全选/批量下载/统计口径仍含折叠天照片。
 - **多选「选当天」**：多选操作条「全选」右侧勾选项。"当前日期" = 顶部置顶胶囊所示分节（`derivedStateOf` 由活动网格 firstVisibleItemIndex 映射分节，折叠节只算 1 个 item；仅跨分节输出新值）。口径与全选一致（只含筛选后可见照片）。**节头胶囊永远只负责折叠，不做多选让位**（点节头当全选用的第一版被用户否决）。
+- **配对缓存**：`pairRowsAll` 走 `pairRowsCache`（仅 `listFiles` 在枚举线程预构建，`buildPairRows()`）——此前每次读取都 O(n log n) 全量重配对，是"合并模式比文件模式卡"的根因。
+- **分块加载**：`chunkedLoad`/`chunkSize`（设置项，默认关）→ `displayLimit` 对 `visiblePhotos`/`visiblePairs` 做 take 截断；网格 `snapshotFlow` 监听滚动，距已加载末尾 `UiSpec.CHUNK_TRIGGER` 项内自动 `loadMoreChunks()`；全选/选当天/统计/预览翻页口径 = 已加载可见项；重新枚举自动重置进度。
+- **下载队列**：状态与调度在 `DownloadManager`（入队去重/取消/串行 worker），传输 IO `runQueueItem` 留在 VM（持 camMutex），通过注入回调解耦；VM 用 `downloadQueue`/`activeDownloadCount` 等委托保持 UI 兼容。
 - 文件名合成规则：`IMG_${stamp}_${handle后4位}.${type小写}`——保存/去重都靠 name。
 - **缩略图三层**：内存 LRU `thumbMem`（堆/8 ≤64MB）+ 无锁读路径 `thumbFast`（ConcurrentHashMap，主线程不抢 LruCache 锁）+ 磁盘缓存（`cacheDir/thumbs`，JPEG 85%，软上限 `set_thumb_cache_mb`）。LRU 逐出 → 清对应行 preview → 格子滑回时 `ensureThumb` 从磁盘读回（**串行队列** thumbIoQueue，绝不开线程风暴）。`putThumb` 是唯一写入口：仅 `row.onScreen` 时才写 preview（防滑动中位图填充重组风暴）。
 - **高清预览**：`hiresCache`（LRU 6 张，采样 ≤2048px）。JPG=MPF 大图偏移读；NEF=TIFF 解析嵌入 JPEG（`nefPreviewRange` 探测窗 512KB）。USB：整对象下载后内存切片，逻辑复用。
@@ -157,19 +169,21 @@ adb logcat -d | grep -E "UsbPtp|GPhoto2"
 6. **无障碍服务（GKD/小米钱包AI记账）会全树扫描语义节点**，坐标计算发生在 App 主线程——重内容网格必须 `clearAndSetSemantics{}` 免疫（已在两个网格容器上实施），否则每帧 6-17ms 语义计算 = 滑动必卡。
 7. Z6 II USB PTP **GetObjectInfo 的 ObjectInfo 头部与 PTP 标准 ±字节差异**——文件名解析已做自适应搜索，动这块前先看 `infoFailDetail` 诊断。
 8. **手机单 USB-C 口**：接电脑 vs 接相机互斥；USB 通道测试时 adb 断开，诊断靠 UI 上的 `lastDiag` 或来回换线。
-9. **MainScreen 是巨型方法**：新增大段 Compose 代码优先抽成独立 private fun——JDK25 编译时曾触发 d8/ART VerifyError 闪退（daemon 已固定 JDK21，但巨型方法仍是风险源，见 §2）。
+9. **MainScreen 巨型方法风险**：曾达 ~1130 行，JDK25 编译时触发 d8/ART VerifyError 闪退（daemon 已固定 JDK21；UI 已按界面拆到 6 个扩展函数文件，但 MainScreen 仍有 ~900 行——新增大段 Compose 代码仍优先抽独立 fun）。
 10. **Compose 类型/判空陷阱**：两个不同 data class 的 List（如 `List<PairSection>`/`List<DateSection>`）用 if 表达式赋同一变量会取 LUB=`List<Any>`，成员访问编译失败 → map 成统一元组（如 `(dateKey to rowsCount)`）再循环；`val x by derivedStateOf{}` 委托属性无法 smart cast，先固化局部值再判空。
+11. **HyperOS「智能刷新率」按应用类别限帧**：`dumpsys display` 里 `frameRateCategoryRate {normal=60.0, high=90.0}`——无帧率声明的 App 被归入 normal=**60Hz** 档，帧距被 vsync 节拍钉在 ~20ms（体感"发闷"，janky 却≈0，极具迷惑性）。修复：`onCreate` 里 `window.attributes.preferredDisplayModeId = 同分辨率最高刷新模式`（实测帧距中位 20ms→5ms，janky 0.1%→0.24% 但基线是 120fps）。诊断三件套：`mActiveRenderFrameRate`（是否 120）、`frameRateCategoryRate`（类别限档）、gfxinfo percentile。
+12. **滚动条快拖卡顿根因**：拖动事件里逐事件 `scope.launch { scrollBy }` 会协程排队堆积 + 逐事件物化 `layoutInfo.visibleItemsInfo`。修复模式：`onDragStart` 算一次缩放比，事件用 `LazyGridState.dispatchRawDelta` **同步**滚动（无协程/无锁排队）；指示气泡的分节列表提升到组合期取一次复用。
 
 ## 10. 当前状态与待办（截至 2026-10-07）
 
-**已完成**：Wi-Fi 全功能（成熟；递归枚举+0x9434 并集后 886/886 张全可见）；USB 直连全链路（0x9434 快路径枚举 ~1 秒、表空回退旧路径/发现/权限/去重/自适应文件名/整对象下载/GetThumb 缩略图/NEF 内存切片高清/EXIF/管道自愈）；连接 UI 重构（全屏双卡/紧凑重连条/ConnInfoCard 信息卡片带动画、Wi-Fi 可取消+USB 接力、USB 读取进度并入信息卡片不再跳独立页）；网格性能优化四件套；日期折叠（合并+文件模式，"只藏不见"）；滚动条显示阈值设置；下载队列改版（缩略图行、卡片化进度填充铺卡、汇总双胶囊+总进度条、全部取消、顶栏角标替换图标、tnum 等宽数字）；预览页重构（图层分离、EXIF 淡入、图片名称+日期胶囊、下载进度进按钮、40dp 锁高、配色与队列同步）；多选「选当天」。
+**已完成**：Wi-Fi 全功能（成熟；递归枚举+0x9434 并集后 886/886 张全可见）；USB 直连全链路（0x9434 快路径枚举 ~1 秒、表空回退旧路径/发现/权限/去重/自适应文件名/整对象下载/GetThumb 缩略图/NEF 内存切片高清/EXIF/管道自愈）；连接 UI 重构（全屏双卡/紧凑重连条/ConnInfoCard 信息卡片带动画、Wi-Fi 可取消+USB 接力、USB 读取进度并入信息卡片不再跳独立页）；网格性能优化四件套 + 合并模式配对缓存 + 滚动条快拖 dispatchRawDelta 重写 + 强制 120Hz（HyperOS 类别限频规避，见 §9#11）；日期折叠（合并+文件模式，"只藏不见"）；滚动条显示阈值设置（开关+展开阈值选择器）；**分块加载**（可关，每块 50/100/200/500，滑近末尾自动追加，置顶胶囊显示"已加载 X/Y"）；下载队列改版（缩略图行、卡片化进度填充铺卡、汇总双胶囊+总进度条、全部取消、顶栏角标替换图标+数字滚动、tnum 等宽数字）；预览页重构（图层分离、EXIF 淡入、图片名称+日期胶囊、下载进度进按钮、40dp 锁高、配色与队列同步）；多选「选当天」；**UI 设计令牌中心 UiSpec.kt**（动画三档/圆角双档/成对主题色/布局尺寸/行为参数，约 70 处散值已接线）；**UI 按界面拆文件**（GridParts/PreviewPagers/SettingsScreens/DownloadsQueue/CardsIcons，MainActivity 从 3964 行瘦到 1363 行）；设置页卡片化（分组色块图标/动作胶囊 ActionPill/行标题 onSurface）。
 
-**已知取舍**：USB 缩略图用 GetThumb（~160px，网格上略糊）；USB 高清预览首开需整文件下载（NEF 50MB 约 5-10 秒，之后 hiresCache 缓存）；无下载进度细分（整块到达）；下载耗时统计功能代码存在但入口已按用户要求移除。
+**已知取舍**：USB 缩略图用 GetThumb（~160px，网格上略糊）；USB 高清预览首开需整文件下载（NEF 50MB 约 5-10 秒，之后 hiresCache 缓存）；无下载进度细分（整块到达）；下载耗时统计功能代码存在但入口已按用户要求移除；强制 120Hz 仅前台生效（后台系统自动回落）。
 
-**明确不做/已否决**：gphoto2 补 libusb USB 端口（fd 注入硬骨头）；MtpDevice API（黑盒、厂商差异）；手机↔电脑方向；OTG 读卡器；相机热点网关探测（用户明确留待以后）；多选时点节头日期胶囊当全选用（否决——会废掉折叠功能，改为多选操作条「选当天」）。
+**明确不做/已否决**：gphoto2 补 libusb USB 端口（fd 注入硬骨头）；MtpDevice API（黑盒、厂商差异）；手机↔电脑方向；OTG 读卡器；相机热点网关探测（用户明确留待以后）；多选时点节头日期胶囊当全选用（否决——会废掉折叠功能，改为多选操作条「选当天」）；网格整体淡入/已下载标记弹入/多选勾选弹跳（用户逐一否决——"闪一下"或多余，微交互仅保留队列/角标数字滚动）。
 
 **返回键优先级**（BackHandler）：多选退出（预览未开时）→ 合并预览 → 单格式预览 → 下载侧板 → 设置页。
 
 ## 11. 设置项（SharedPreferences "cfg"）
 
-`set_auto_preview` · `set_auto_conn_channel`（启动自动连接优先通道 usb/wifi，**仅影响启动顺序**，手动点卡和插线自动连接不受影响；非可观察状态，设置页选择器须读 `vm.autoConnChannel.value` 触发重组）· `set_dark_mode` · `set_date_folder`（按拍摄日期建夹）· `set_hires_preview` · `set_merge_pairs`（JPG+NEF 合并格）· `set_notify_done` · `set_scrollbar_threshold`（滚动条显示阈值：-1=不显示/30/50/100/200，默认 50；计数口径=未折叠照片数）· `set_skip_downloaded` · `set_thumb_cache_mb` · `save_dir_uri`（自定义保存目录）· `camera_ip`（上次 Wi-Fi 相机 IP）。
+`set_auto_preview` · `set_auto_conn_channel`（启动自动连接优先通道 usb/wifi，**仅影响启动顺序**，手动点卡和插线自动连接不受影响；非可观察状态，设置页选择器须读 `vm.autoConnChannel.value` 触发重组）· `set_chunked_load`（分块加载开关，默认关）· `set_chunk_size`（每块加载量 50/100/200/500，默认 100；合并模式按合并格计）· `set_dark_mode` · `set_date_folder`（按拍摄日期建夹）· `set_hires_preview` · `set_merge_pairs`（JPG+NEF 合并格）· `set_notify_done` · `set_scrollbar_threshold`（快速滚动条：-1=关（开关承担）/30/50/100/200，默认 50；计数口径=未折叠照片数）· `set_skip_downloaded` · `set_thumb_cache_mb` · `save_dir_uri`（自定义保存目录）· `camera_ip`（上次 Wi-Fi 相机 IP）。

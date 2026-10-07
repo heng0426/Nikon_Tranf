@@ -438,7 +438,7 @@ class MainActivity : ComponentActivity() {
                                 .clickable { showFilter = true },
                             contentAlignment = Alignment.Center
                         ) {
-                            FunnelIcon(if (vm.filterActive) Color(0xFF00695C) else MaterialTheme.colorScheme.onSurfaceVariant)
+                            FunnelIcon(if (vm.filterActive) UiSpec.accent(vm.darkModeOn) else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         // 连接指示（常驻，筛选旁，同款圆角外框）：已连接=显示通道图标(点看详情)；连接中=禁点；断开=点击重连
                         val red = phase == "disconnected"
@@ -466,8 +466,7 @@ class MainActivity : ComponentActivity() {
                                     red -> UiSpec.error(vm.darkModeOn)
                                     amber -> UiSpec.amber(vm.darkModeOn)
                                     isUsbConn -> UiSpec.usbBlue(vm.darkModeOn)
-                                    vm.darkModeOn -> Color(0xFF4DB6AC)
-                                    else -> Color(0xFF00695C)
+                                    else -> UiSpec.accent(vm.darkModeOn)
                                 },
                                 animationSpec = tween(UiSpec.STANDARD),
                                 label = "connIconColor"
@@ -497,10 +496,7 @@ class MainActivity : ComponentActivity() {
                     Surface(
                         Modifier.fillMaxWidth().padding(bottom = 8.dp),
                         shape = MaterialTheme.shapes.medium,
-                        color = if (vm.darkModeOn)
-                            (if (isUsb) Color(0xFF101838) else Color(0xFF10312D))
-                        else
-                            (if (isUsb) Color(0xFFE3F2FD) else Color(0xFFE0F2F1))
+                        color = UiSpec.connChipBg(vm.darkModeOn, isUsb)
                     ) {
                         Row(
                             Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -510,10 +506,7 @@ class MainActivity : ComponentActivity() {
                                 Text(
                                     "已连接：$cm ($cs) · ${if (isUsb) "USB 直连" else connectedIp.value}",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = if (vm.darkModeOn)
-                                        (if (isUsb) Color(0xFF64B5F6) else Color(0xFF4DB6AC))
-                                    else
-                                        (if (isUsb) Color(0xFF1565C0) else Color(0xFF00695C))
+                                    color = UiSpec.connChipText(vm.darkModeOn, isUsb)
                                 )
                             }
                             TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { vm.disconnect() } } }) {
@@ -727,7 +720,7 @@ class MainActivity : ComponentActivity() {
                 // 这里禁用库手势（Disabled），另叠像素级 scrollBy 拖动层，增量滚动无跳变。
                 val sbSettings = ScrollbarSettings(
                     selectionMode = ScrollbarSelectionMode.Disabled,
-                    thumbThickness = 9.dp,
+                    thumbThickness = UiSpec.SCROLLBAR_THICKNESS,
                     scrollbarPadding = 3.dp,
                     thumbMinLength = 0.05f,
                     thumbUnselectedColor = UiSpec.accent(vm.darkModeOn),
@@ -745,7 +738,7 @@ class MainActivity : ComponentActivity() {
                         val info = state.layoutInfo
                         (info.visibleItemsInfo.maxOfOrNull { it.index } ?: -1) to info.totalItemsCount
                     }.collect { (last, total) ->
-                        if (total > 0 && last >= total - 24) vm.loadMoreChunks()
+                        if (total > 0 && last >= total - UiSpec.CHUNK_TRIGGER) vm.loadMoreChunks()
                     }
                 }
                 // 照片网格：按日期分节（节头占满一行），组内从新到旧；合并模式一格=一对
@@ -1151,7 +1144,7 @@ class MainActivity : ComponentActivity() {
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .background(Color(0x66000000))
+                        .background(UiSpec.MASK)
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null
@@ -1192,7 +1185,7 @@ class MainActivity : ComponentActivity() {
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .background(Color(0x66000000))
+                        .background(UiSpec.MASK)
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null
@@ -1314,7 +1307,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     // 高度锁定 48dp（容两行）：转圈/文字都在其中居中，连接中↔断开切换卡片位置恒定
                     Row(
-                        Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 12.dp),
+                        Modifier.fillMaxWidth().height(UiSpec.CONN_INFO_H).padding(horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         if (loading) {

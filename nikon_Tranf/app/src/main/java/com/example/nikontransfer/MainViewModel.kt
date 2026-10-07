@@ -58,8 +58,7 @@ data class PairRow(
 }
 
 fun badgeColor(type: String) =
-    if (type.equals("JPG", true)) androidx.compose.ui.graphics.Color(0xFF00695C)
-    else androidx.compose.ui.graphics.Color(0xFF6A1B9A)
+    if (type.equals("JPG", true)) UiSpec.JPG_TEAL else UiSpec.NEF_PURPLE
 
 /** "20261001-162351" → "2026-10-01 16:23:51"（相机时钟，可能比手机慢） */
 fun prettyStamp(s: String): String =

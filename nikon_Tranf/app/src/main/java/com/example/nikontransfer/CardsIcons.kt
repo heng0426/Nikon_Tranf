@@ -352,9 +352,9 @@ internal fun MainActivity.UsbChannelCard(
         modifier: Modifier = Modifier
     ) {
         val dark = vm.darkModeOn
-        val primary = if (dark) Color(0xFF64B5F6) else Color(0xFF1565C0)
-        val surface = if (dark) Color(0xFF101838) else Color(0xFFE3F2FD)
-        val onSurface = if (dark) Color(0xFFB3D6F7) else Color(0xFF0D47A1)
+        val primary = if (dark) UiSpec.usbBlue(dark) else UiSpec.usbBlue(dark)
+        val surface = UiSpec.usbSurface(dark)
+        val onSurface = UiSpec.usbOnSurface(dark)
 
         Surface(
             shape = RoundedCornerShape(if (compact) 12.dp else 16.dp),
@@ -443,9 +443,9 @@ internal fun MainActivity.WifiChannelCard(
         modifier: Modifier = Modifier
     ) {
         val dark = vm.darkModeOn
-        val primary = if (dark) Color(0xFF4DB6AC) else Color(0xFF00695C)
-        val surface = if (dark) Color(0xFF10312D) else Color(0xFFE0F2F1)
-        val onSurface = if (dark) Color(0xFF80CBC4) else Color(0xFF004D40)
+        val primary = if (dark) UiSpec.accent(dark) else UiSpec.accent(dark)
+        val surface = UiSpec.wifiSurface(dark)
+        val onSurface = UiSpec.wifiOnSurface(dark)
 
         Surface(
             shape = RoundedCornerShape(if (compact) 12.dp else 16.dp),

@@ -274,7 +274,7 @@ internal fun MainActivity.QueueThumb(handle: Int) {
         val bmp = row?.preview?.value
         Box(
             Modifier
-                .size(44.dp)
+                .size(UiSpec.QUEUE_THUMB)
                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
@@ -334,7 +334,7 @@ internal fun MainActivity.QueueRow(item: QueueItem) {
                 Row(
                     // 高度锁定 60dp（原实际高度）：下载中（有取消按钮）与已完成（无按钮）
                     // 卡片总高一致，状态切换不跳变；各元素在行内垂直居中
-                    Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 10.dp),
+                    Modifier.fillMaxWidth().height(UiSpec.QUEUE_ROW_H).padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     QueueThumb(item.handle)
@@ -547,7 +547,7 @@ internal fun MainActivity.DownloadStateSlot(
                         .background(MaterialTheme.colorScheme.surfaceVariant),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("排队中…", color = Color(0xFF999999), style = MaterialTheme.typography.labelMedium)
+                    Text("排队中…", color = UiSpec.GREY_TEXT, style = MaterialTheme.typography.labelMedium)
                 }
             }
             qItem != null && st == QStatus.FAILED -> Button(

@@ -298,7 +298,7 @@ internal fun MainActivity.PairPager(
         }
         // 沉浸模式：单击图片切换，翻页保持状态
         var immersive by remember { mutableStateOf(false) }
-        Surface(Modifier.fillMaxSize(), color = Color(0x66000000)) {
+        Surface(Modifier.fillMaxSize(), color = UiSpec.MASK) {
             Box(Modifier.fillMaxSize().safeDrawingPadding()) {
                 // 图片层铺满整屏垫底，顶/底信息栏浮层叠加——EXIF/按钮高度变化不再挤压图片
                 Column(Modifier.fillMaxWidth().zIndex(1f)) {
@@ -316,15 +316,15 @@ internal fun MainActivity.PairPager(
                         if (topProg < 0f) {
                             LinearProgressIndicator(
                                 modifier = Modifier.fillMaxSize(),
-                                color = Color(0xFF4DB6AC),
-                                trackColor = Color(0x334DB6AC)
+                                color = UiSpec.accent(vm.darkModeOn),
+                                trackColor = UiSpec.selOverlay(vm.darkModeOn)
                             )
                         } else {
                             LinearProgressIndicator(
                                 progress = { topProg.coerceIn(0f, 1f) },
                                 modifier = Modifier.fillMaxSize(),
-                                color = Color(0xFF4DB6AC),
-                                trackColor = Color(0x334DB6AC)
+                                color = UiSpec.accent(vm.darkModeOn),
+                                trackColor = UiSpec.selOverlay(vm.darkModeOn)
                             )
                         }
                     }
@@ -351,10 +351,10 @@ internal fun MainActivity.PairPager(
                             .padding(end = 8.dp)
                             .size(24.dp)
                             .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                            .background(if (selNow) Color(0xFF00695C) else Color.Transparent)
+                            .background(if (selNow) UiSpec.accent(vm.darkModeOn) else Color.Transparent)
                             .border(
                                 2.dp,
-                                if (selNow) Color(0xFF00695C) else Color.White,
+                                if (selNow) UiSpec.accent(vm.darkModeOn) else Color.White,
                                 RoundedCornerShape(UiSpec.ROUND_SMALL)
                             )
                             .clickable { curPair?.let { vm.togglePair(it.key) } },
@@ -405,13 +405,13 @@ internal fun MainActivity.PairPager(
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
                                     "RAW+JPG",
-                                    color = Color(0xFF9E9E9E),
+                                    color = UiSpec.GREY_TEXT,
                                     style = MaterialTheme.typography.titleLarge
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Text(
                                     "缩略图加载中…",
-                                    color = Color(0xFF777777),
+                                    color = UiSpec.PLACEHOLDER_TEXT,
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -452,7 +452,7 @@ internal fun MainActivity.PairPager(
                                 if (pair.jpgDownloaded) append("✓J ")
                                 if (pair.nefDownloaded) append("✓N")
                             }.trim()
-                            Text(marks, color = Color(0xFF4DB6AC), style = MaterialTheme.typography.labelSmall)
+                            Text(marks, color = UiSpec.accent(vm.darkModeOn), style = MaterialTheme.typography.labelSmall)
                         }
                     }
                     // 拍摄日期胶囊：与 EXIF 参数同风格（原位置下移，常显）
@@ -462,7 +462,7 @@ internal fun MainActivity.PairPager(
                             .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                             .background(Color.White.copy(alpha = 0.12f))
                             .padding(horizontal = 8.dp, vertical = 3.dp),
-                        color = Color(0xFFDDDDDD),
+                        color = UiSpec.PLACEHOLDER_ICON,
                         style = MaterialTheme.typography.labelSmall
                     )
                     // EXIF 参数胶囊（高清加载时解析；末项=镜头型号）：淡入+向下展开，出现不生硬
@@ -484,7 +484,7 @@ internal fun MainActivity.PairPager(
                                             .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                             .background(Color.White.copy(alpha = 0.12f))
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
-                                        color = Color(0xFFDDDDDD),
+                                        color = UiSpec.PLACEHOLDER_ICON,
                                         style = MaterialTheme.typography.labelSmall
                                     )
                                 }
@@ -496,14 +496,14 @@ internal fun MainActivity.PairPager(
                     if (vm.hiresOn && hiKey != null && vm.hiresFailed.containsKey(hiKey)) {
                         Text(
                             "高清加载失败 · 翻回此页自动重试",
-                            color = Color(0xFF777777),
+                            color = UiSpec.PLACEHOLDER_TEXT,
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
                     Spacer(Modifier.height(6.dp))
                     // 行高锁定 40dp：下载槽在按钮/进度胶囊间切换时信息区高度恒定不跳动
                     Row(
-                        Modifier.fillMaxWidth().height(40.dp),
+                        Modifier.fillMaxWidth().height(UiSpec.PREVIEW_SLOT_H),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -563,7 +563,7 @@ internal fun MainActivity.PreviewPager(
         }
         // 沉浸模式：单击图片切换，翻页保持状态
         var immersive by remember { mutableStateOf(false) }
-        Surface(Modifier.fillMaxSize(), color = Color(0x66000000)) {
+        Surface(Modifier.fillMaxSize(), color = UiSpec.MASK) {
             Box(Modifier.fillMaxSize().safeDrawingPadding()) {
                 // 图片层铺满整屏垫底，顶/底信息栏浮层叠加——EXIF/按钮高度变化不再挤压图片
                 Column(Modifier.fillMaxWidth().zIndex(1f)) {
@@ -580,15 +580,15 @@ internal fun MainActivity.PreviewPager(
                         if (topProg < 0f) {
                             LinearProgressIndicator(
                                 modifier = Modifier.fillMaxSize(),
-                                color = Color(0xFF4DB6AC),
-                                trackColor = Color(0x334DB6AC)
+                                color = UiSpec.accent(vm.darkModeOn),
+                                trackColor = UiSpec.selOverlay(vm.darkModeOn)
                             )
                         } else {
                             LinearProgressIndicator(
                                 progress = { topProg.coerceIn(0f, 1f) },
                                 modifier = Modifier.fillMaxSize(),
-                                color = Color(0xFF4DB6AC),
-                                trackColor = Color(0x334DB6AC)
+                                color = UiSpec.accent(vm.darkModeOn),
+                                trackColor = UiSpec.selOverlay(vm.darkModeOn)
                             )
                         }
                     }
@@ -615,10 +615,10 @@ internal fun MainActivity.PreviewPager(
                             .padding(end = 8.dp)
                             .size(24.dp)
                             .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                            .background(if (selNow) Color(0xFF00695C) else Color.Transparent)
+                            .background(if (selNow) UiSpec.accent(vm.darkModeOn) else Color.Transparent)
                             .border(
                                 2.dp,
-                                if (selNow) Color(0xFF00695C) else Color.White,
+                                if (selNow) UiSpec.accent(vm.darkModeOn) else Color.White,
                                 RoundedCornerShape(UiSpec.ROUND_SMALL)
                             )
                             .clickable { curRow?.let { it.selected.value = !it.selected.value } },
@@ -668,13 +668,13 @@ internal fun MainActivity.PreviewPager(
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
                                     row.type,
-                                    color = Color(0xFF9E9E9E),
+                                    color = UiSpec.GREY_TEXT,
                                     style = MaterialTheme.typography.titleLarge
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Text(
                                     "缩略图加载中…",
-                                    color = Color(0xFF777777),
+                                    color = UiSpec.PLACEHOLDER_TEXT,
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -716,7 +716,7 @@ internal fun MainActivity.PreviewPager(
                         if (row.downloaded.value)
                             Text(
                                 "已下载 ✓",
-                                color = Color(0xFF4DB6AC),
+                                color = UiSpec.accent(vm.darkModeOn),
                                 style = MaterialTheme.typography.labelSmall
                             )
                     }
@@ -727,7 +727,7 @@ internal fun MainActivity.PreviewPager(
                             .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                             .background(Color.White.copy(alpha = 0.12f))
                             .padding(horizontal = 8.dp, vertical = 3.dp),
-                        color = Color(0xFFDDDDDD),
+                        color = UiSpec.PLACEHOLDER_ICON,
                         style = MaterialTheme.typography.labelSmall
                     )
                     // EXIF 参数胶囊（高清加载时解析；末项=镜头型号）：淡入+向下展开，出现不生硬
@@ -749,7 +749,7 @@ internal fun MainActivity.PreviewPager(
                                             .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                             .background(Color.White.copy(alpha = 0.12f))
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
-                                        color = Color(0xFFDDDDDD),
+                                        color = UiSpec.PLACEHOLDER_ICON,
                                         style = MaterialTheme.typography.labelSmall
                                     )
                                 }
@@ -760,14 +760,14 @@ internal fun MainActivity.PreviewPager(
                     if (vm.hiresOn && vm.hiresFailed.containsKey(row.handle)) {
                         Text(
                             "高清加载失败 · 翻回此页自动重试",
-                            color = Color(0xFF777777),
+                            color = UiSpec.PLACEHOLDER_TEXT,
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
                     Spacer(Modifier.height(6.dp))
                     // 行高锁定 40dp：下载槽在按钮/进度胶囊间切换时信息区高度恒定不跳动
                     Row(
-                        Modifier.fillMaxWidth().height(40.dp),
+                        Modifier.fillMaxWidth().height(UiSpec.PREVIEW_SLOT_H),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {

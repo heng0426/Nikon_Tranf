@@ -218,7 +218,7 @@ internal fun MainActivity.PairCell(
                     } else Modifier
                 )
                 .then(
-                    if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(UiSpec.ROUND_SMALL))
+                    if (highlight) Modifier.border(UiSpec.SEL_BORDER_W, UiSpec.accent(vm.darkModeOn), RoundedCornerShape(UiSpec.ROUND_SMALL))
                     else Modifier
                 )
                 .fillMaxWidth()
@@ -256,15 +256,15 @@ internal fun MainActivity.PairCell(
                 horizontalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 if (pair.jpgDownloaded) DLBadge("J", Color(0xFF00695C))
-                if (pair.nefDownloaded) DLBadge("N", Color(0xFF6A1B9A))
+                if (pair.nefDownloaded) DLBadge("N", UiSpec.NEF_PURPLE)
             }
             if (selected) {
-                Box(Modifier.fillMaxSize().background(Color(0x3300695C)))
-                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C), RoundedCornerShape(UiSpec.ROUND_SMALL)))
+                Box(Modifier.fillMaxSize().background(UiSpec.selOverlay(vm.darkModeOn)))
+                Box(Modifier.fillMaxSize().border(UiSpec.SEL_BORDER_W, UiSpec.accent(vm.darkModeOn), RoundedCornerShape(UiSpec.ROUND_SMALL)))
                 Icon(
                     Icons.Filled.Check,
                     contentDescription = "已选择",
-                    modifier = Modifier.align(Alignment.Center).size(40.dp),
+                    modifier = Modifier.align(Alignment.Center).size(UiSpec.CHECK_ICON),
                     tint = Color.White
                 )
             }
@@ -339,7 +339,7 @@ internal fun MainActivity.GridCell(
                     } else Modifier
                 )
                 .then(
-                    if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(UiSpec.ROUND_SMALL))
+                    if (highlight) Modifier.border(UiSpec.SEL_BORDER_W, UiSpec.accent(vm.darkModeOn), RoundedCornerShape(UiSpec.ROUND_SMALL))
                     else Modifier
                 )
                 .fillMaxWidth()
@@ -382,7 +382,7 @@ internal fun MainActivity.GridCell(
                     Modifier
                         .align(Alignment.BottomEnd)
                         .padding(4.dp)
-                        .background(Color(0xCC00695C), CircleShape)
+                        .background(UiSpec.dlMark(vm.darkModeOn), CircleShape)
                 ) {
                     Text(
                         "✓",
@@ -394,12 +394,12 @@ internal fun MainActivity.GridCell(
             }
             // 选中态：绿色边框 + 中央勾
             if (row.selected.value) {
-                Box(Modifier.fillMaxSize().background(Color(0x3300695C)))
-                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C), RoundedCornerShape(UiSpec.ROUND_SMALL)))
+                Box(Modifier.fillMaxSize().background(UiSpec.selOverlay(vm.darkModeOn)))
+                Box(Modifier.fillMaxSize().border(UiSpec.SEL_BORDER_W, UiSpec.accent(vm.darkModeOn), RoundedCornerShape(UiSpec.ROUND_SMALL)))
                 Icon(
                     Icons.Filled.Check,
                     contentDescription = "已选择",
-                    modifier = Modifier.align(Alignment.Center).size(40.dp),
+                    modifier = Modifier.align(Alignment.Center).size(UiSpec.CHECK_ICON),
                     tint = Color.White
                 )
             }
@@ -423,13 +423,12 @@ internal fun DateBubble(text: String) {
     }
 
     /** 日期胶囊槽位高度：只改这个数字——数字越小，胶囊下方留白越小（建议 24~30） */
-    private val pillSlotHeight = 20.dp
 
     /** 置顶信息胶囊槽（合并/文件共用）：左=当前分节日期，右=张数（分块开启时为已加载/总量）。
      *  固定槽位随滚动更新，不与照片重叠。 */
     @Composable
 internal fun MainActivity.PinnedPillSlot(dateText: String?, countText: String) {
-        Box(Modifier.fillMaxWidth().height(pillSlotHeight), contentAlignment = Alignment.CenterStart) {
+        Box(Modifier.fillMaxWidth().height(UiSpec.PILL_SLOT), contentAlignment = Alignment.CenterStart) {
             if (dateText != null) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Surface(
@@ -495,7 +494,7 @@ internal fun BoxScope.GridScrollbarOverlay(
             Modifier
                 .align(Alignment.CenterEnd)
                 .fillMaxHeight()
-                .width(24.dp)
+                .width(UiSpec.DRAG_STRIP_W)
                 .pointerInput(state) {
                     var scale = 0f
                     detectVerticalDragGestures(

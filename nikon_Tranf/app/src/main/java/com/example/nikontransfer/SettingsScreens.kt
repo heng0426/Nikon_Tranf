@@ -266,7 +266,7 @@ internal fun MainActivity.SettingsScreen(
                             Text(ip, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (connected && ip == connectedIp.value)
-                            Text("已连接 ✓", color = Color(0xFF00695C), style = MaterialTheme.typography.labelSmall)
+                            Text("已连接 ✓", color = UiSpec.accent(vm.darkModeOn), style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 SettingsDivider()
