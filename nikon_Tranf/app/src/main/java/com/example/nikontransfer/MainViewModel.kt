@@ -265,25 +265,62 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         filterEnd.value = todayKey()
     }
 
-    /** 筛选后的可见照片 —— 网格 / 全屏预览翻页 / 多选全选的统一数据源 */
-    val visiblePhotos: List<PhotoRow>
-        get() {
-            val fmt = filterFormat.value
-            val onlyUn = filterUntransferred.value
-            val onlyDl = filterDownloaded.value
-            val st = filterStart.value
-            val en = filterEnd.value
-            return photoRows.filter { r ->
-                if (fmt != "全部" && !r.type.equals(fmt, true)) return@filter false
-                val dl = r.downloaded.value
-                if (onlyUn && !onlyDl && dl) return@filter false
-                if (onlyDl && !onlyUn && !dl) return@filter false
-                val d = if (r.stamp.length >= 8) r.stamp.substring(0, 8) else ""
-                if (st != null && (d.isEmpty() || d < st)) return@filter false
-                if (en != null && (d.isEmpty() || d > en)) return@filter false
-                true
-            }
+    /* ---------- 分块加载：照片很多时先显示一部分，滚近已加载末尾自动追加 ----------
+     *  关闭 = 全量显示（现状）。合并模式按合并格计块，文件模式按照片计块。
+     *  全选/选当天/下载统计等口径一律基于"已加载可见项"，与网格所见一致。 */
+    val chunkedLoad = mutableStateOf(prefs.getBoolean("set_chunked_load", false))
+    val chunkSize = mutableStateOf(prefs.getInt("set_chunk_size", 100))
+    /** 当前已放行的显示条数；Int.MAX_VALUE = 不限 */
+    private val displayLimit = mutableStateOf(Int.MAX_VALUE)
+
+    private fun <T> applyChunk(list: List<T>): List<T> =
+        if (!chunkedLoad.value || displayLimit.value >= list.size) list else list.take(displayLimit.value)
+
+    fun setChunkedLoad(on: Boolean) {
+        chunkedLoad.value = on
+        prefs.edit().putBoolean("set_chunked_load", on).apply()
+        displayLimit.value = if (on) chunkSize.value else Int.MAX_VALUE
+    }
+
+    fun setChunkSize(n: Int) {
+        chunkSize.value = n
+        prefs.edit().putInt("set_chunk_size", n).apply()
+        if (chunkedLoad.value) displayLimit.value = n
+    }
+
+    /** 网格滚近已加载末尾时调用：追加一块（已全部加载则忽略） */
+    fun loadMoreChunks() {
+        if (!chunkedLoad.value) return
+        val full = if (mergePairs.value) filteredPairs().size else filteredPhotos().size
+        if (displayLimit.value >= full) return
+        displayLimit.value += chunkSize.value
+    }
+
+    /** 筛选后的完整可见照片数（分块前），供置顶胶囊显示"已加载 X/Y" */
+    fun fullVisibleCount(): Int = if (mergePairs.value) filteredPairs().size else filteredPhotos().size
+
+    /** 筛选后的可见照片（分块前全量）—— 网格 / 全屏预览翻页 / 多选全选的统一数据源 */
+    private fun filteredPhotos(): List<PhotoRow> {
+        val fmt = filterFormat.value
+        val onlyUn = filterUntransferred.value
+        val onlyDl = filterDownloaded.value
+        val st = filterStart.value
+        val en = filterEnd.value
+        return photoRows.filter { r ->
+            if (fmt != "全部" && !r.type.equals(fmt, true)) return@filter false
+            val dl = r.downloaded.value
+            if (onlyUn && !onlyDl && dl) return@filter false
+            if (onlyDl && !onlyUn && !dl) return@filter false
+            val d = if (r.stamp.length >= 8) r.stamp.substring(0, 8) else ""
+            if (st != null && (d.isEmpty() || d < st)) return@filter false
+            if (en != null && (d.isEmpty() || d > en)) return@filter false
+            true
         }
+    }
+
+    /** 分块加载后的可见照片 */
+    val visiblePhotos: List<PhotoRow>
+        get() = applyChunk(filteredPhotos())
 
     /** 按日期分组的可见照片：日期从新到旧，组内保持原排序 */
     data class DateSection(val dateKey: String, val rows: List<PhotoRow>)
@@ -379,22 +416,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return rows.sortedByDescending { it.stamp }
         }
 
-    /** 合并模式的可见对：格式筛选隐藏（①b）；下载状态=补全语义（②a）；日期照旧 */
-    val visiblePairs: List<PairRow>
-        get() {
-            val onlyUn = filterUntransferred.value
-            val onlyDl = filterDownloaded.value
-            val st = filterStart.value
-            val en = filterEnd.value
-            return pairRowsAll.filter { p ->
-                if (onlyUn && !onlyDl && p.allDownloaded) return@filter false
-                if (onlyDl && !onlyUn && !p.allDownloaded) return@filter false
-                val d = p.stamp.take(8)
-                if (st != null && d < st) return@filter false
-                if (en != null && d > en) return@filter false
-                true
-            }
+    /** 合并模式的可见对（分块前全量）：格式筛选隐藏（①b）；下载状态=补全语义（②a）；日期照旧 */
+    private fun filteredPairs(): List<PairRow> {
+        val onlyUn = filterUntransferred.value
+        val onlyDl = filterDownloaded.value
+        val st = filterStart.value
+        val en = filterEnd.value
+        return pairRowsAll.filter { p ->
+            if (onlyUn && !onlyDl && p.allDownloaded) return@filter false
+            if (onlyDl && !onlyUn && !p.allDownloaded) return@filter false
+            val d = p.stamp.take(8)
+            if (st != null && d < st) return@filter false
+            if (en != null && d > en) return@filter false
+            true
         }
+    }
+
+    /** 分块加载后的可见对 */
+    val visiblePairs: List<PairRow>
+        get() = applyChunk(filteredPairs())
 
     data class PairSection(val dateKey: String, val rows: List<PairRow>)
 
@@ -1050,6 +1090,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         parsed.forEach { it.downloaded.value = it.name in downloadedNames.value }
         photoRows.clear()
         photoRows.addAll(parsed)
+        displayLimit.value = if (chunkedLoad.value) chunkSize.value else Int.MAX_VALUE   // 重新枚举 → 分块进度重置
         val autoPreview = prefs.getBoolean("set_auto_preview", true)
         if (autoPreview) {
             startPreviewLoading(parsed)                // 异步逐个取内嵌缩略图

@@ -739,6 +739,17 @@ class MainActivity : ComponentActivity() {
                 // 拖动滚动条期间强制常显：scrollBy 事件间隙 isScrollInProgress 抖动会导致渐隐
                 var sbDragging by remember { mutableStateOf(false) }
                 val sbActiveSettings = if (sbDragging) sbSettings.copy(alwaysShowScrollbar = true) else sbSettings
+                // 分块加载：滚动接近已加载区域末尾（24 项 ≈ 8 行）时自动追加下一块；
+                // 设置里关闭分块时 loadMoreChunks 内部直接忽略。仅活动网格的状态被读取。
+                LaunchedEffect(mergeOn) {
+                    val state = if (mergeOn) mergeGridState else fileGridState
+                    snapshotFlow {
+                        val info = state.layoutInfo
+                        (info.visibleItemsInfo.maxOfOrNull { it.index } ?: -1) to info.totalItemsCount
+                    }.collect { (last, total) ->
+                        if (total > 0 && last >= total - 24) vm.loadMoreChunks()
+                    }
+                }
                 // 照片网格：按日期分节（节头占满一行），组内从新到旧；合并模式一格=一对
                 if (mergeOn) {
                     // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
@@ -779,7 +790,8 @@ class MainActivity : ComponentActivity() {
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
                                 ) {
                                     Text(
-                                        "共 ${pairs.size} 张",
+                                        if (vm.chunkedLoad.value) "已加载 ${pairs.size}/${vm.fullVisibleCount()} 张"
+                                        else "共 ${pairs.size} 张",
                                         Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -924,7 +936,8 @@ class MainActivity : ComponentActivity() {
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
                                 ) {
                                     Text(
-                                        "共 ${visible.size} 张",
+                                        if (vm.chunkedLoad.value) "已加载 ${visible.size}/${vm.fullVisibleCount()} 张"
+                                        else "共 ${visible.size} 张",
                                         Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -3347,7 +3360,41 @@ class MainActivity : ComponentActivity() {
                     }
                 )
                 SettingsDivider()
-                ScrollbarThresholdPicker()
+                // 快速滚动条：开关承担"不显示"，展开后只选显示阈值（样式与分块加载一致）
+                SettingSwitch(
+                    title = "快速滚动条",
+                    subtitle = "照片多时显示右侧快速滚动条，可拖动快速定位",
+                    checked = vm.scrollbarThreshold.value >= 0,
+                    onChange = { vm.setScrollbarThreshold(if (it) 50 else -1) }
+                )
+                AnimatedVisibility(
+                    visible = vm.scrollbarThreshold.value >= 0,
+                    enter = fadeIn(tween(UiSpec.STANDARD)) + expandVertically(expandFrom = Alignment.Top),
+                    exit = fadeOut(tween(UiSpec.QUICK)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                ) {
+                    Column {
+                        SettingsDivider()
+                        ScrollbarThresholdPicker()
+                    }
+                }
+                SettingsDivider()
+                SettingSwitch(
+                    title = "分块加载照片",
+                    subtitle = "照片很多时先显示一部分，滚动接近已加载末尾时自动加载下一块，直至全部加载",
+                    checked = vm.chunkedLoad.value,
+                    onChange = { vm.setChunkedLoad(it) }
+                )
+                // 分块大小选择器：随分块开关展开/收起
+                AnimatedVisibility(
+                    visible = vm.chunkedLoad.value,
+                    enter = fadeIn(tween(UiSpec.STANDARD)) + expandVertically(expandFrom = Alignment.Top),
+                    exit = fadeOut(tween(UiSpec.QUICK)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                ) {
+                    Column {
+                        SettingsDivider()
+                        ChunkSizePicker()
+                    }
+                }
             }
             SettingsSection(title = "外观", icon = { SectionIcon("外观") }) {
                 SettingSwitch(
@@ -3367,36 +3414,38 @@ class MainActivity : ComponentActivity() {
                 SettingsDivider()
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("存储目录", style = MaterialTheme.typography.bodyLarge)
+                        Text("存储目录", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
                         Text(
                             vm.dirDisplay.value,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    TextButton(onClick = onPickDir) { Text("更改目录") }
+                    ActionPill("更改目录", onPickDir)
                     if (vm.customDirUri.value != null) {
-                        TextButton(onClick = { vm.setCustomDir(null) }) { Text("恢复默认") }
+                        ActionPill("恢复默认") { vm.setCustomDir(null) }
                     }
                 }
                 SettingsDivider()
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("缩略图缓存", style = MaterialTheme.typography.bodyLarge)
+                        Text("缩略图缓存", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
                         Text(
                             "当前 ${humanSize(vm.thumbCacheBytes)} · 上限 ${vm.thumbCacheLimitMb}MB",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    TextButton(onClick = { showCacheLimitDialog = true }) { Text("上限") }
-                    TextButton(onClick = { vm.clearThumbCache() }) { Text("清空") }
+                    ActionPill("上限") { showCacheLimitDialog = true }
+                    ActionPill("清空") { vm.clearThumbCache() }
                 }
                 if (showCacheLimitDialog) {
                     AlertDialog(
@@ -3590,24 +3639,44 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 快速滚动条显示阈值选择器（不显示 / 30 / 50 / 100 / 200，写入 set_scrollbar_threshold） */
+    /** 快速滚动条显示阈值选择器（30/50/100/200；"不显示"由上方开关承担，写入 set_scrollbar_threshold） */
     @Composable
     private fun ScrollbarThresholdPicker() {
         val t = vm.scrollbarThreshold.value
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
-            Text("滚动条显示阈值", style = MaterialTheme.typography.bodyLarge)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Text("显示阈值", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
             Text(
-                "照片数达到阈值后显示右侧快速滚动条；被折叠的照片不计入数量",
+                "未折叠照片数达到阈值后才显示；被折叠的照片不计入数量",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ChannelChip("不显示", selected = t == -1) { vm.setScrollbarThreshold(-1) }
                 ChannelChip("30", selected = t == 30) { vm.setScrollbarThreshold(30) }
                 ChannelChip("50", selected = t == 50) { vm.setScrollbarThreshold(50) }
                 ChannelChip("100", selected = t == 100) { vm.setScrollbarThreshold(100) }
                 ChannelChip("200", selected = t == 200) { vm.setScrollbarThreshold(200) }
+            }
+        }
+    }
+
+    /** 分块大小选择器（50/100/200/500，写入 set_chunk_size；仅分块加载开启时显示） */
+    @Composable
+    private fun ChunkSizePicker() {
+        val n = vm.chunkSize.value
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Text("每块加载量", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+            Text(
+                "每次追加到网格的数量（合并模式按合并格计）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ChannelChip("50", selected = n == 50) { vm.setChunkSize(50) }
+                ChannelChip("100", selected = n == 100) { vm.setChunkSize(100) }
+                ChannelChip("200", selected = n == 200) { vm.setChunkSize(200) }
+                ChannelChip("500", selected = n == 500) { vm.setChunkSize(500) }
             }
         }
     }
@@ -3622,7 +3691,7 @@ class MainActivity : ComponentActivity() {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
-                Text("自动连接优先通道", style = MaterialTheme.typography.bodyLarge)
+                Text("自动连接优先通道", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
                 Text("仅影响启动自动连接的尝试顺序，手动选择与插线自动连不受影响", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3636,25 +3705,48 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 设置页动作胶囊：可点击文字统一包裹（描边胶囊，与 Wi-Fi 卡"扫描相机"同风格） */
+    @Composable
+    private fun ActionPill(text: String, onClick: () -> Unit) {
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                    RoundedCornerShape(UiSpec.ROUND_SMALL)
+                )
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(text, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+
     @Composable
     private fun ChannelChip(text: String, selected: Boolean, onClick: () -> Unit) {
         Box(
             Modifier
                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                .background(
-                    when {
-                        selected && vm.darkModeOn -> Color(0xFF00796B)
-                        selected -> Color(0xFF00695C)
-                        else -> MaterialTheme.colorScheme.surfaceVariant
-                    }
+                .then(
+                    if (selected) Modifier.background(
+                        if (vm.darkModeOn) Color(0xFF00796B) else Color(0xFF00695C)
+                    )
+                    // 未选中：透明底 + 中性描边，保证在卡片底色上有清晰胶囊轮廓
+                    else Modifier.border(
+                        1.dp,
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        RoundedCornerShape(UiSpec.ROUND_SMALL)
+                    )
                 )
                 .clickable(onClick = onClick)
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text,
-                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.labelMedium
             )
         }
