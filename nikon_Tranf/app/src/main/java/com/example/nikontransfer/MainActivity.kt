@@ -841,7 +841,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     // 快速滚动条：达到设置阈值才显示；折叠天照片不计入阈值判断
-                    val unfoldedPairs = vm.pairSections
+                    // 分节列表取一次复用（阈值判断 + 指示气泡），避免滚动中每帧重建
+                    val mergeSections = vm.pairSections
+                    val unfoldedPairs = mergeSections
                         .filter { it.dateKey !in vm.collapsedDates.value }
                         .sumOf { it.rows.size }
                     val showMergeScrollbar = vm.scrollbarThreshold.value >= 0 &&
@@ -855,7 +857,7 @@ class MainActivity : ComponentActivity() {
                             indicatorContent = { idx, _ ->
                                 var acc = 0
                                 var d: String? = null
-                                for (sec in vm.pairSections) {
+                                for (sec in mergeSections) {
                                     val cnt = 1 + if (sec.dateKey in vm.collapsedDates.value) 0 else sec.rows.size
                                     if (idx >= acc && idx <= acc + cnt - 1) {
                                         d = vm.dateLabel(sec.dateKey, sec.rows.size)
@@ -866,31 +868,31 @@ class MainActivity : ComponentActivity() {
                                 if (d != null) DateBubble(d)
                             }
                         )
-                        // 拖动层：右缘窄条，像素级比例滚动（平滑，无交界跳动）
+                        // 拖动层：右缘窄条，像素级比例滚动（平滑，无交界跳动）。
+                        // 快拖优化：缩放比在手势开始时算一次；拖动事件用 dispatchRawDelta
+                        // 同步滚动 —— 旧实现每事件 launch scrollBy 协程 + 读 layoutInfo，
+                        // 快速拖动时协程排队堆积导致明显卡顿。
                         Box(
                             Modifier
                                 .align(Alignment.CenterEnd)
                                 .fillMaxHeight()
                                 .width(24.dp)
                                 .pointerInput(mergeGridState) {
+                                    var scale = 0f
                                     detectVerticalDragGestures(
-                                        onDragStart = { sbDragging = true },
+                                        onDragStart = {
+                                            sbDragging = true
+                                            val info = mergeGridState.layoutInfo
+                                            val vis = info.visibleItemsInfo
+                                            scale = if (vis.isEmpty()) 0f else
+                                                ((vis.sumOf { it.size.height.toDouble() } / vis.size) *
+                                                    info.totalItemsCount / 3.0 / size.height).toFloat()
+                                        },
                                         onDragEnd = { sbDragging = false },
                                         onDragCancel = { sbDragging = false },
                                         onVerticalDrag = { change, dy ->
                                             change.consume()
-                                            val info = mergeGridState.layoutInfo
-                                            val vis = info.visibleItemsInfo
-                                            if (vis.isNotEmpty()) {
-                                                val avg = vis.sumOf { it.size.height.toDouble() } / vis.size
-                                                val totalPx = avg * info.totalItemsCount / 3.0   // 3 列
-                                                if (totalPx > 0) {
-                                                    val scale = totalPx / size.height
-                                                    scope.launch {
-                                                        mergeGridState.scrollBy((dy * scale).toFloat())
-                                                    }
-                                                }
-                                            }
+                                            if (scale > 0f) mergeGridState.dispatchRawDelta(dy * scale)
                                         }
                                     )
                                 }
@@ -985,7 +987,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                     // 快速滚动条：达到设置阈值才显示；折叠天照片不计入阈值判断
-                    val unfoldedFiles = vm.visibleSections
+                    // 分节列表取一次复用（阈值判断 + 指示气泡），避免滚动中每帧重建
+                    val fileSections = vm.visibleSections
+                    val unfoldedFiles = fileSections
                         .filter { it.dateKey !in vm.collapsedDates.value }
                         .sumOf { it.rows.size }
                     val showFileScrollbar = vm.scrollbarThreshold.value >= 0 &&
@@ -999,7 +1003,7 @@ class MainActivity : ComponentActivity() {
                             indicatorContent = { idx, _ ->
                                 var acc = 0
                                 var d: String? = null
-                                for (sec in vm.visibleSections) {
+                                for (sec in fileSections) {
                                     val cnt = 1 + if (sec.dateKey in vm.collapsedDates.value) 0 else sec.rows.size
                                     if (idx >= acc && idx <= acc + cnt - 1) {
                                         d = vm.dateLabel(sec.dateKey, sec.rows.size)
@@ -1010,31 +1014,29 @@ class MainActivity : ComponentActivity() {
                                 if (d != null) DateBubble(d)
                             }
                         )
-                        // 拖动层：右缘窄条，像素级比例滚动（平滑，无交界跳动）
+                        // 拖动层：右缘窄条，像素级比例滚动（平滑，无交界跳动）。
+                        // 快拖优化同合并模式：onDragStart 算一次缩放比 + dispatchRawDelta 同步滚动
                         Box(
                             Modifier
                                 .align(Alignment.CenterEnd)
                                 .fillMaxHeight()
                                 .width(24.dp)
                                 .pointerInput(fileGridState) {
+                                    var scale = 0f
                                     detectVerticalDragGestures(
-                                        onDragStart = { sbDragging = true },
+                                        onDragStart = {
+                                            sbDragging = true
+                                            val info = fileGridState.layoutInfo
+                                            val vis = info.visibleItemsInfo
+                                            scale = if (vis.isEmpty()) 0f else
+                                                ((vis.sumOf { it.size.height.toDouble() } / vis.size) *
+                                                    info.totalItemsCount / 3.0 / size.height).toFloat()
+                                        },
                                         onDragEnd = { sbDragging = false },
                                         onDragCancel = { sbDragging = false },
                                         onVerticalDrag = { change, dy ->
                                             change.consume()
-                                            val info = fileGridState.layoutInfo
-                                            val vis = info.visibleItemsInfo
-                                            if (vis.isNotEmpty()) {
-                                                val avg = vis.sumOf { it.size.height.toDouble() } / vis.size
-                                                val totalPx = avg * info.totalItemsCount / 3.0   // 3 列
-                                                if (totalPx > 0) {
-                                                    val scale = totalPx / size.height
-                                                    scope.launch {
-                                                        fileGridState.scrollBy((dy * scale).toFloat())
-                                                    }
-                                                }
-                                            }
+                                            if (scale > 0f) fileGridState.dispatchRawDelta(dy * scale)
                                         }
                                     )
                                 }
