@@ -720,72 +720,129 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeTransferClose(JNIEnv *env, jc
 }
 
 /* 列目录：句柄+时间戳（0x9434 一次拿全）→ "句柄:YYYYMMDD-HHMMSS:类型|..."，
- * 不做逐对象 0x9421（630 个对象太慢），大小在下载时再取。 */
+ * 不做逐对象 0x9421（数百对象太慢），大小在下载时再取。
+ * 枚举必须递归：实测部分机型 PTP-IP 上 GetObjectHandles(parent=0) 只回当前
+ * 文件夹（82/886），需像 USB 侧一样逐层 association 下钻（BFS ≤3 层）。 */
+static int cmp_u32(const void *a, const void *b) {
+    unsigned int x = *(const unsigned int *) a, y = *(const unsigned int *) b;
+    return (x < y) ? -1 : (x > y) ? 1 : 0;
+}
+/* 文件句柄位段：hi16 高 8 位 0x2a=JPG、0x0a=NEF；低 8 位是文件夹段
+ * （实测 Z7=0x1c，新款跨文件夹 0x1c/0x1d……硬编码 0x1c 会丢整个旧文件夹）。 */
+#define HI_IS_JPG(hi) (((hi) & 0xff00u) == 0x2a00u)
+#define HI_IS_NEF(hi) (((hi) & 0xff00u) == 0x0a00u)
 JNIEXPORT jstring JNICALL
 Java_com_example_nikontransfer_GPhoto2Bridge_nativeListNative(JNIEnv *env, jclass clz) {
     (void) clz;
     if (g_tfd < 0) return NULL;
 
-    /* 时间戳表：句柄 → "YYYYMMDD-HHMMSS" */
-    struct { unsigned int handle; char stamp[24]; } stamps[256];
-    int nstamps = 0;
+    /* 时间戳表：句柄 → "YYYYMMDD-HHMMSS"。0x9434 全量收集（堆分配）；
+     * 早期版本固定 256 截断，886 张会丢 630+ 的时间戳 → 日期分组全错。 */
+    typedef struct { unsigned int handle; char stamp[24]; } StampEnt;
+    const int MAX_STAMPS = 4096;
+    StampEnt *stamps = (StampEnt *) malloc(sizeof(StampEnt) * MAX_STAMPS);
+    const int MAX_FILES = 16384;
+    unsigned int *files = (unsigned int *) malloc(sizeof(unsigned int) * MAX_FILES);
+    const int MAX_QUEUE = 8192;
+    unsigned int *queue = (unsigned int *) malloc(sizeof(unsigned int) * MAX_QUEUE);
+    if (!stamps || !files || !queue) {
+        free(stamps); free(files); free(queue);
+        return NULL;
+    }
+    int nstamps = 0, nf = 0, qh = 0, qt = 0;
+
     for (int s = 0; s < g_nstorages && s < 4; s++) {
         unsigned int sp[3] = { g_storages[s], 0, 0 };
         unsigned char *sd = NULL; int sdlen = 0;
         if (pp_data_in2(g_tfd, 0x9434, g_ttid++, sp, 3, &sd, &sdlen, NULL) != 0) continue;
         if (sdlen >= 8) {
             int cnt = 0; memcpy(&cnt, sd + 4, 4);
-            if (cnt > 256) cnt = 256;
-            for (int i = 0; i < cnt && sdlen >= 8 + (i + 1) * 16; i++) {
+            for (int i = 0; i < cnt && nstamps < MAX_STAMPS && sdlen >= 8 + (i + 1) * 16; i++) {
                 unsigned int h, t1, t2;
                 memcpy(&h,  sd + 8 + i * 16 + 0, 4);
                 memcpy(&t1, sd + 8 + i * 16 + 8, 4);
                 memcpy(&t2, sd + 8 + i * 16 + 12, 4);
                 unsigned int sec  = (t1 >> 8) & 0xff, min = (t1 >> 16) & 0xff, hour = (t1 >> 24) & 0xff;
                 unsigned int day  = t2 & 0xff, mon = (t2 >> 8) & 0xff, year = (t2 >> 16) & 0xffff;
-                if (nstamps < 256) {
-                    stamps[nstamps].handle = h;
-                    snprintf(stamps[nstamps].stamp, sizeof(stamps[nstamps].stamp),
-                             "%04u%02u%02u-%02u%02u%02u", year, mon, day, hour, min, sec);
-                    nstamps++;
-                }
+                stamps[nstamps].handle = h;
+                snprintf(stamps[nstamps].stamp, sizeof(stamps[nstamps].stamp),
+                         "%04u%02u%02u-%02u%02u%02u", year, mon, day, hour, min, sec);
+                nstamps++;
             }
         }
         free(sd);
     }
     LOGI("list: 时间戳表 %d 项", nstamps);
 
-    /* 对象句柄清单 */
+    /* 递归枚举（BFS ≤3 层）：parent=0 根层起步；非 JPG/NEF 位段句柄视为
+     * association/标记，下钻取文件（标记句柄子层为空，无害）。 */
     unsigned int ohp[3] = {0xffffffffu, 0xffffffffu, 0x00000000u};
     unsigned char *d = NULL; int dlen = 0;
-    if (pp_data_in2(g_tfd, 0x1007, g_ttid++, ohp, 3, &d, &dlen, NULL) != 0) {
+    if (pp_data_in2(g_tfd, 0x1007, g_ttid++, ohp, 3, &d, &dlen, NULL) != 0 || !d) {
         LOGE("list: GetObjectHandles failed");
+        free(stamps); free(files); free(queue);
         return NULL;
     }
     int n = dlen / 4;
-    LOGI("list: %d 个对象句柄", n);
+    for (int i = 0; i < n; i++) {
+        unsigned int h; memcpy(&h, d + i * 4, 4);
+        unsigned int hi16 = (h >> 16) & 0xffff;
+        if (HI_IS_JPG(hi16) || HI_IS_NEF(hi16)) { if (nf < MAX_FILES) files[nf++] = h; }
+        else if (qt < MAX_QUEUE) queue[qt++] = h;
+    }
+    free(d);
+    int layer_end = qt, depth = 0;
+    while (qh < qt && depth < 3) {
+        unsigned int parent = queue[qh++];
+        unsigned char *d2 = NULL; int dl2 = 0;
+        unsigned int php[3] = {0xffffffffu, 0x00000000u, parent};
+        if (pp_data_in2(g_tfd, 0x1007, g_ttid++, php, 3, &d2, &dl2, NULL) == 0 && d2) {
+            int n2 = dl2 / 4;
+            for (int i = 0; i < n2; i++) {
+                unsigned int h; memcpy(&h, d2 + i * 4, 4);
+                unsigned int hi16 = (h >> 16) & 0xffff;
+                if (HI_IS_JPG(hi16) || HI_IS_NEF(hi16)) { if (nf < MAX_FILES) files[nf++] = h; }
+                else if (qt < MAX_QUEUE) queue[qt++] = h;
+            }
+        }
+        free(d2);
+        if (qh == layer_end) { layer_end = qt; depth++; }
+    }
+    /* 0x9434 表兜底：它本身就是相机的全量文件清单（含时间）。
+     * 实测部分机型 PTP-IP 上 0x1007 只回当前文件夹（82/886）且下钻不到
+     * 其余目录——把表里 JPG/NEF 位段的句柄并入清单，与递归结果取并集。 */
+    for (int k = 0; k < nstamps; k++) {
+        unsigned int h = stamps[k].handle;
+        unsigned int hi16 = (h >> 16) & 0xffff;
+        if ((HI_IS_JPG(hi16) || HI_IS_NEF(hi16)) && nf < MAX_FILES) files[nf++] = h;
+    }
+    /* 去重：部分固件 parent=0 返回跨层级对象，递归收集后会重复（重复句柄会让 UI 崩溃） */
+    if (nf > 1) {
+        qsort(files, (size_t) nf, sizeof(unsigned int), cmp_u32);
+        int w2 = 0;
+        for (int i = 0; i < nf; i++)
+            if (w2 == 0 || files[i] != files[w2 - 1]) files[w2++] = files[i];
+        nf = w2;
+    }
+    LOGI("list: 最终文件 %d 个（根层 %d，递归访问 %d 层队列 %d，时间戳表 %d）",
+         nf, n, depth, qh, nstamps);
 
-    char *out = (char *) malloc((size_t) n * 48 + 64);
-    if (!out) { free(d); return NULL; }
+    const size_t cap = (size_t) (nf > 0 ? nf : 1) * 48 + 64;
+    char *out = (char *) malloc(cap);
+    if (!out) { free(stamps); free(files); free(queue); return NULL; }
     size_t o = 0;
     out[0] = 0;
-    for (int i = 0; i < n; i++) {
-        unsigned int h;
-        memcpy(&h, d + i * 4, 4);
-        unsigned int hi16 = (h >> 16) & 0xffff;
-        const char *type = NULL;
-        if (hi16 == 0x2a1c) type = "JPG";
-        else if (hi16 == 0x0a1c) type = "NEF";
-        if (!type) continue;                       /* 跳过标记句柄等 */
+    for (int i = 0; i < nf; i++) {
+        unsigned int h = files[i];
+        const char *type = HI_IS_JPG((h >> 16) & 0xffff) ? "JPG" : "NEF";
         const char *stamp = "00000000-000000";
         for (int k = 0; k < nstamps; k++)
             if (stamps[k].handle == h) { stamp = stamps[k].stamp; break; }
-        int w = snprintf(out + o, (size_t) n * 48 + 64 - o, "%s%u:%s:%s",
-                         o ? "|" : "", h, stamp, type);
-        if (w < 0 || (size_t) w >= (size_t) n * 48 + 64 - o) break;
+        int w = snprintf(out + o, cap - o, "%s%u:%s:%s", o ? "|" : "", h, stamp, type);
+        if (w < 0 || (size_t) w >= cap - o) break;
         o += (size_t) w;
     }
-    free(d);
+    free(stamps); free(files); free(queue);
     LOGI("list: 输出 %zu 字节", o);
     jstring js = (*env)->NewStringUTF(env, out);
     free(out);

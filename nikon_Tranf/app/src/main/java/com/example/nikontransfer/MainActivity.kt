@@ -513,17 +513,20 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                // 连接状态：无照片（冷启动/连接中）= 全屏双卡；有照片（断开/连接中）= 顶部紧凑选择条内动画
-                if (photoRows.isEmpty() &&
-                    (phase == "connecting" || (phase == "disconnected" && !vm.everConnected))
-                ) {
-                    // 冷启动/连接中：全屏双卡选择（无照片场景；连接中另一张卡淡出但可点击打断）
+                // 连接状态：无照片（冷启动/连接中/连接成功枚举中/断开回退）= 全屏双卡；
+                // 有照片（断开/连接中）= 顶部紧凑选择条内动画
+                if (photoRows.isEmpty()) {
+                    // 全屏双卡选择（枚举中双卡保持显示，进度在下方信息卡片）
                     val isUsbActive = phase == "connecting" &&
                         (vm.pendingChannel.value == "usb" || vm.connChannel.value == "usb")
                     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                         Spacer(Modifier.height(48.dp))
                         Text(
-                            if (phase == "connecting") "正在连接相机…" else "选择连接方式",
+                            when {
+                                phase == "connecting" -> "正在连接相机…"
+                                phase == "connected" -> "正在读取照片列表…"
+                                else -> "选择连接方式"
+                            },
                             style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.padding(bottom = 16.dp)
@@ -555,10 +558,14 @@ class MainActivity : ComponentActivity() {
                             dimmed = phase == "connecting" && isUsbActive,
                             hotspotOn = vm.isHotspotOn()
                         )
-                        // 连接中=探测/扫描进度（带转圈）；断开=失败原因/取消提示/失联信息
+                        // 连接中=探测/扫描进度；连接成功=正在读取列表；断开=失败原因/取消提示/失联信息
                         ConnInfoCard(
-                            text = if (phase == "connecting") connText.value else vm.connFailMsg.value,
-                            loading = phase == "connecting"
+                            text = when {
+                                phase == "connecting" -> connText.value
+                                phase == "connected" -> "正在读取照片列表…"
+                                else -> vm.connFailMsg.value
+                            },
+                            loading = phase != "disconnected"
                         )
                         if (phase != "connecting" && vm.scanResults.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
@@ -687,21 +694,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                }
-                // 连接成功但列表还在枚举（USB 逐对象取 ObjectInfo 较慢）：加载占位，替代白屏
-                if (phase == "connected" && photoRows.isEmpty()) {
-                    Column(
-                        Modifier.fillMaxWidth().padding(vertical = 64.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            "正在读取照片列表…",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                 }
                 val emptyByFilter = if (mergeOn) photoRows.isNotEmpty() && pairs.isEmpty()
                                     else photoRows.isNotEmpty() && visible.isEmpty()

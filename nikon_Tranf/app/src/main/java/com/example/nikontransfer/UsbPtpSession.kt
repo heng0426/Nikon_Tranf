@@ -65,6 +65,12 @@ class UsbPtpSession(
         // 尼康 USB 的部分读取是专有 0x101B（Z传 字典实证）；标准 0x1014 在尼康 USB 上
         // 被解释为 GetDevicePropDesc 之类，参数对不上必返 0x2006
         private const val OP_NIKON_GET_PARTIAL = 0x101B
+        // 尼康专有：对象清单表（句柄+时间戳一次拿全，免逐对象 0x1008；PTP-IP/USB 均可用）
+        private const val OP_NIKON_OBJ_TABLE = 0x9434
+        // 尼康文件句柄位段：hi16 高 8 位 0x2a=JPG、0x0a=NEF，低 8 位是文件夹段
+        // （Z7=0x1c，新款固件跨文件夹 0x1c/0x1d——硬编码低字节会丢整段照片）
+        private const val HI_GROUP_JPG = 0x2a00
+        private const val HI_GROUP_NEF = 0x0a00
         private const val PARTIAL_LIMIT_MAX = 0x100000   // 单次部分读取上限 1MB
 
         private const val RESP_OK = 0x2001
@@ -152,16 +158,43 @@ class UsbPtpSession(
 
     /* ---------- 上层原语 ---------- */
 
-    /** 全量枚举（递归 association），输出与 nativeListNative 同格式。
+    /** 全量枚举（快路径优先）：
+     *  快：0x9434 表一次拿全量句柄+时间戳，配合句柄位段判断类型——免逐对象
+     *      GetObjectInfo（886 张从十几秒降到 ~1s，实证 PTPIP/USB 同款专有接口）。
+     *  慢：0x9434 不可用时回退逐对象 GetObjectInfo（旧逻辑，正确性兜底）。
+     *  输出与 nativeListNative 同格式 "句柄:YYYYMMDD-HHMMSS:类型|..."；
      *  失败/为空时 lastDiag 携带完整诊断。 */
     fun enumerate(): String? {
         val diag = StringBuilder()
         try {
-            // ① GetStorageIDs：看相机暴露了几个存储
+            // ① GetStorageIDs：相机暴露了几个存储
             val stor = transaction(OP_GET_STORAGE_IDS)
             val storIds = parseUint32Array(stor.data) ?: intArrayOf()
             diag.append("存储=[${storIds.joinToString(",") { it.toString() }}](code=0x${(stor.code and 0xFFFF).toString(16)}) ")
-            // ② 根层对象句柄
+            // ② 0x9434 时间戳表：[长度][数量][句柄+0+时间+日期]×N（每条 16 字节）
+            val stampTable = HashMap<Int, String>()
+            for (sid in storIds) {
+                val r = transaction(OP_NIKON_OBJ_TABLE, intArrayOf(sid, 0, 0))
+                if (r.code != RESP_OK || r.data.size < 8) continue
+                val bb = ByteBuffer.wrap(r.data).order(ByteOrder.LITTLE_ENDIAN)
+                bb.int                                           // 长度
+                val cnt = bb.int
+                repeat(minOf(cnt, 4096)) {
+                    if (bb.position() + 16 > r.data.size) return@repeat
+                    val h = bb.int; bb.int                       // 句柄 + 保留字段
+                    val t1 = bb.int; val t2 = bb.int
+                    val sec = (t1 ushr 8) and 0xff; val min = (t1 ushr 16) and 0xff; val hour = (t1 ushr 24) and 0xff
+                    val day = t2 and 0xff; val mon = (t2 ushr 8) and 0xff; val year = (t2 ushr 16) and 0xffff
+                    if (year in 2000..2100 && mon in 1..12 && day in 1..31) {
+                        stampTable[h] = String.format(
+                            java.util.Locale.US, "%04d%02d%02d-%02d%02d%02d",
+                            year, mon, day, hour, min, sec
+                        )
+                    }
+                }
+            }
+            diag.append("0x9434表=${stampTable.size} ")
+            // ③ 根层句柄 + 位段分类（JPG/NEF=文件，其余=文件夹/标记）
             val root = transaction(OP_GET_OBJECT_HANDLES, intArrayOf(-1, 0, 0))
             val rootIds = parseUint32Array(root.data) ?: intArrayOf()
             diag.append("根层=${rootIds.size}(code=0x${(root.code and 0xFFFF).toString(16)}) ")
@@ -169,10 +202,42 @@ class UsbPtpSession(
                 lastDiag = diag.toString()
                 return null
             }
-            // ③ 递归收集（含根层）。尼康部分固件的 parent=0 会返回跨层级对象，
-            //    递归后再收集会重复 → 全程按句柄去重（重复 key 会让 LazyGrid 直接崩溃）
-            val objs = mutableListOf<ObjInfo>()
             val seen = HashSet<Int>()
+            val files = ArrayList<Pair<Int, Boolean>>()          // handle → isJpg
+            val assoc = ArrayList<Int>()
+            fun classify(h: Int) {
+                if (!seen.add(h)) return
+                val hi = (h ushr 16) and 0xffff
+                when (hi and 0xff00) {
+                    HI_GROUP_JPG -> files.add(h to true)
+                    HI_GROUP_NEF -> files.add(h to false)
+                    else -> assoc.add(h)                          // 标记句柄子层为空，无害
+                }
+            }
+            rootIds.forEach { classify(it) }
+            // ④ 文件夹下钻（BFS ≤3 层；部分固件 parent=0 会回跨层对象，seen 兜重复）
+            var scan = 0
+            var layerEnd = assoc.size
+            var depth = 0
+            while (scan < assoc.size && depth < 3) {
+                val parent = assoc[scan++]
+                val r = transaction(OP_GET_OBJECT_HANDLES, intArrayOf(-1, 0, parent))
+                if (r.code == RESP_OK) parseUint32Array(r.data)?.forEach { classify(it) }
+                if (scan == layerEnd) { layerEnd = assoc.size; depth++ }
+            }
+            diag.append("文件=${files.size} ")
+            // ⑤ 快路径：表+位段直接出列表
+            if (stampTable.isNotEmpty() && files.isNotEmpty()) {
+                lastDiag = diag.toString()
+                return files.joinToString("|") { (h, isJpg) ->
+                    val type = if (isJpg) "JPG" else "NEF"
+                    "$h:${stampTable[h] ?: "00000000-000000"}:$type"
+                }
+            }
+            // ⑥ 慢路径回退：逐对象 GetObjectInfo（0x9434 不支持时；尼康部分固件的
+            //    parent=0 会返回跨层级对象，递归后按句柄去重防 LazyGrid 崩溃）
+            val objs = mutableListOf<ObjInfo>()
+            val seen2 = HashSet<Int>()
             var infoFail = 0
             fun walk2(parent: Int) {
                 val resp = transaction(OP_GET_OBJECT_HANDLES, intArrayOf(-1, 0, parent))
@@ -182,7 +247,7 @@ class UsbPtpSession(
                 }
                 val ids = parseUint32Array(resp.data) ?: return
                 for (id in ids) {
-                    if (!seen.add(id)) continue
+                    if (!seen2.add(id)) continue
                     val info = fetchObjectInfo(id)
                     if (info == null) {
                         infoFail++
@@ -192,7 +257,7 @@ class UsbPtpSession(
                 }
             }
             for (rid in rootIds) {
-                if (!seen.add(rid)) continue
+                if (!seen2.add(rid)) continue
                 val info = fetchObjectInfo(rid)
                 if (info == null) {
                     infoFail++
