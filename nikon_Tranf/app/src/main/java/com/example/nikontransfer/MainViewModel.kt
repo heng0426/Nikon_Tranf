@@ -394,27 +394,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 全部照片按拍摄张配对（孤儿单格式也成一项），从新到旧。
      *  配对键优先用真实文件编号（尼康同一张的 JPG/NEF 同名不同扩展名，USB 枚举提供）；
      *  无文件名（Wi-Fi 枚举）退回时间戳。同键同格式多张（连拍同一秒）按句柄升序
-     *  zip 一一配对 —— 旧实现 firstOrNull 会把同秒其余照片整格吞掉（丢图根因）。 */
+     *  zip 一一配对 —— 旧实现 firstOrNull 会把同秒其余照片整格吞掉（丢图根因）。
+     *  结果缓存：配对只依赖 photoRows 内容（仅在 listFiles 重建后失效）。此前每次
+     *  读取都重新分组+排序（O(n log n) 大量分配），滑动中任何读到它的重组都会踩到。 */
+    @Volatile private var pairRowsCache: List<PairRow>? = null
+
     val pairRowsAll: List<PairRow>
-        get() {
-            val byKey = LinkedHashMap<String, MutableList<PhotoRow>>()
-            for (r in photoRows) {
-                val key = r.fileNo ?: "T${r.stamp}"
-                byKey.getOrPut(key) { mutableListOf() }.add(r)
-            }
-            val rows = ArrayList<PairRow>()
-            for ((key, list) in byKey) {
-                val jpgs = list.filter { it.type.equals("JPG", true) }.sortedBy { it.handle }
-                val nefs = list.filter { it.type.equals("NEF", true) }.sortedBy { it.handle }
-                for (i in 0 until maxOf(jpgs.size, nefs.size)) {
-                    val jpg = jpgs.getOrNull(i)
-                    val nef = nefs.getOrNull(i)
-                    val stamp = (jpg ?: nef)!!.stamp
-                    rows.add(PairRow("$key#$i", stamp, jpg, nef))
-                }
-            }
-            return rows.sortedByDescending { it.stamp }
+        get() = pairRowsCache ?: buildPairRows().also { pairRowsCache = it }
+
+    private fun buildPairRows(): List<PairRow> {
+        val byKey = LinkedHashMap<String, MutableList<PhotoRow>>()
+        for (r in photoRows) {
+            val key = r.fileNo ?: "T${r.stamp}"
+            byKey.getOrPut(key) { mutableListOf() }.add(r)
         }
+        val rows = ArrayList<PairRow>()
+        for ((key, list) in byKey) {
+            val jpgs = list.filter { it.type.equals("JPG", true) }.sortedBy { it.handle }
+            val nefs = list.filter { it.type.equals("NEF", true) }.sortedBy { it.handle }
+            for (i in 0 until maxOf(jpgs.size, nefs.size)) {
+                val jpg = jpgs.getOrNull(i)
+                val nef = nefs.getOrNull(i)
+                val stamp = (jpg ?: nef)!!.stamp
+                rows.add(PairRow("$key#$i", stamp, jpg, nef))
+            }
+        }
+        return rows.sortedByDescending { it.stamp }
+    }
 
     /** 合并模式的可见对（分块前全量）：格式筛选隐藏（①b）；下载状态=补全语义（②a）；日期照旧 */
     private fun filteredPairs(): List<PairRow> {
@@ -1090,6 +1096,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         parsed.forEach { it.downloaded.value = it.name in downloadedNames.value }
         photoRows.clear()
         photoRows.addAll(parsed)
+        pairRowsCache = buildPairRows()   // 枚举线程上预构建配对缓存（滑动主线程零重算）
         displayLimit.value = if (chunkedLoad.value) chunkSize.value else Int.MAX_VALUE   // 重新枚举 → 分块进度重置
         val autoPreview = prefs.getBoolean("set_auto_preview", true)
         if (autoPreview) {
