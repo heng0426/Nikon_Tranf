@@ -18,6 +18,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -29,7 +31,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -139,6 +140,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
@@ -235,6 +237,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 请求最高刷新率：HyperOS「智能刷新率」把无帧率声明的应用归入 normal=60Hz 档，
+        // 照片网格滑动会被锁 60fps（实测 framestats：janky≈0 但帧距被 vsync 节拍钉在 ~20ms）。
+        // 显式投票同分辨率的最高刷新模式（120Hz），浏览照片属高频交互，值得这点功耗。
+        display?.mode?.let { cur ->
+            display?.supportedModes
+                ?.filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
+                ?.maxByOrNull { it.refreshRate }
+                ?.takeIf { it.refreshRate > cur.refreshRate }
+                ?.let { best ->
+                    window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+                }
+        }
         applyKeepScreenOn(
             getSharedPreferences("cfg", Context.MODE_PRIVATE).getBoolean("set_keep_on", false)
         )
@@ -404,11 +418,11 @@ class MainActivity : ComponentActivity() {
                 }
                 // 顶部栏：双卡连接界面（无照片）只保留设置齿轮；有图片列表时恢复筛选/连接/下载
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    // 设置齿轮按钮（方框圆角，同款 34dp / RoundedCornerShape(9.dp)）
+                    // 设置齿轮按钮（方框圆角，同款 34dp / RoundedCornerShape(UiSpec.ROUND_SMALL)）
                     Box(
                         Modifier
                             .size(34.dp)
-                            .clip(RoundedCornerShape(9.dp))
+                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .clickable { showSettings = true },
                         contentAlignment = Alignment.Center
@@ -421,7 +435,7 @@ class MainActivity : ComponentActivity() {
                             Modifier
                                 .padding(start = 10.dp)
                                 .size(34.dp)
-                                .clip(RoundedCornerShape(9.dp))
+                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .clickable { showFilter = true },
                             contentAlignment = Alignment.Center
@@ -437,7 +451,7 @@ class MainActivity : ComponentActivity() {
                                 .padding(start = 10.dp)
                                 .graphicsLayer { translationX = connShake.value * 6.dp.toPx() }
                                 .size(34.dp)
-                                .clip(RoundedCornerShape(9.dp))
+                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .clickable(enabled = !amber) {
                                     if (red) {
@@ -457,7 +471,7 @@ class MainActivity : ComponentActivity() {
                                     vm.darkModeOn -> Color(0xFF4DB6AC)
                                     else -> Color(0xFF00695C)
                                 },
-                                animationSpec = tween(200),
+                                animationSpec = tween(UiSpec.STANDARD),
                                 label = "connIconColor"
                             )
                             if (isUsbConn) {
@@ -476,8 +490,8 @@ class MainActivity : ComponentActivity() {
                 // 连接详情浮层：点击 Wi-Fi 图标后显示 3 秒（展开+淡入 / 收起+淡出）
                 AnimatedVisibility(
                     visible = showConnDetail.value && phase == "connected",
-                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(220)),
-                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(tween(180))
+                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(UiSpec.STANDARD)),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(tween(UiSpec.QUICK))
                 ) {
                     val (cm, cs) = if (connDetail.value.isNotEmpty()) vm.splitInfo(connDetail.value)
                     else ("Nikon" to "?")
@@ -580,7 +594,7 @@ class MainActivity : ComponentActivity() {
                                     val (m, s) = vm.splitInfo(info)
                                     Row(
                                         Modifier.fillMaxWidth()
-                                            .clip(RoundedCornerShape(10.dp))
+                                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                             .background(MaterialTheme.colorScheme.surfaceVariant)
                                             .clickable {
                                                 scope.launch {
@@ -606,15 +620,15 @@ class MainActivity : ComponentActivity() {
                     // 点选通道 → 该卡动画展开成整条（带进度），另一张动画收起；失败 → 双卡动画恢复。
                     AnimatedVisibility(
                         visible = phase != "connected",
-                        enter = fadeIn(tween(220)) + expandVertically(expandFrom = Alignment.Top),
-                        exit = fadeOut(tween(180)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                        enter = fadeIn(tween(UiSpec.STANDARD)) + expandVertically(expandFrom = Alignment.Top),
+                        exit = fadeOut(tween(UiSpec.QUICK)) + shrinkVertically(shrinkTowards = Alignment.Top)
                     ) {
                         Column {
                             val connectingNow = phase == "connecting"
                     val usbFull = connectingNow &&
                         (vm.pendingChannel.value == "usb" || vm.connChannel.value == "usb")
                     val wifiFull = connectingNow && !usbFull
-                    val expandSpec = tween<Float>(320, easing = FastOutSlowInEasing)
+                    val expandSpec = tween<Float>(UiSpec.EMPHASIS)
                     val usbW by animateFloatAsState(
                         when { usbFull -> 2.4f; connectingNow -> 0f; else -> 1f },
                         animationSpec = expandSpec, label = "usbW"
@@ -674,7 +688,7 @@ class MainActivity : ComponentActivity() {
                                 val (m, s) = vm.splitInfo(info)
                                 Row(
                                     Modifier.fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
+                                        .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                         .background(MaterialTheme.colorScheme.surfaceVariant)
                                         .clickable {
                                             scope.launch { withContext(Dispatchers.IO) { vm.connectToCamera(ip, info) } }
@@ -750,7 +764,7 @@ class MainActivity : ComponentActivity() {
                         if (sec != null) {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Surface(
-                                    shape = RoundedCornerShape(14.dp),
+                                    shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
                                 ) {
                                     Text(
@@ -761,7 +775,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                                 Surface(
-                                    shape = RoundedCornerShape(14.dp),
+                                    shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
                                 ) {
                                     Text(
@@ -895,7 +909,7 @@ class MainActivity : ComponentActivity() {
                         if (sec != null) {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Surface(
-                                    shape = RoundedCornerShape(14.dp),
+                                    shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
                                 ) {
                                     Text(
@@ -906,7 +920,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                                 Surface(
-                                    shape = RoundedCornerShape(14.dp),
+                                    shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
                                 ) {
                                     Text(
@@ -1018,12 +1032,12 @@ class MainActivity : ComponentActivity() {
                 // 多选操作条：有选中才从底部弹出（全选 + 格式勾选(合并) + 下载所选）
                 AnimatedVisibility(
                     visible = selCount > 0,
-                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(220)),
-                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(tween(180))
+                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(UiSpec.STANDARD)),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(tween(UiSpec.QUICK))
                 ) {
                     Surface(
                         Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
@@ -1261,8 +1275,8 @@ class MainActivity : ComponentActivity() {
             // 设置：从左侧滑出的卡片式面板（蒙层点击关闭，主界面保留在底下）
             AnimatedVisibility(
                 visible = showSettings,
-                enter = fadeIn(),
-                exit = fadeOut(),
+                enter = fadeIn(tween(UiSpec.QUICK)),
+                exit = fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier.matchParentSize()
             ) {
                 Box(
@@ -1277,8 +1291,8 @@ class MainActivity : ComponentActivity() {
             }
             AnimatedVisibility(
                 visible = showSettings,
-                enter = slideInHorizontally { -it },
-                exit = slideOutHorizontally { -it },
+                enter = slideInHorizontally(tween(UiSpec.EMPHASIS)) { -it } + fadeIn(tween(UiSpec.QUICK)),
+                exit = slideOutHorizontally(tween(UiSpec.EMPHASIS)) { -it } + fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier.matchParentSize()
             ) {
                 Box(Modifier.fillMaxSize()) {
@@ -1302,8 +1316,8 @@ class MainActivity : ComponentActivity() {
             // 下载队列：从右侧滑出的卡片面板（样式同设置侧板）
             AnimatedVisibility(
                 visible = showDownloads,
-                enter = fadeIn(),
-                exit = fadeOut(),
+                enter = fadeIn(tween(UiSpec.QUICK)),
+                exit = fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier.matchParentSize()
             ) {
                 Box(
@@ -1318,8 +1332,8 @@ class MainActivity : ComponentActivity() {
             }
             AnimatedVisibility(
                 visible = showDownloads,
-                enter = slideInHorizontally { it },
-                exit = slideOutHorizontally { it },
+                enter = slideInHorizontally(tween(UiSpec.EMPHASIS)) { it } + fadeIn(tween(UiSpec.QUICK)),
+                exit = slideOutHorizontally(tween(UiSpec.EMPHASIS)) { it } + fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier.matchParentSize()
             ) {
                 Box(Modifier.fillMaxSize()) {
@@ -1392,7 +1406,7 @@ class MainActivity : ComponentActivity() {
         Box(
             Modifier
                 .size(34.dp)
-                .clip(RoundedCornerShape(9.dp))
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .background(
                     if (active > 0)
                         if (vm.darkModeOn) Color(0xFF00796B) else Color(0xFF00695C)
@@ -1402,11 +1416,10 @@ class MainActivity : ComponentActivity() {
             contentAlignment = Alignment.Center
         ) {
             if (active > 0) {
-                Text(
+                RollingText(
                     if (active > 99) "99+" else "$active",
                     style = MaterialTheme.typography.labelLarge,
-                    color = Color.White,
-                    maxLines = 1
+                    color = Color.White
                 )
             } else {
                 DownloadIcon(MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1420,13 +1433,13 @@ class MainActivity : ComponentActivity() {
     private fun ConnInfoCard(text: String, loading: Boolean = false) {
         AnimatedVisibility(
             visible = text.isNotEmpty(),
-            enter = fadeIn(tween(200)) + expandVertically(expandFrom = Alignment.Top),
-            exit = fadeOut(tween(160)) + shrinkVertically(shrinkTowards = Alignment.Top)
+            enter = fadeIn(tween(UiSpec.STANDARD)) + expandVertically(expandFrom = Alignment.Top),
+            exit = fadeOut(tween(UiSpec.QUICK)) + shrinkVertically(shrinkTowards = Alignment.Top)
         ) {
             Column {
                 Spacer(Modifier.height(8.dp))
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -1494,22 +1507,20 @@ class MainActivity : ComponentActivity() {
                 val green = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (queued > 0) {
-                        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)) {
-                            Text(
+                        Surface(shape = RoundedCornerShape(UiSpec.ROUND_SMALL), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)) {
+                            RollingText(
                                 "排队中 $queued",
                                 Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.labelSmall
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
                     if (done > 0) {
-                        Surface(shape = RoundedCornerShape(8.dp), color = green.copy(alpha = 0.14f)) {
-                            Text(
+                        Surface(shape = RoundedCornerShape(UiSpec.ROUND_SMALL), color = green.copy(alpha = 0.14f)) {
+                            RollingText(
                                 "已完成 $done",
                                 Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                color = green,
-                                style = MaterialTheme.typography.labelSmall
+                                color = green
                             )
                         }
                     }
@@ -1562,7 +1573,7 @@ class MainActivity : ComponentActivity() {
         Box(
             Modifier
                 .size(44.dp)
-                .clip(RoundedCornerShape(9.dp))
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
         ) {
@@ -1601,7 +1612,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         Surface(
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
         ) {
             Box(Modifier.fillMaxWidth()) {
@@ -1631,7 +1642,7 @@ class MainActivity : ComponentActivity() {
                             Text(
                                 item.type,
                                 Modifier
-                                    .background(badgeColor(item.type), RoundedCornerShape(4.dp))
+                                    .background(badgeColor(item.type), RoundedCornerShape(UiSpec.ROUND_SMALL))
                                     .padding(horizontal = 5.dp, vertical = 2.dp),
                                 color = Color.White,
                                 style = MaterialTheme.typography.labelSmall
@@ -1657,7 +1668,7 @@ class MainActivity : ComponentActivity() {
                                     // 胶囊显示进度/速度；tnum 等宽数字——数值每帧变化时文字不抖动
                                     val green = if (vm.darkModeOn) Color(0xFF4DB6AC) else Color(0xFF00695C)
                                     Surface(
-                                        shape = RoundedCornerShape(8.dp),
+                                        shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
                                         color = green.copy(alpha = 0.14f)
                                     ) {
                                         Text(
@@ -1678,7 +1689,7 @@ class MainActivity : ComponentActivity() {
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Surface(
-                                            shape = RoundedCornerShape(8.dp),
+                                            shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
                                             color = green.copy(alpha = 0.14f)
                                         ) {
                                             Text(
@@ -1690,7 +1701,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                         if (item.elapsedMs > 0) {
                                             Surface(
-                                                shape = RoundedCornerShape(8.dp),
+                                                shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
                                                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                                             ) {
                                                 Text(
@@ -1876,10 +1887,10 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(highlight, pulseArmed) {
             if (highlight && pulseArmed) {
                 pulse.snapTo(0f)
-                pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
-                pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
-                pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
-                pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
+                pulse.animateTo(1f, tween(UiSpec.STANDARD))
+                pulse.animateTo(0f, tween(UiSpec.STANDARD))
+                pulse.animateTo(1f, tween(UiSpec.STANDARD))
+                pulse.animateTo(0f, tween(UiSpec.STANDARD))
                 onPulsePlayed()   // 消费闸门：格子滑出屏重建后不重播
             } else pulse.snapTo(0f)
         }
@@ -1894,12 +1905,12 @@ class MainActivity : ComponentActivity() {
                     } else Modifier
                 )
                 .then(
-                    if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp))
+                    if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(UiSpec.ROUND_SMALL))
                     else Modifier
                 )
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .combinedClickable(
                     onClick = onTap,
                     onLongClick = {
@@ -1936,7 +1947,7 @@ class MainActivity : ComponentActivity() {
             }
             if (selected) {
                 Box(Modifier.fillMaxSize().background(Color(0x3300695C)))
-                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp)))
+                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C), RoundedCornerShape(UiSpec.ROUND_SMALL)))
                 Icon(
                     Icons.Filled.Check,
                     contentDescription = "已选择",
@@ -1953,7 +1964,7 @@ class MainActivity : ComponentActivity() {
         Text(
             text,
             Modifier
-                .background(bg, RoundedCornerShape(4.dp))
+                .background(bg, RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .padding(horizontal = 4.dp, vertical = 2.dp),
             color = Color.White,
             style = MaterialTheme.typography.labelSmall
@@ -1969,6 +1980,27 @@ class MainActivity : ComponentActivity() {
                 .padding(horizontal = 6.dp, vertical = 1.dp)
         ) {
             Text("✓$label", color = Color.White, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+
+    /** 数字滚动文本：内容变化时旧值上滑淡出、新值自下滑入（队列计数、顶栏角标等微交互） */
+    @Composable
+    private fun RollingText(
+        text: String,
+        modifier: Modifier = Modifier,
+        color: Color = Color.Unspecified,
+        style: TextStyle = MaterialTheme.typography.labelSmall
+    ) {
+        AnimatedContent(
+            targetState = text,
+            transitionSpec = {
+                (slideInVertically(tween(UiSpec.QUICK)) { it } + fadeIn(tween(UiSpec.QUICK))) togetherWith
+                    (slideOutVertically(tween(UiSpec.QUICK)) { -it } + fadeOut(tween(UiSpec.QUICK)))
+            },
+            modifier = modifier,
+            label = "rollingNum"
+        ) { t ->
+            Text(t, color = color, style = style, maxLines = 1)
         }
     }
 
@@ -1989,7 +2021,7 @@ class MainActivity : ComponentActivity() {
             val s0 = scale
             val o0 = offset
             val anim = Animatable(0f)
-            anim.animateTo(1f, tween(160)) {
+            anim.animateTo(1f, tween(UiSpec.QUICK)) {
                 val t = value
                 scale = s0 + (1f - s0) * t
                 offset = Offset(o0.x * (1f - t), o0.y * (1f - t))
@@ -2005,7 +2037,7 @@ class MainActivity : ComponentActivity() {
             val center = Offset(container.width / 2f, container.height / 2f)
             val targetOffset = (tapPoint - center) * (1f - targetScale / s0) + o0 * (targetScale / s0)
             val anim = Animatable(0f)
-            anim.animateTo(1f, tween(220)) {
+            anim.animateTo(1f, tween(UiSpec.STANDARD)) {
                 val t = value
                 scale = s0 + (targetScale - s0) * t
                 offset = Offset(
@@ -2152,12 +2184,12 @@ class MainActivity : ComponentActivity() {
                         Modifier
                             .padding(end = 8.dp)
                             .size(24.dp)
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                             .background(if (selNow) Color(0xFF00695C) else Color.Transparent)
                             .border(
                                 2.dp,
                                 if (selNow) Color(0xFF00695C) else Color.White,
-                                RoundedCornerShape(6.dp)
+                                RoundedCornerShape(UiSpec.ROUND_SMALL)
                             )
                             .clickable { curPair?.let { vm.togglePair(it.key) } },
                         contentAlignment = Alignment.Center
@@ -2261,7 +2293,7 @@ class MainActivity : ComponentActivity() {
                     Text(
                         prettyStamp(pair.stamp),
                         Modifier
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                             .background(Color.White.copy(alpha = 0.12f))
                             .padding(horizontal = 8.dp, vertical = 3.dp),
                         color = Color(0xFFDDDDDD),
@@ -2271,8 +2303,8 @@ class MainActivity : ComponentActivity() {
                     val exifParts = vm.exifLines[(pair.jpg ?: pair.nef)?.handle]
                     AnimatedVisibility(
                         visible = exifParts != null,
-                        enter = fadeIn(tween(220)) + expandVertically(expandFrom = Alignment.Top),
-                        exit = fadeOut(tween(160)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                        enter = fadeIn(tween(UiSpec.STANDARD)) + expandVertically(expandFrom = Alignment.Top),
+                        exit = fadeOut(tween(UiSpec.QUICK)) + shrinkVertically(shrinkTowards = Alignment.Top)
                     ) {
                         if (exifParts != null) {
                             FlowRow(
@@ -2283,7 +2315,7 @@ class MainActivity : ComponentActivity() {
                                     Text(
                                         p,
                                         Modifier
-                                            .clip(RoundedCornerShape(6.dp))
+                                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                             .background(Color.White.copy(alpha = 0.12f))
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
                                         color = Color(0xFFDDDDDD),
@@ -2368,10 +2400,10 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(highlight, pulseArmed) {
             if (highlight && pulseArmed) {
                 pulse.snapTo(0f)
-                pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
-                pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
-                pulse.animateTo(1f, tween(250, easing = FastOutSlowInEasing))
-                pulse.animateTo(0f, tween(250, easing = FastOutSlowInEasing))
+                pulse.animateTo(1f, tween(UiSpec.STANDARD))
+                pulse.animateTo(0f, tween(UiSpec.STANDARD))
+                pulse.animateTo(1f, tween(UiSpec.STANDARD))
+                pulse.animateTo(0f, tween(UiSpec.STANDARD))
                 onPulsePlayed()   // 消费闸门：格子滑出屏重建后不重播
             } else pulse.snapTo(0f)
         }
@@ -2386,12 +2418,12 @@ class MainActivity : ComponentActivity() {
                     } else Modifier
                 )
                 .then(
-                    if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp))
+                    if (highlight) Modifier.border(3.dp, Color(0xFF00695C), RoundedCornerShape(UiSpec.ROUND_SMALL))
                     else Modifier
                 )
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .combinedClickable(
                     onClick = onTap,
                     onLongClick = {
@@ -2418,7 +2450,7 @@ class MainActivity : ComponentActivity() {
                 row.type,
                 Modifier
                     .align(Alignment.TopStart)
-                    .background(badgeColor(row.type), RoundedCornerShape(4.dp))
+                    .background(badgeColor(row.type), RoundedCornerShape(UiSpec.ROUND_SMALL))
                     .padding(horizontal = 5.dp, vertical = 2.dp),
                 color = Color.White,
                 style = MaterialTheme.typography.labelSmall
@@ -2442,7 +2474,7 @@ class MainActivity : ComponentActivity() {
             // 选中态：绿色边框 + 中央勾
             if (row.selected.value) {
                 Box(Modifier.fillMaxSize().background(Color(0x3300695C)))
-                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C), RoundedCornerShape(10.dp)))
+                Box(Modifier.fillMaxSize().border(3.dp, Color(0xFF00695C), RoundedCornerShape(UiSpec.ROUND_SMALL)))
                 Icon(
                     Icons.Filled.Check,
                     contentDescription = "已选择",
@@ -2626,7 +2658,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun DateBubble(text: String) {
         Surface(
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.97f),
             shadowElevation = 4.dp
         ) {
@@ -2654,7 +2686,7 @@ class MainActivity : ComponentActivity() {
     ) {
         val arrow by animateFloatAsState(
             if (collapsed) -90f else 0f,
-            animationSpec = tween(250, easing = FastOutSlowInEasing),
+            animationSpec = tween(UiSpec.STANDARD),
             label = "foldArrow"
         )
         Row(
@@ -2663,10 +2695,10 @@ class MainActivity : ComponentActivity() {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
                 color = if (collapsed) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
                 else MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick = onToggle)
+                modifier = Modifier.clip(RoundedCornerShape(UiSpec.ROUND_LARGE)).clickable(onClick = onToggle)
             ) {
                 Row(
                     Modifier.padding(start = 10.dp, end = 5.dp, top = 4.dp, bottom = 4.dp),
@@ -2688,7 +2720,7 @@ class MainActivity : ComponentActivity() {
             // 选中计数胶囊：与日期胶囊独立，避免挤占日期/箭头空间；"已选"前缀消除歧义
             if (collapsed && selectedInDay > 0) {
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
                     color = MaterialTheme.colorScheme.primary
                 ) {
                     Text(
@@ -2802,7 +2834,7 @@ class MainActivity : ComponentActivity() {
     ) {
         Box(
             modifier
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
                 .background(if (selected) Color(0xFF00695C) else MaterialTheme.colorScheme.surfaceVariant)
                 .clickable(onClick = onClick)
                 .padding(vertical = 14.dp),
@@ -2826,7 +2858,7 @@ class MainActivity : ComponentActivity() {
     ) {
         Box(
             modifier
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
                 .background(if (on) Color(0xFF00695C) else MaterialTheme.colorScheme.surfaceVariant)
                 .clickable { onToggle(!on) }
                 .padding(vertical = 14.dp),
@@ -2853,7 +2885,7 @@ class MainActivity : ComponentActivity() {
         var open by remember { mutableStateOf(false) }
         Box(
             modifier
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .clickable { open = true }
                 .padding(horizontal = 12.dp, vertical = 10.dp)
@@ -2980,12 +3012,12 @@ class MainActivity : ComponentActivity() {
                         Modifier
                             .padding(end = 8.dp)
                             .size(24.dp)
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                             .background(if (selNow) Color(0xFF00695C) else Color.Transparent)
                             .border(
                                 2.dp,
                                 if (selNow) Color(0xFF00695C) else Color.White,
-                                RoundedCornerShape(6.dp)
+                                RoundedCornerShape(UiSpec.ROUND_SMALL)
                             )
                             .clickable { curRow?.let { it.selected.value = !it.selected.value } },
                         contentAlignment = Alignment.Center
@@ -3064,7 +3096,7 @@ class MainActivity : ComponentActivity() {
                         Text(
                             row.type,
                             Modifier
-                                .background(badgeColor(row.type), RoundedCornerShape(4.dp))
+                                .background(badgeColor(row.type), RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .padding(horizontal = 6.dp, vertical = 2.dp),
                             color = Color.White,
                             style = MaterialTheme.typography.labelSmall
@@ -3090,7 +3122,7 @@ class MainActivity : ComponentActivity() {
                     Text(
                         prettyStamp(row.stamp),
                         Modifier
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                             .background(Color.White.copy(alpha = 0.12f))
                             .padding(horizontal = 8.dp, vertical = 3.dp),
                         color = Color(0xFFDDDDDD),
@@ -3100,8 +3132,8 @@ class MainActivity : ComponentActivity() {
                     val exifParts = vm.exifLines[row.handle]
                     AnimatedVisibility(
                         visible = exifParts != null,
-                        enter = fadeIn(tween(220)) + expandVertically(expandFrom = Alignment.Top),
-                        exit = fadeOut(tween(160)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                        enter = fadeIn(tween(UiSpec.STANDARD)) + expandVertically(expandFrom = Alignment.Top),
+                        exit = fadeOut(tween(UiSpec.QUICK)) + shrinkVertically(shrinkTowards = Alignment.Top)
                     ) {
                         if (exifParts != null) {
                             FlowRow(
@@ -3112,7 +3144,7 @@ class MainActivity : ComponentActivity() {
                                     Text(
                                         p,
                                         Modifier
-                                            .clip(RoundedCornerShape(6.dp))
+                                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                             .background(Color.White.copy(alpha = 0.12f))
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
                                         color = Color(0xFFDDDDDD),
@@ -3169,12 +3201,26 @@ class MainActivity : ComponentActivity() {
 
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+                // 返回按钮：34dp 圆角色块容器，与顶栏按钮同款
+                Box(
+                    Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(onClick = onBack),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.ArrowBack,
+                        contentDescription = "返回",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
+                Spacer(Modifier.width(10.dp))
                 Text("设置", style = MaterialTheme.typography.titleLarge)
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(12.dp))
             Column(
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             ) {
@@ -3225,7 +3271,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(Modifier.weight(1f)) {
@@ -3246,9 +3292,16 @@ class MainActivity : ComponentActivity() {
                         prefs.edit().putBoolean("set_auto_connect", it).apply()
                     }
                 )
-                if (autoConnect) {
-                    SettingsDivider()
-                    AutoConnChannelPicker()
+                // 优先通道选择器：随自动连接开关展开/收起（淡入向下展开 / 淡出收起）
+                AnimatedVisibility(
+                    visible = autoConnect,
+                    enter = fadeIn(tween(UiSpec.STANDARD)) + expandVertically(expandFrom = Alignment.Top),
+                    exit = fadeOut(tween(UiSpec.QUICK)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                ) {
+                    Column {
+                        SettingsDivider()
+                        AutoConnChannelPicker()
+                    }
                 }
             }
             SettingsSection(title = "传输", icon = { SectionIcon("传输") }) {
@@ -3313,7 +3366,7 @@ class MainActivity : ComponentActivity() {
                 )
                 SettingsDivider()
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
@@ -3331,7 +3384,7 @@ class MainActivity : ComponentActivity() {
                 }
                 SettingsDivider()
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f)) {
@@ -3403,13 +3456,20 @@ class MainActivity : ComponentActivity() {
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
             ) {
-                icon()
+                // 分组图标：28dp 圆角色块容器（主色 12% 底），与顶栏/连接卡同风格
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) { icon() }
                 Spacer(Modifier.width(8.dp))
                 Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             }
             Surface(
                 Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
                 color = MaterialTheme.colorScheme.surfaceVariant
             ) {
                 Column(content = content)
@@ -3513,7 +3573,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun SettingSwitch(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
@@ -3580,8 +3640,14 @@ class MainActivity : ComponentActivity() {
     private fun ChannelChip(text: String, selected: Boolean, onClick: () -> Unit) {
         Box(
             Modifier
-                .clip(RoundedCornerShape(9.dp))
-                .background(if (selected) Color(0xFF00695C) else MaterialTheme.colorScheme.surfaceVariant)
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                .background(
+                    when {
+                        selected && vm.darkModeOn -> Color(0xFF00796B)
+                        selected -> Color(0xFF00695C)
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    }
+                )
                 .clickable(onClick = onClick)
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center
@@ -3772,8 +3838,8 @@ class MainActivity : ComponentActivity() {
                     // 描边胶囊「扫描相机」：空闲时显示；连接中隐藏（状态行占位）
                     Box(
                         Modifier
-                            .clip(RoundedCornerShape(9.dp))
-                            .border(1.dp, primary.copy(alpha = 0.55f), RoundedCornerShape(9.dp))
+                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                            .border(1.dp, primary.copy(alpha = 0.55f), RoundedCornerShape(UiSpec.ROUND_SMALL))
                             .clickable(enabled = !dimmed && !active) { onScanClick() }
                             .padding(horizontal = 12.dp, vertical = 7.dp)
                     ) {
