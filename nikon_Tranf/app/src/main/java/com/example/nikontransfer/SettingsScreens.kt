@@ -271,8 +271,8 @@ internal fun MainActivity.SettingsScreen(
                 }
                 SettingsDivider()
                 SettingSwitch(
-                    title = "打开 App 自动连接相机",
-                    subtitle = "启动后若手机热点已开启，自动扫描并连接相机（热点未开则跳过）",
+                    title = "启动时自动连接相机",
+                    subtitle = "启动后自动扫描并连接相机，未检测到网络时跳过",
                     checked = autoConnect,
                     onChange = {
                         autoConnect = it
@@ -455,9 +455,9 @@ internal fun MainActivity.SettingsScreen(
             }
             SettingsSection(title = "关于", icon = { SectionIcon("关于") }) {
                 Text(
-                    "尼康 Z 系列 Wi-Fi 传图 · 配对模式原生协议\n" +
-                        "协议：PTP/IP + Nikon 私有指令（0x941c/0x9421/0x9431/0x9434/0x952b/0x935a）\n" +
-                        "注意：配对模式下相机不提供原始文件名，列表名称由拍摄时间+句柄生成",
+                    "尼康 Z 系列 Wi-Fi 传图\n" +
+                        "通过 PTP/IP 协议与相机直连传输\n" +
+                        "注：配对模式下相机不提供原始文件名，文件按拍摄时间命名",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
@@ -620,7 +620,7 @@ internal fun MainActivity.ScrollbarThresholdPicker() {
         Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
             Text("显示阈值", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
             Text(
-                "未折叠照片数达到阈值后才显示；被折叠的照片不计入数量",
+                "照片数量达到该值后才显示快速滚动条",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -666,7 +666,7 @@ internal fun MainActivity.AutoConnChannelPicker() {
         ) {
             Column(Modifier.weight(1f)) {
                 Text("自动连接优先通道", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
-                Text("仅影响启动自动连接的尝试顺序，手动选择与插线自动连不受影响", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("启动时自动连接的尝试顺序，手动选择连接方式不受影响", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChannelChip("USB", selected = channel == "usb") {

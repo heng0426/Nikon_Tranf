@@ -32,7 +32,7 @@ class CameraKeepAliveService : Service() {
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("相机连接保持中")
-            .setContentText("Nikon Wi-Fi 会话活跃，切后台不断开")
+            .setContentText("与相机保持连接，以便继续传输照片")
             .setOngoing(true)
             .setSilent(true)
             .build()

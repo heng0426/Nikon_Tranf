@@ -384,18 +384,6 @@ class MainActivity : ComponentActivity() {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 val phase = connPhase.value
-                // 连接详情切换：显示 3 秒后自动收起（重复点击取消旧计时，避免卡片被旧计时器提前收起）
-                var detailHideJob by remember { mutableStateOf<Job?>(null) }
-                val toggleConnDetail = {
-                    detailHideJob?.cancel()
-                    showConnDetail.value = !showConnDetail.value
-                    if (showConnDetail.value) {
-                        detailHideJob = scope.launch {
-                            delay(3000)
-                            showConnDetail.value = false
-                        }
-                    }
-                }
                 // 断开瞬间图标抖动一次提示（仅连接成功过之后断开）
                 val connShake = remember { Animatable(0f) }
                 LaunchedEffect(phase) {
@@ -440,25 +428,18 @@ class MainActivity : ComponentActivity() {
                         ) {
                             FunnelIcon(if (vm.filterActive) UiSpec.accent(vm.darkModeOn) else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        // 连接指示（常驻，筛选旁，同款圆角外框）：已连接=显示通道图标(点看详情)；连接中=禁点；断开=点击重连
+                        // 连接指示（常驻，筛选旁，同款圆角外框，不可点击）：
+                        // 已连接=当前通道图标（USB 蓝 / Wi-Fi 青）；连接中=琥珀色；断开=断开前通道图标红色
                         val red = phase == "disconnected"
                         val amber = phase == "connecting"
-                        val isUsbConn = vm.connChannel.value == "usb"
+                        val isUsbConn = vm.lastConnChannel.value == "usb"
                         Box(
                             Modifier
                                 .padding(start = 10.dp)
                                 .graphicsLayer { translationX = connShake.value * 6.dp.toPx() }
                                 .size(34.dp)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .clickable(enabled = !amber) {
-                                    if (red) {
-                                        // 重试连接：走当前偏好通道（USB 优先默认）
-                                        ensureLocalNetworkPermission {
-                                            scope.launch { withContext(Dispatchers.IO) { vm.connectionFlow() } }
-                                        }
-                                    } else toggleConnDetail()
-                                },
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
                             contentAlignment = Alignment.Center
                         ) {
                             val iconColor by animateColorAsState(
@@ -504,7 +485,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    "已连接：$cm ($cs) · ${if (isUsb) "USB 直连" else connectedIp.value}",
+                                    "已连接：$cm ($cs) · ${if (isUsb) "USB" else connectedIp.value}",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = UiSpec.connChipText(vm.darkModeOn, isUsb)
                                 )
@@ -708,7 +689,7 @@ class MainActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            "无符合筛选条件的照片",
+                            "没有符合条件的照片",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1022,7 +1003,7 @@ class MainActivity : ComponentActivity() {
                             onClick = { scope.launch { withContext(Dispatchers.IO) { vm.downloadSelected() } } },
                             enabled = total > 0,
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text(if (allDownloaded) "均已下载" else "下载所选($total)") }
+                        ) { Text(if (allDownloaded) "所选照片均已下载" else "下载所选（$total）") }
                         }
                     }
                 }
@@ -1113,9 +1094,9 @@ class MainActivity : ComponentActivity() {
                     title = { Text("手机热点未开启") },
                     text = {
                         Text(
-                            "相机需要连接到手机热点才能传图。\n\n" +
-                                "请打开手机热点，再到相机菜单「连接至 PC (Wi-Fi)」选择本热点，然后点状态条重试。\n\n" +
-                                "（若你使用的是相机开热点的另一组网方式，可点「仍然连接」跳过此提醒）"
+                            "传输照片需要相机连接到手机热点。\n\n" +
+                                "请先打开手机热点，然后在相机菜单中执行「连接至 PC（Wi-Fi）」并选择本热点，完成后返回点击「仍然连接」。\n\n" +
+                                "如果相机已通过其他方式组网（如相机热点），可点击「仍然连接」继续。"
                         )
                     },
                     confirmButton = {

@@ -495,7 +495,7 @@ internal fun MainActivity.PairPager(
                     val hiKey = (pair.jpg ?: pair.nef)?.handle
                     if (vm.hiresOn && hiKey != null && vm.hiresFailed.containsKey(hiKey)) {
                         Text(
-                            "高清加载失败 · 翻回此页自动重试",
+                            "高清图加载失败，翻回此页将自动重试",
                             color = UiSpec.PLACEHOLDER_TEXT,
                             style = MaterialTheme.typography.labelSmall
                         )
@@ -759,7 +759,7 @@ internal fun MainActivity.PreviewPager(
                     // 高清加载失败提示（静默回退缩略图，翻回该页自动重试）
                     if (vm.hiresOn && vm.hiresFailed.containsKey(row.handle)) {
                         Text(
-                            "高清加载失败 · 翻回此页自动重试",
+                            "高清图加载失败，翻回此页将自动重试",
                             color = UiSpec.PLACEHOLDER_TEXT,
                             style = MaterialTheme.typography.labelSmall
                         )

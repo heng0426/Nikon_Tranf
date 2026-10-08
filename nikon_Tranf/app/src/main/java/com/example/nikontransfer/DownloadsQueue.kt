@@ -251,7 +251,7 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
             }
             if (vm.downloadQueue.isEmpty()) {
                 Text(
-                    "暂无下载任务\n\n点按照片或批量下载后，任务会出现在这里",
+                    "暂无下载任务\n\n选择照片下载后，任务将显示在这里",
                     Modifier.fillMaxWidth().padding(vertical = 48.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -479,7 +479,7 @@ internal fun MainActivity.DownloadStateSlot(
                     AlertDialog(
                         onDismissRequest = { confirmRedownload = false },
                         title = { Text("已下载") },
-                        text = { Text("当前图片已下载，可打开系统相册查看，或重新下载。") },
+                        text = { Text("该照片已下载，可打开相册查看，或重新下载。") },
                         confirmButton = {
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 if (onOpenInGallery != null) {
@@ -552,7 +552,7 @@ internal fun MainActivity.DownloadStateSlot(
             }
             qItem != null && st == QStatus.FAILED -> Button(
                 onClick = { vm.retryDownload(qItem) }, modifier = modifier
-            ) { Text("失败 · 重试") }
+            ) { Text("下载失败") }
             qItem != null && st == QStatus.CANCELED -> Button(
                 onClick = { vm.retryDownload(qItem) }, modifier = modifier
             ) { Text("重新下载") }

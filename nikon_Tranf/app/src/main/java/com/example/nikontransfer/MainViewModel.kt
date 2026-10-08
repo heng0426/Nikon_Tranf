@@ -101,6 +101,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 当前连接通道（供 UI 决定图标/详情）：usb / wifi / empty（未连接） */
     val connChannel = mutableStateOf("")
+    /** 最近一次成功连接的通道（断开后不清除，供 UI 断开时仍显示对应图标）：usb / wifi / empty */
+    val lastConnChannel = mutableStateOf("")
     /** 双卡选择的通道：usb / wifi / null（null = 未点击，走自动连接偏好） */
     val pendingChannel = mutableStateOf<String?>(null)
     /** 最近一次连接失败的原因（显示在双卡下方） */
@@ -126,7 +128,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (i.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && dev != null) {
                         onUsbAttached(dev)
                     } else {
-                        connText.value = "USB 权限被拒 · 插拔数据线重试"
+                        connText.value = "USB 权限被拒绝，请重新插拔数据线"
                     }
                 }
             }
@@ -156,7 +158,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 Intent(ACTION_USB_PERMISSION).setPackage(ctx.packageName),
                 android.app.PendingIntent.FLAG_MUTABLE
             )
-            connText.value = "USB 相机已插入 · 请授权"
+            connText.value = "已检测到 USB 相机，请在弹窗中允许访问"
             usbManager.requestPermission(dev, pi)
         }
     }
@@ -169,7 +171,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connChannel.value = ""
         connPhase.value = "disconnected"
         // 已取消"拔线自动回退 Wi-Fi"：拔出仅清理状态，连接方式由用户手动选择
-        connText.value = "USB 已拔出 · 选择连接方式"
+        connText.value = "USB 已断开，请选择连接方式"
         pendingChannel.value = null
     }
 
@@ -187,19 +189,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connecting = true
         connPhase.value = "connecting"
         try {
-            connText.value = "USB 直连相机…"
+            connText.value = "正在通过 USB 连接相机…"
             val session = UsbPtpSession(usbManager, dev)
             synchronized(camMutex) { session.openSession() }
             usbSession = session
             connected = true
             connPhase.value = "connected"
             connChannel.value = "usb"
+            lastConnChannel.value = "usb"
             connDetail.value = session.modelInfo
             connectedIp.value = ""
-            connText.value = "枚举照片…"
+            connText.value = "正在读取照片列表…"
             uiLog = listFiles()
             val model = session.modelInfo.split("|").first()
-            connText.value = "USB 直连 · $model"
+            connText.value = "USB 已连接 · $model"
             Log.i("UsbPtp", "USB 直连建立: ${session.modelInfo} (auto=$auto)")
             return true
         } catch (t: Throwable) {
@@ -207,8 +210,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             usbSession = null
             connected = false
             connPhase.value = "disconnected"
-            connText.value = "USB 连接失败: ${t.message}"
-            connFailMsg.value = "USB 连接失败 · ${t.message}"
+            connText.value = "USB 连接失败：${t.message}"
+            connFailMsg.value = "USB 连接失败：${t.message}"
             pendingChannel.value = null
             return false
         } finally {
@@ -692,10 +695,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             GPhoto2Bridge.setup(ctx)
             val candidates = ArrayList<String>()
             for (subnet in wifiSubnets()) {
-                scanText.value = "扫描 $subnet.x …"
+                scanText.value = "正在扫描 $subnet.x…"
                 candidates.addAll(
                     scanSubnet(subnet) { done, total ->
-                        scanText.value = "扫描 $subnet.x … $done/$total"
+                        scanText.value = "正在扫描 $subnet.x…（$done/$total）"
                     }
                 )
             }
@@ -705,7 +708,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 scanResults.add(ip to info)
             }
             if (scanResults.isEmpty())
-                scanText.value = "未发现相机 · 请确认相机已进入 Wi-Fi 等待态"
+                scanText.value = "未发现相机，请确认相机已进入 Wi-Fi 连接等待状态"
         } finally {
             scanning.value = false
         }
@@ -750,8 +753,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (connecting && pendingChannel.value == "wifi" && channel == "usb") {
             wifiCancelRequested = true
             pendingChannel.value = "usb"
-            connFailMsg.value = "已取消 Wi-Fi · 正在尝试 USB 直连"
-            connText.value = "已取消 Wi-Fi · USB 连接中…"
+            connFailMsg.value = "已取消 Wi-Fi，正在尝试 USB 连接"
+            connText.value = "已取消 Wi-Fi，USB 连接中…"
             Thread { waitForWifiExitThenUsb() }.start()
             return true
         }
@@ -780,16 +783,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val dev = UsbPtpSession.findCamera(usbManager)
         if (dev == null) {
             connPhase.value = "disconnected"
-            connText.value = "未连接 · 选择连接方式"
-            connFailMsg.value = "未检测到尼康相机 · 请用数据线连接相机与手机"
+            connText.value = "未连接，请选择连接方式"
+            connFailMsg.value = "未检测到尼康相机，请用数据线连接相机与手机"
             pendingChannel.value = null
             return
         }
         if (!UsbPtpSession.hasPermission(usbManager, dev)) {
             connPhase.value = "disconnected"
-            connText.value = "未连接 · 选择连接方式"
+            connText.value = "未连接，请选择连接方式"
             UsbPtpSession.requestPermission(ctx, usbManager, dev)
-            connFailMsg.value = "已请求 USB 授权 · 请在弹窗中允许"
+            connFailMsg.value = "已请求 USB 权限，请在弹窗中允许"
             pendingChannel.value = null
             return
         }
@@ -808,13 +811,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun tryConnectManualUsb(): Boolean {
         val dev = UsbPtpSession.findCamera(usbManager)
         if (dev == null) {
-            connFailMsg.value = "未检测到尼康相机 · 请用数据线连接相机与手机"
+            connFailMsg.value = "未检测到尼康相机，请用数据线连接相机与手机"
             pendingChannel.value = null
             return false
         }
         if (!UsbPtpSession.hasPermission(usbManager, dev)) {
             UsbPtpSession.requestPermission(ctx, usbManager, dev)
-            connFailMsg.value = "已请求 USB 授权 · 请在弹窗中允许"
+            connFailMsg.value = "已请求 USB 权限，请在弹窗中允许"
             pendingChannel.value = null
             return false
         }
@@ -826,7 +829,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun wifiCancelled(): Boolean {
         if (!wifiCancelRequested) return false
         if (pendingChannel.value == "usb") {
-            connText.value = "已取消 Wi-Fi · USB 连接中…"
+            connText.value = "已取消 Wi-Fi，USB 连接中…"
         } else {
             connText.value = "已取消"
             connPhase.value = "disconnected"
@@ -850,7 +853,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // ① 上次相机 IP
                 val lastIp = prefs.getString("camera_ip", null)
                 if (lastIp != null) {
-                    connText.value = "探测上次相机 $lastIp …"
+                    connText.value = "正在连接上次的相机 $lastIp…"
                     val info = synchronized(camMutex) { GPhoto2Bridge.nativeProbeCameraInfo(lastIp) }
                     if (wifiCancelled()) return false
                     if (info != null) return finishConnect(lastIp, info)
@@ -860,27 +863,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // ② 网段扫描：只扫手机当前已连接的 Wi-Fi 网段（热点/路由器均动态探测）
             val subnets = wifiSubnets()
             if (subnets.isEmpty()) {
-                connText.value = "未发现可用 Wi-Fi 子网"
+                connText.value = "未发现可用 Wi-Fi 网络"
                 connPhase.value = "disconnected"
-                connFailMsg.value = "未发现可用 Wi-Fi 子网 · 请确认手机已连接 Wi-Fi 或已开热点"
+                connFailMsg.value = "未发现可用 Wi-Fi 网络，请确认手机已连接 Wi-Fi 或已开启热点"
                 pendingChannel.value = null
                 return false
             }
             var candidates: List<String> = emptyList()
             for (subnet in subnets) {
                 if (wifiCancelled()) return false
-                connText.value = "扫描网段 $subnet.x …"
+                connText.value = "正在扫描网络 $subnet.x…"
                 candidates = scanSubnet(subnet, abort = { wifiCancelRequested }) { done, total ->
                     if (!wifiCancelRequested)                       // 取消后不再覆盖"已取消/USB 连接中"状态文字
-                        connText.value = "扫描网段 $subnet.x … $done/$total"
+                        connText.value = "正在扫描网络 $subnet.x…（$done/$total）"
                 }
                 if (wifiCancelled()) return false
                 if (candidates.isNotEmpty()) break
             }
             if (candidates.isEmpty()) {
-                connText.value = "未发现相机 · 请确认相机已进入 Wi-Fi 等待态"
+                connText.value = "未发现相机，请确认相机已进入 Wi-Fi 连接等待状态"
                 connPhase.value = "disconnected"
-                connFailMsg.value = "未发现相机 · 请确认相机已进入 Wi-Fi 等待态"
+                connFailMsg.value = "未发现相机，请确认相机已进入 Wi-Fi 连接等待状态"
                 pendingChannel.value = null
                 return false
             }
@@ -897,9 +900,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             scanResults.clear()
             scanResults.addAll(named)
-            connText.value = "发现 ${named.size} 台相机 · 在 Wi-Fi 卡中选择"
+            connText.value = "发现 ${named.size} 台相机，请在上方选择"
             connPhase.value = "disconnected"
-            connFailMsg.value = "发现 ${named.size} 台相机 · 请在下方选择"
+            connFailMsg.value = "发现 ${named.size} 台相机，请在下方选择"
             pendingChannel.value = null
             return false
         } finally {
@@ -945,7 +948,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 与指定相机完成连接（配对探针 + 常驻传输会话）并自动列目录 */
     private fun finishConnect(ip: String, info: String): Boolean {
         val (model, serial) = splitInfo(info)
-        connText.value = "连接 $model ($serial) …"
+        connText.value = "正在连接 $model ($serial)…"
         // 已连接则先干净断开旧会话（相机需要时间复位）
         if (usbSession != null) {          // USB 在连时改走 Wi-Fi：先关 USB 会话
             synchronized(camMutex) { usbSession?.close() }
@@ -958,14 +961,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             Thread.sleep(3000)
         }
         bindToWifiNetwork(ip)
-        connText.value = "配对探针 + 传输会话…"
+        connText.value = "正在建立连接…"
         val ret = synchronized(camMutex) { GPhoto2Bridge.nativePairingProbe(ip) }
         if (ret != 0) {
             connected = false
             ptpPath = ""
             stopKeepAlive()       // 重连失败时清理可能残留的保活
-            connText.value = "连接失败: $ret（相机需处于 Wi-Fi 等待态）"
-            connFailMsg.value = "连接失败 ($ret) · 请确认相机已进入 Wi-Fi 等待态后重试"
+            connText.value = "连接失败（$ret），请确认相机已进入 Wi-Fi 连接等待状态后重试"
+            connFailMsg.value = "连接失败（$ret），请确认相机已进入 Wi-Fi 连接等待状态后重试"
             connPhase.value = "disconnected"
             pendingChannel.value = null
             return false
@@ -973,12 +976,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connected = true
         ptpPath = "ptpip:$ip"
         connChannel.value = "wifi"
+        lastConnChannel.value = "wifi"
         startEventPolling()
         startKeepAlive()          // 前台服务 + WifiLock：后台不再被冻结断连
         prefs.edit().putString("camera_ip", ip).apply()
         connectedIp.value = ip
         connDetail.value = info
-        connText.value = "枚举照片…"
+        connText.value = "正在读取照片列表…"
         uiLog = listFiles()
         connText.value = "$model ($serial) · $ip"
         connPhase.value = "connected"
@@ -1049,24 +1053,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun listFiles(): String = synchronized(camMutex) {
-        if (!connected) return "未连接相机，请先连接成功后再列目录"
+        if (!connected) return "未连接相机，请先连接后再读取照片"
         // USB 全量枚举（逐对象 GetObjectInfo）需数秒：立即给出加载提示，替代旧日志（如"就绪"）
         uiLog = "正在读取照片列表…"
         // 配对模式原生列目录："句柄:YYYYMMDD-HHMMSS:类型|..."
-        val failMsg = "列目录失败（传输会话可能已断开，请重新连接）"
+        val failMsg = "读取照片列表失败，连接可能已断开，请重新连接"
         val res: String = if (usbSession != null) {
             val s = usbSession!!
             val r = s.enumerate()
             when {
-                r == null -> return "USB 枚举失败 · ${s.lastDiag}"
-                r.isEmpty() -> return "USB 枚举为空 · ${s.lastDiag}"
+                r == null -> return "读取照片列表失败：${s.lastDiag}"
+                r.isEmpty() -> return "相机中未找到照片：${s.lastDiag}"
                 else -> r
             }
         } else {
             GPhoto2Bridge.nativeListNative() ?: return failMsg
         }
         val rows = res.split('|').filter { it.isNotBlank() }
-        if (rows.isEmpty()) return "相机里没有待传输的照片"
+        if (rows.isEmpty()) return "相机中没有可传输的照片"
         val parsed = rows.mapNotNull { row ->
             val p = row.split(':', limit = 4)
             if (p.size < 3) return@mapNotNull null
@@ -1273,7 +1277,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun onQueueWorkerExit(ok: Int, fail: Int) {
         if (batchMode && (ok > 0 || fail > 0) && notifyDoneOn) {
             vibrateOnce()
-            CameraKeepAliveService.notifyDone(ctx, "下载完成：成功 $ok · 失败 $fail")
+            CameraKeepAliveService.notifyDone(ctx, "下载完成：成功 $ok 张，失败 $fail 张")
         }
         CameraKeepAliveService.clearProgress(ctx)
     }

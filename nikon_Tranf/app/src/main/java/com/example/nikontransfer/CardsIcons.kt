@@ -312,31 +312,68 @@ internal fun MainActivity.WifiIcon(color: Color, modifier: Modifier = Modifier) 
         }
     }
 
-    /** USB 插头形状（描边风格：外壳 + 两针），与漏斗/WiFi/齿轮同自绘风格 */
+    /** 标准 USB Trident 标志：主干+箭头+底部圆+右侧方块+左右分支曲线，700×700 坐标系精确映射 */
     @Composable
 internal fun MainActivity.UsbIcon(color: Color, modifier: Modifier = Modifier) {
-        Canvas(modifier.size(20.dp)) {
-            val w = size.width
-            val h = size.height
-            val cx = w / 2f
-            val cy = h / 2f
-            val s = minOf(w, h)
-            val stroke = (s * 0.07f).toFloat()
-            val style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
-            // 外壳：上宽下窄的梯形（开口朝下）
-            val shell = Path().apply {
-                moveTo(cx - s * 0.30f, cy - s * 0.22f)
-                lineTo(cx + s * 0.30f, cy - s * 0.22f)
-                lineTo(cx + s * 0.22f, cy + s * 0.20f)
-                lineTo(cx - s * 0.22f, cy + s * 0.20f)
+    Canvas(modifier.size(20.dp)) {
+        val s = size.width / 700f                      // 700×700 坐标系映射到实际尺寸
+        fun pt(x: Float, y: Float) = Offset(x * s, y * s)
+        val w = 36f * s                                // 线宽
+
+        // 主干（竖线）
+        drawLine(color, pt(350f, 120f), pt(350f, 565f), strokeWidth = w, cap = StrokeCap.Round)
+
+        // 顶部实心箭头
+        drawPath(
+            Path().apply {
+                moveTo(350f * s, 20f * s)
+                lineTo(278f * s, 140f * s)
+                lineTo(422f * s, 140f * s)
                 close()
-            }
-            drawPath(shell, color, style = style)
-            // 两针（外壳下方伸出）
-            drawLine(color, Offset(cx - s * 0.12f, cy + s * 0.20f), Offset(cx - s * 0.12f, cy + s * 0.36f), style.width, cap = StrokeCap.Round)
-            drawLine(color, Offset(cx + s * 0.12f, cy + s * 0.20f), Offset(cx + s * 0.12f, cy + s * 0.36f), style.width, cap = StrokeCap.Round)
-            // 外壳内横线（细节）
-            drawLine(color, Offset(cx - s * 0.18f, cy - s * 0.10f), Offset(cx + s * 0.18f, cy - s * 0.10f), style.width, cap = StrokeCap.Round)
+            },
+            color
+        )
+
+        // 底部圆
+        drawCircle(color, radius = 58f * s, center = pt(350f, 600f))
+
+        // 右上方块
+        drawRect(color, topLeft = pt(405f, 188f), size = Size(92f * s, 92f * s))
+
+        // 右侧分支：方块 → 弯回主干
+        drawPath(
+            Path().apply {
+                moveTo(451f * s, 282f * s)
+                cubicTo(451f * s, 365f * s, 425f * s, 395f * s, 350f * s, 418f * s)
+            },
+            color,
+            style = Stroke(width = w, cap = StrokeCap.Round)
+        )
+
+        // 左侧圆 + 分支线
+        drawCircle(color, radius = 54f * s, center = pt(252f, 296f))
+        drawPath(
+            Path().apply {
+                moveTo(252f * s, 348f * s)
+                cubicTo(252f * s, 430f * s, 275f * s, 452f * s, 350f * s, 468f * s)
+            },
+            color,
+            style = Stroke(width = w, cap = StrokeCap.Round)
+        )
+    }
+}
+
+    /** 卡片右侧描边胶囊动作（USB「连接 ›」/ Wi-Fi「扫描相机」统一样式） */
+    @Composable
+private fun CardPillAction(text: String, color: Color, enabled: Boolean = true, onClick: () -> Unit = {}) {
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                .border(1.dp, color.copy(alpha = 0.55f), RoundedCornerShape(UiSpec.ROUND_SMALL))
+                .clickable(enabled = enabled, onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 7.dp)
+        ) {
+            Text(text, style = MaterialTheme.typography.labelMedium, color = color)
         }
     }
 
@@ -357,15 +394,16 @@ internal fun MainActivity.UsbChannelCard(
         val onSurface = UiSpec.usbOnSurface(dark)
 
         Surface(
+            onClick = {
+                vm.clearConnFailure()
+                onClick()
+            },
+            enabled = !active,
             shape = RoundedCornerShape(if (compact) 12.dp else 16.dp),
             color = surface,
             modifier = modifier
                 .fillMaxWidth()
                 .alpha(if (dimmed) 0.45f else 1f)
-                .clickable(enabled = !active) {
-                    vm.clearConnFailure()
-                    onClick()
-                }
         ) {
             Row(
                 // compact 卡高度锁定 60dp（同 Wi-Fi 卡）：状态行出现不撑高
@@ -389,14 +427,14 @@ internal fun MainActivity.UsbChannelCard(
                 Spacer(Modifier.width(if (compact) 10.dp else 14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (compact) "USB" else "USB 数据线",
+                        if (compact) "USB" else "USB 连接",
                         style = if (compact) MaterialTheme.typography.titleSmall
                         else MaterialTheme.typography.titleMedium,
                         color = onSurface
                     )
                     if (!compact) {
                         Text(
-                            "插线即连 · 传输快 · 更稳定",
+                            "即插即用，传输更快、更稳定",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -423,7 +461,10 @@ internal fun MainActivity.UsbChannelCard(
                     )
                 } else if (!compact && !active) {
                     // 连接中不显示「连接 ›」（进度状态由下方信息卡片承载），高度不受影响
-                    Text("连接 ›", style = MaterialTheme.typography.labelLarge, color = primary)
+                    CardPillAction("连接 ›", primary) {
+                        vm.clearConnFailure()
+                        onClick()
+                    }
                 }
             }
         }
@@ -448,18 +489,18 @@ internal fun MainActivity.WifiChannelCard(
         val onSurface = UiSpec.wifiOnSurface(dark)
 
         Surface(
+            onClick = {
+                if (active) onWifiCancel()      // 连接/扫描中再点卡片 = 取消
+                else {
+                    vm.clearConnFailure()
+                    onClick()
+                }
+            },
             shape = RoundedCornerShape(if (compact) 12.dp else 16.dp),
             color = surface,
             modifier = modifier
                 .fillMaxWidth()
                 .alpha(if (dimmed) 0.45f else 1f)
-                .clickable {
-                    if (active) onWifiCancel()      // 连接/扫描中再点卡片 = 取消
-                    else {
-                        vm.clearConnFailure()
-                        onClick()
-                    }
-                }
         ) {
             Row(
                 // compact 卡高度锁定 60dp（同 USB 卡）：状态行出现不撑高
@@ -482,14 +523,14 @@ internal fun MainActivity.WifiChannelCard(
                 Spacer(Modifier.width(if (compact) 10.dp else 14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (compact) "Wi-Fi" else "Wi-Fi 无线",
+                        if (compact) "Wi-Fi" else "Wi-Fi 连接",
                         style = if (compact) MaterialTheme.typography.titleSmall
                         else MaterialTheme.typography.titleMedium,
                         color = onSurface
                     )
                     if (!compact) {
                         Text(
-                            if (hotspotOn) "已开热点 · 直接连接" else "无线连接 · 手机开热点或同一路由器",
+                            if (hotspotOn) "热点已开启，可直接连接" else "连接手机热点或同一 Wi-Fi",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -516,15 +557,7 @@ internal fun MainActivity.WifiChannelCard(
                     )
                 } else if (!compact) {
                     // 描边胶囊「扫描相机」：空闲时显示；连接中隐藏（状态行占位）
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                            .border(1.dp, primary.copy(alpha = 0.55f), RoundedCornerShape(UiSpec.ROUND_SMALL))
-                            .clickable(enabled = !dimmed && !active) { onScanClick() }
-                            .padding(horizontal = 12.dp, vertical = 7.dp)
-                    ) {
-                        Text("扫描相机", style = MaterialTheme.typography.labelMedium, color = primary)
-                    }
+                    CardPillAction("扫描相机", primary, enabled = !dimmed && !active) { onScanClick() }
                 }
             }
         }
