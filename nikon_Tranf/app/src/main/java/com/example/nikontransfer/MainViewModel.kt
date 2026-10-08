@@ -635,6 +635,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 热点状态的可观察缓存：初始化时求值一次（isHotspotOn 是 fun 无顺序问题），onResume 时刷新（从热点设置页返回即生效） */
+    var hotspotOnState by mutableStateOf(isHotspotOn())
+        private set
+
+    fun refreshHotspot() { hotspotOnState = isHotspotOn() }
+
+    /** 热点未开提示开关（设置项，默认开）：未连接且热点未开时，连接页 Wi-Fi 卡下方显示跳转提示 */
+    val hotspotHintOn = mutableStateOf(prefs.getBoolean("set_hotspot_hint", true))
+    fun setHotspotHint(v: Boolean) {
+        hotspotHintOn.value = v
+        prefs.edit().putBoolean("set_hotspot_hint", v).apply()
+    }
+
     /* ---------- 扫描 ---------- */
 
     /** 收集所有 Wi-Fi 接口的 /24 网段前缀（如 "10.19.161"） */

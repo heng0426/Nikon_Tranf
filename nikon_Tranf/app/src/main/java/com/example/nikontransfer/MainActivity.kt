@@ -276,6 +276,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // 回前台体检：后台期间会话可能已被相机/系统掐掉（VM 状态跨重建存活，体检保证真实）
         vm.resumeHealthCheck()
+        vm.refreshHotspot()   // 从热点设置页返回时立即刷新提示卡状态
     }
 
     override fun onDestroy() {
@@ -542,7 +543,13 @@ class MainActivity : ComponentActivity() {
                             onWifiCancel = { vm.cancelWifiConnect() },
                             active = phase == "connecting" && !isUsbActive,
                             dimmed = phase == "connecting" && isUsbActive,
-                            hotspotOn = vm.isHotspotOn()
+                            hotspotOn = vm.hotspotOnState
+                        )
+                        // 热点未开提示卡：仅未连接时展开（USB 连接中不干扰），点按跳系统热点设置
+                        HotspotHintCard(
+                            visible = vm.hotspotHintOn.value && !vm.hotspotOnState && phase == "disconnected",
+                            topGap = 12.dp,
+                            onClick = { openHotspotSettings() }
                         )
                         // 连接中=探测/扫描进度；连接成功=正在读取列表；断开=失败原因/取消提示/失联信息
                         ConnInfoCard(
@@ -643,12 +650,18 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onWifiCancel = { vm.cancelWifiConnect() },
-                                hotspotOn = vm.isHotspotOn(),
+                                hotspotOn = vm.hotspotOnState,
                                 active = wifiFull,
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
+                    // 热点未开提示卡（同全屏双卡）：仅断开时展开
+                    HotspotHintCard(
+                        visible = vm.hotspotHintOn.value && !vm.hotspotOnState && phase == "disconnected",
+                        topGap = 8.dp,
+                        onClick = { openHotspotSettings() }
+                    )
                     // 连接中=探测/扫描进度（带转圈）；断开=失败原因/取消提示/失联信息
                     ConnInfoCard(
                         text = if (phase == "connecting") connText.value else vm.connFailMsg.value,

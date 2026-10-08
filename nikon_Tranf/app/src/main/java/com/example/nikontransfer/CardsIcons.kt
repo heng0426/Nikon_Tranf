@@ -156,6 +156,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.nikontransfer.ui.theme.NikonTransferTheme
@@ -374,6 +375,44 @@ private fun CardPillAction(text: String, color: Color, enabled: Boolean = true, 
                 .padding(horizontal = 12.dp, vertical = 7.dp)
         ) {
             Text(text, style = MaterialTheme.typography.labelMedium, color = color)
+        }
+    }
+
+    /** 热点未开提示卡（Wi-Fi 卡下方展开）：amber 警示风格，点按跳转系统热点设置；
+     *  topGap = 与上方卡片的间距（AnimatedVisibility 内，随展开/收起一起动画）；
+     *  展开 STANDARD / 收起 QUICK，与 ConnInfoCard 同款锁高（UiSpec.CONN_INFO_H）。 */
+    @Composable
+    internal fun MainActivity.HotspotHintCard(visible: Boolean, topGap: Dp, onClick: () -> Unit) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(tween(UiSpec.STANDARD)) + expandVertically(expandFrom = Alignment.Top),
+            exit = fadeOut(tween(UiSpec.QUICK)) + shrinkVertically(shrinkTowards = Alignment.Top)
+        ) {
+            val amber = UiSpec.amber(vm.darkModeOn)
+            Surface(
+                Modifier
+                    .padding(top = topGap)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
+                    .clickable(onClick = onClick),
+                shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
+                color = amber.copy(alpha = 0.12f)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().height(UiSpec.CONN_INFO_H).padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(amber))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "建议连接手机热点 · 点击前往开启",
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = amber
+                    )
+                    Text("前往 ›", style = MaterialTheme.typography.labelLarge, color = amber)
+                }
+            }
         }
     }
 

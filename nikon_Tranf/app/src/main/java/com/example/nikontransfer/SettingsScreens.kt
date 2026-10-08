@@ -271,6 +271,13 @@ internal fun MainActivity.SettingsScreen(
                 }
                 SettingsDivider()
                 SettingSwitch(
+                    title = "热点未开提示",
+                    subtitle = "未连接且手机热点未开启时，在连接页显示跳转热点设置的提示",
+                    checked = vm.hotspotHintOn.value,
+                    onChange = { vm.setHotspotHint(it) }
+                )
+                SettingsDivider()
+                SettingSwitch(
                     title = "启动时自动连接相机",
                     subtitle = "启动后自动扫描并连接相机，未检测到网络时跳过",
                     checked = autoConnect,
