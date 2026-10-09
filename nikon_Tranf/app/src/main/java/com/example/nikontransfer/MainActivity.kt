@@ -257,6 +257,8 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED
         ) notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        // 帧率采样常驻启动（幂等）：相机连着时没有 adb 通道，只能自己采样
+        PerfTrace.attach()
         setContent {
             NikonTransferTheme(dark = vm.darkModeOn) {
                 Surface(Modifier.fillMaxSize()) {
@@ -348,7 +350,10 @@ class MainActivity : ComponentActivity() {
         val mergeOn = vm.mergePairs.value
         val pairs = vm.visiblePairs
         val pairSelCount = vm.pairSelection.value.size
-        val selCount = if (mergeOn) pairSelCount else photoRows.count { it.selected.value }
+        // 文件模式选中数改读 VM 计数器：旧写法 `photoRows.count { it.selected.value }`
+        // 订阅了每一行的 selected —— 勾一格会让整个 MainScreen（含两个网格）重组，
+        // 再叠加多选栏展开动画每帧改高度 → 网格每帧 re-measure → 勾选/滑动卡顿。
+        val selCount = if (mergeOn) pairSelCount else vm.selectedCount.value
 
         // 返回键优先级（Compose 中先注册者优先级最低）：多选退出 → 预览关闭 → 下载页/设置页回主页。
         // 多选时点进预览，按返回先关预览回多选（多选 handler 必须最先注册，否则会抢走预览的返回键）
@@ -868,7 +873,7 @@ class MainActivity : ComponentActivity() {
                                         highlightPairKey = null
                                         previewIndex = visible.indexOf(row)
                                     },
-                                    onLongPress = { row.selected.value = !row.selected.value }
+                                    onLongPress = { vm.toggleRowSelected(row) }
                                 )
                             }
                         }
@@ -927,7 +932,7 @@ class MainActivity : ComponentActivity() {
                                 Modifier.clickable {
                                     if (allSel) vm.clearSelection()
                                     else if (mergeOn) vm.pairSelection.value = pairs.map { it.key }.toSet()
-                                    else visible.forEach { it.selected.value = true }
+                                    else vm.setSelectedAll(visible, true)
                                 },
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -976,7 +981,7 @@ class MainActivity : ComponentActivity() {
                                         } else {
                                             val rows = visible.filter { it.stamp.startsWith(dk) }
                                             val allOn = rows.all { it.selected.value }
-                                            rows.forEach { it.selected.value = !allOn }
+                                            vm.setSelectedAll(rows, !allOn)
                                         }
                                     }.padding(start = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically

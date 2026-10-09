@@ -15,6 +15,33 @@ class QueueItem(val handle: Int, val name: String, val type: String, val stamp: 
     @Volatile var cancelRequested = false
     /** 实际下载耗时（ms）：DONE 时有效，0 = 未完成/被取消 */
     var elapsedMs: Long = 0
+
+    /* ---------- 进度写入节流 ----------
+     * USB 整包模式是"每 64KB bulk 回调一次"（50MB NEF ≈ 800 次），分段/Wi-Fi 是
+     * 每 1MB 一次。got 是可观察状态，每次写入都会推进快照并唤醒观察者 —— 下载页顶层
+     * 的多个 count/any/firstOrNull 会被全部重算，整页重组 = 下载页卡顿的主因。
+     * 节流放在写入侧（而不是 UI 读取侧）：读取侧节流省不掉快照写入本身的开销。
+     * 完成时强制 flush，否则进度条会停在 97% 然后直接跳"完成"。 */
+    @Volatile private var lastProgressMs = 0L
+
+    fun publishProgress(nowGot: Long, total: Long) {
+        val now = System.currentTimeMillis()
+        if (nowGot >= total || now - lastProgressMs >= UiSpec.PROGRESS_THROTTLE_MS) {
+            got.value = nowGot
+            lastProgressMs = now
+        }
+    }
+
+    /** 终态前强制写入一次真实进度（完成/失败/取消） */
+    fun flushProgress(nowGot: Long) {
+        got.value = nowGot
+        lastProgressMs = System.currentTimeMillis()
+    }
+
+    fun resetProgress() {
+        got.value = 0
+        lastProgressMs = 0L
+    }
 }
 
 /** 下载队列：状态与串行调度的单一真相源（单张/批量全量入队，串行 worker 消费）。
@@ -51,6 +78,16 @@ class DownloadManager(
     fun enqueueAll(items: List<QueueItem>) {
         synchronized(lock) { items.forEach { queue.add(it) } }
         ensureWorker()
+    }
+
+    /** 演示数据入队：只入队、不起 worker（假下载由 PerfTrace 诊断线程自己驱动进度） */
+    fun enqueueDemo(items: List<QueueItem>) {
+        synchronized(lock) { queue.addAll(items) }
+    }
+
+    /** 清空调度队列（演示模式退出 / 重置用；不触碰 cancelRequested） */
+    fun clearAll() {
+        synchronized(lock) { queue.clear() }
     }
 
     /** 失败/取消后的重试：复用条目，状态复位重新排队 */

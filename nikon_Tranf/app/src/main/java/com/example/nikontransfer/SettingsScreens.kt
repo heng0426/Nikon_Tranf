@@ -179,12 +179,26 @@ internal fun MainActivity.SettingsScreen(
         onKeepScreenOnChanged: (Boolean) -> Unit,
         onPickDir: () -> Unit
     ) {
-        var keepOn by remember { mutableStateOf(prefs.getBoolean("set_keep_on", false)) }
-        var autoConnect by remember { mutableStateOf(prefs.getBoolean("set_auto_connect", false)) }
-        var autoPreview by remember { mutableStateOf(prefs.getBoolean("set_auto_preview", true)) }
+        // 三个开关初值一次读完 SharedPreferences（原为三个独立 remember 各读一次）
+        val initial = remember {
+            Triple(
+                prefs.getBoolean("set_keep_on", false),
+                prefs.getBoolean("set_auto_connect", false),
+                prefs.getBoolean("set_auto_preview", true)
+            )
+        }
+        var keepOn by remember { mutableStateOf(initial.first) }
+        var autoConnect by remember { mutableStateOf(initial.second) }
+        var autoPreview by remember { mutableStateOf(initial.third) }
         var showCacheLimitDialog by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
-        LaunchedEffect(Unit) { vm.refreshThumbCacheSize() }
+        // 缓存大小统计 = listFiles() + 逐个 length() 的目录遍历 —— 必须在 IO 线程。
+        // 原实现在 LaunchedEffect 里直接调（主线程），撞在 320ms 滑入动画的首帧上
+        // → 打开设置页偶现卡顿。改为后台算完再回来写状态。
+        LaunchedEffect(Unit) {
+            val bytes = withContext(Dispatchers.IO) { vm.computeThumbCacheBytes() }
+            vm.thumbCacheBytes = bytes
+        }
 
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -467,6 +481,80 @@ internal fun MainActivity.SettingsScreen(
                     )
                 }
             }
+            SettingsSection(title = "性能/诊断", icon = { SectionIcon("性能") }) {
+                // 2Hz 轮询 PerfTrace（它刻意不持有任何 Compose 状态 —— 否则"采样"
+                // 本身会引发每帧重组，把要测的东西测没了）
+                var tick by remember { mutableStateOf(0) }
+                LaunchedEffect(Unit) { while (true) { delay(500); tick++ } }
+                val s = remember(tick) { PerfTrace.snapshot() }
+
+                Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Text(
+                        "帧率 ${"%.1f".format(s.fps)} fps · 掉帧 ${"%.1f".format(s.jankPct)}%",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        "P50 ${"%.1f".format(s.p50Ms)}ms · P95 ${"%.1f".format(s.p95Ms)}ms · " +
+                            "最长 ${"%.1f".format(s.maxMs)}ms · 样本 ${s.windowFrames}/累计 ${s.totalFrames}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ActionPill("重置采样") { PerfTrace.reset(); tick++ }
+                    }
+                }
+                SettingsDivider()
+                // 派生路径重算次数：优化前后对比的核心指标
+                val recompute = remember(tick) {
+                    listOf("filterPhotos#重算", "filterPairs#重算", "sections#重算", "pairSections#重算")
+                        .map { it.removeSuffix("#重算") to PerfTrace.countOf("$it") }
+                }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Text(
+                        "派生路径重算次数",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        recompute.joinToString(" · ") { (k, v) -> "$k $v" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "滑动/勾选时这些数字几乎不动才算正常；每帧都涨 = 派生缓存失效（旧实现就是这样）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                SettingsDivider()
+                var verbose by remember { mutableStateOf(PerfTrace.verbose) }
+                SettingSwitch(
+                    title = "逐次明细日志",
+                    subtitle = "打开后每次枚举/每张缩略图都打 Log（tag: Perf）。定位单步问题时开，平时关着 —— 它本身会拖慢主线程",
+                    checked = verbose,
+                    onChange = { verbose = it; PerfTrace.verbose = it }
+                )
+                SettingsDivider()
+                SettingSwitch(
+                    title = "演示数据模式",
+                    subtitle = "不连相机也能测 UI 流畅度：886 张假照片 + 零解码成本缩略图。相机连着时没有 adb 通道（USB 口被占 / Wi-Fi 与热点互斥），只能这样测",
+                    checked = vm.demoMode.value,
+                    onChange = { vm.setDemoMode(it) }
+                )
+                AnimatedVisibility(
+                    visible = vm.demoMode.value,
+                    enter = fadeIn(tween(UiSpec.STANDARD)) + expandVertically(expandFrom = Alignment.Top),
+                    exit = fadeOut(tween(UiSpec.QUICK)) + shrinkVertically(shrinkTowards = Alignment.Top)
+                ) {
+                    Column {
+                        SettingsDivider()
+                        DemoDownloadPanel()
+                    }
+                }
+            }
             SettingsSection(title = "关于", icon = { SectionIcon("关于") }) {
                 Text(
                     "尼康 Z 系列 Wi-Fi 传图\n" +
@@ -587,6 +675,26 @@ internal fun MainActivity.SectionIcon(kind: String) {
                     }
                     drawPath(folder, color)
                 }
+                "性能" -> {
+                    // 三根柱状条（自绘）：帧时间分布
+                    val style = Stroke(width = w * 0.14f, cap = StrokeCap.Round)
+                    listOf(0.38f to 0.55f, 0.62f to 0.85f, 0.86f to 0.35f).forEach { (x, top) ->
+                        drawLine(
+                            color,
+                            Offset(w * x, h * 0.92f),
+                            Offset(w * x, h * (0.92f - top)),
+                            strokeWidth = style.width,
+                            cap = StrokeCap.Round
+                        )
+                    }
+                    drawLine(
+                        color,
+                        Offset(w * 0.1f, h * 0.92f),
+                        Offset(w * 0.95f, h * 0.92f),
+                        strokeWidth = w * 0.08f,
+                        cap = StrokeCap.Round
+                    )
+                }
                 "关于" -> {
                     drawCircle(
                         color,
@@ -689,6 +797,33 @@ internal fun MainActivity.AutoConnChannelPicker() {
                 ChannelChip("Wi-Fi", selected = channel == "wifi") {
                     vm.setAutoConnChannel("wifi")
                 }
+            }
+        }
+    }
+
+    /** 演示模式的假下载面板：复刻两种真实回调粒度，用来压下载列表 */
+    @Composable
+internal fun MainActivity.DemoDownloadPanel() {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Text(
+                "假下载任务",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                "回调粒度：64KB 复刻 USB 整包模式的高频回调（50MB ≈ 800 次），1MB 复刻分段模式",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ChannelChip("64KB", selected = vm.demoStepKb.value == 64) { vm.demoStepKb.value = 64 }
+                ChannelChip("1MB", selected = vm.demoStepKb.value == 1024) { vm.demoStepKb.value = 1024 }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ActionPill("开始 20 个") { vm.startDemoDownloads(20) }
+                if (vm.demoDownloadRunning.value) ActionPill("停止") { vm.stopDemoDownloads() }
             }
         }
     }

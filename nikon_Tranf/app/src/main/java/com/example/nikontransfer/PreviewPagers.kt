@@ -621,7 +621,7 @@ internal fun MainActivity.PreviewPager(
                                 if (selNow) UiSpec.accent(vm.darkModeOn) else Color.White,
                                 RoundedCornerShape(UiSpec.ROUND_SMALL)
                             )
-                            .clickable { curRow?.let { it.selected.value = !it.selected.value } },
+                            .clickable { curRow?.let { vm.toggleRowSelected(it) } },
                         contentAlignment = Alignment.Center
                     ) {
                         if (selNow) {

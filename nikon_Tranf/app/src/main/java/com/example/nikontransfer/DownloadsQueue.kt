@@ -176,6 +176,10 @@ import kotlinx.coroutines.withContext
     /** 下载管理页：队列条目（状态/进度/重试/取消）+ 清空已完成 */
     @Composable
 internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
+        // 队列统计：VM 侧一次遍历得出（只订阅 status，低频：每张一次）。
+        // 原来是页面顶层 2×any + 4×count + firstOrNull 共 7 次全队列遍历，
+        // 且其中 firstOrNull 还读了 got —— 一个字节变化就会让整页重算。
+        val st = vm.queueStats
         Column(
             Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -185,76 +189,39 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                     Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
                 }
                 Text("下载队列", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                val hasActive = vm.downloadQueue.any {
-                    it.status.value in setOf(QStatus.QUEUED, QStatus.RUNNING)
-                }
-                if (hasActive) {
+                if (st.hasActive) {
                     TextButton(onClick = { vm.cancelAllDownloads() }) { Text("全部取消") }
                 }
-                val hasFinished = vm.downloadQueue.any {
-                    it.status.value in setOf(QStatus.DONE, QStatus.CANCELED)
-                }
-                if (hasFinished) {
+                if (st.hasFinished) {
                     TextButton(onClick = { vm.clearFinished() }) { Text("清空已完成") }
                 }
             }
             // 汇总胶囊 + 总进度条：进度 = (已完成数 + 当前任务字节比例) / 未完成任务总数。
             // 不按字节累加——排队任务在开始下载前 total=0，按字节累加会让分母失真。
             if (vm.downloadQueue.isNotEmpty()) {
-                val running = vm.downloadQueue.count { it.status.value == QStatus.RUNNING }
-                val queued = vm.downloadQueue.count { it.status.value == QStatus.QUEUED }
-                val done = vm.downloadQueue.count { it.status.value == QStatus.DONE }
-                val failed = vm.downloadQueue.count { it.status.value == QStatus.FAILED }
-                val denom = done + running + queued
                 // 统计胶囊：只保留「排队中」「已完成」两项（高度固定，不随任务状态变化）
                 val green = UiSpec.accent(vm.darkModeOn)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (queued > 0) {
+                    if (st.queued > 0) {
                         Surface(shape = RoundedCornerShape(UiSpec.ROUND_SMALL), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)) {
                             RollingText(
-                                "排队中 $queued",
+                                "排队中 ${st.queued}",
                                 Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
-                    if (done > 0) {
+                    if (st.done > 0) {
                         Surface(shape = RoundedCornerShape(UiSpec.ROUND_SMALL), color = green.copy(alpha = 0.14f)) {
                             RollingText(
-                                "已完成 $done",
+                                "已完成 ${st.done}",
                                 Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                 color = green
                             )
                         }
                     }
                 }
-                if (denom > 0) {
-                    val runningItem = vm.downloadQueue.firstOrNull {
-                        it.status.value == QStatus.RUNNING && it.total.value > 0
-                    }
-                    val runningFrac = runningItem?.let { it.got.value.toFloat() / it.total.value } ?: 0f
-                    val overall = ((done + runningFrac) / denom).coerceIn(0f, 1f)
-                    // 与队列行同款线性插值：总进度条随分块更新平滑推进
-                    val overallAnim by animateFloatAsState(
-                        targetValue = overall,
-                        animationSpec = tween(500, easing = LinearEasing),
-                        label = "queueOverall"
-                    )
-                    val green = UiSpec.accent(vm.darkModeOn)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        LinearProgressIndicator(
-                            progress = { overallAnim },
-                            modifier = Modifier.weight(1f),
-                            color = green
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "$done/$denom",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                if (st.denom > 0) OverallProgressBar(done = st.done, denom = st.denom)
             }
             if (vm.downloadQueue.isEmpty()) {
                 Text(
@@ -270,6 +237,44 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                     QueueRow(item)
                 }
             }
+        }
+    }
+
+    /** 总进度条：独立 composable，自己订阅当前任务的 got。
+     *  抽出来的原因：got 是高频状态（节流后 250ms 一次，节流前整包模式 64KB 一次）。
+     *  留在页面顶层读它，会让标题栏、统计胶囊、整个 LazyColumn 跟着一起重组。
+     *  抽成独立作用域后，进度更新只重组这一行。 */
+    @Composable
+internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
+        val frac by remember {
+            derivedStateOf {
+                val it = vm.downloadQueue.firstOrNull {
+                    it.status.value == QStatus.RUNNING && it.total.value > 0
+                }
+                if (it == null) 0f else (it.got.value.toFloat() / it.total.value).coerceIn(0f, 1f)
+            }
+        }
+        val overall = ((done + frac) / denom).coerceIn(0f, 1f)
+        // 与队列行同款线性插值：总进度条随分块更新平滑推进。
+        // got 节流到 250ms 后，500ms 补间能完整跑完（此前每 64KB 就被打断重启 → 拖影）。
+        val overallAnim by animateFloatAsState(
+            targetValue = overall,
+            animationSpec = tween(500, easing = LinearEasing),
+            label = "queueOverall"
+        )
+        val green = UiSpec.accent(vm.darkModeOn)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            LinearProgressIndicator(
+                progress = { overallAnim },
+                modifier = Modifier.weight(1f),
+                color = green
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "$done/$denom",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 

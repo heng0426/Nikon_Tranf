@@ -15,12 +15,15 @@ import android.net.LinkAddress
 import android.net.NetworkCapabilities
 import android.provider.MediaStore
 import android.util.Log
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import java.util.concurrent.ConcurrentLinkedDeque
 import kotlin.math.roundToInt
 
 /** 照片行：预览位图异步填充（原生会话单通道，必须串行取块）
@@ -229,6 +232,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /* ---------- 多选模式 ---------- */
     val selectMode = mutableStateOf(false)
 
+    /* 文件模式选中计数：与 pairSelection 对等的独立计数器。
+     * 旧实现 UI 侧写 `photoRows.count { it.selected.value }` —— 这个表达式订阅了
+     * 每一行的 selected，于是"勾一格"会让整个 MainScreen（含两个网格）重组，
+     * 再叠加多选栏展开动画每帧改变高度 → 网格每帧 re-measure → 滑动/勾选卡顿。
+     * 改由 VM 维护后读取是 O(1)，且订阅点只有一个。 */
+    val selectedCount = mutableStateOf(0)
+
+    /** 唯一的选中态写入口：同步维护计数器。UI 不要再直接写 row.selected。 */
+    fun setRowSelected(row: PhotoRow, on: Boolean) {
+        if (row.selected.value == on) return
+        row.selected.value = on
+        selectedCount.value = (selectedCount.value + if (on) 1 else -1).coerceAtLeast(0)
+    }
+
+    fun toggleRowSelected(row: PhotoRow) = setRowSelected(row, !row.selected.value)
+
+    /** 批量选中/取消（全选、选当天）：逐行走节流入口，计数器自动对齐 */
+    fun setSelectedAll(rows: List<PhotoRow>, on: Boolean) {
+        for (r in rows) setRowSelected(r, on)
+    }
+
     /* ---------- 照片筛选（会话内有效，不跨启动记忆）---------- */
     val filterFormat = mutableStateOf("全部")          // 全部 / JPG / NEF（单选）
     val filterUntransferred = mutableStateOf(false)   // 状态 chip：只看未传
@@ -281,16 +305,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 网格滚近已加载末尾时调用：追加一块（已全部加载则忽略） */
     fun loadMoreChunks() {
         if (!chunkedLoad.value) return
-        val full = if (mergePairs.value) filteredPairs().size else filteredPhotos().size
+        val full = if (mergePairs.value) filteredPairs.value.size else filteredPhotos.value.size
         if (displayLimit.value >= full) return
         displayLimit.value += chunkSize.value
     }
 
     /** 筛选后的完整可见照片数（分块前），供置顶胶囊显示"已加载 X/Y" */
-    fun fullVisibleCount(): Int = if (mergePairs.value) filteredPairs().size else filteredPhotos().size
+    fun fullVisibleCount(): Int =
+        if (mergePairs.value) filteredPairs.value.size else filteredPhotos.value.size
+
+    /* ---------- 派生结果缓存（批2 核心）----------
+     * 原来是四个"每次读都重算"的 getter，且每次返回新的 List 实例 ——
+     * 后果不是"多算几次"，而是让下游 MainActivity 里三个 derivedStateOf 完全失效：
+     *   derivedStateOf 靠"读到的值是否变化"决定是否输出新值，
+     *   源每次都返回新 List → 永远判定变化 → 滑动/勾选时每帧全量 filter + regroup。
+     * 改成 derivedStateOf 后：只有真正读到的状态（筛选条件 / 分块上限 / 折叠 /
+     * downloaded）变化才重算，且返回同一个 List 实例，下游缓存随即生效。
+     * 注意 downloaded 只在"按下载状态筛选"开启时才被读到 —— 默认关闭时，
+     * 勾一格多选、或某张下载完成，都不会触发这里重算。 */
+    val filteredPhotos: State<List<PhotoRow>> = derivedStateOf { computeFilteredPhotos() }
 
     /** 筛选后的可见照片（分块前全量）—— 网格 / 全屏预览翻页 / 多选全选的统一数据源 */
-    private fun filteredPhotos(): List<PhotoRow> {
+    private fun computeFilteredPhotos(): List<PhotoRow> {
+        PerfTrace.tick("filterPhotos#重算")
         val fmt = filterFormat.value
         val onlyUn = filterUntransferred.value
         val onlyDl = filterDownloaded.value
@@ -309,24 +346,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 分块加载后的可见照片 */
-    val visiblePhotos: List<PhotoRow>
-        get() = applyChunk(filteredPhotos())
+    val visiblePhotos: List<PhotoRow> by derivedStateOf { applyChunk(filteredPhotos.value) }
 
     /** 按日期分组的可见照片：日期从新到旧，组内保持原排序 */
     data class DateSection(val dateKey: String, val rows: List<PhotoRow>)
 
-    val visibleSections: List<DateSection>
-        get() {
-            val order = ArrayList<String>()
-            val map = LinkedHashMap<String, MutableList<PhotoRow>>()
-            for (r in visiblePhotos) {
-                val d = if (r.stamp.length >= 8) r.stamp.substring(0, 8) else "00000000"
-                val list = map.getOrPut(d) { mutableListOf() }
-                if (list.isEmpty()) order.add(d)
-                list.add(r)
-            }
-            return order.map { DateSection(it, map[it]!!) }
+    val visibleSections: List<DateSection> by derivedStateOf {
+        PerfTrace.tick("sections#重算")
+        val order = ArrayList<String>()
+        val map = LinkedHashMap<String, MutableList<PhotoRow>>()
+        for (r in visiblePhotos) {
+            val d = if (r.stamp.length >= 8) r.stamp.substring(0, 8) else "00000000"
+            val list = map.getOrPut(d) { mutableListOf() }
+            if (list.isEmpty()) order.add(d)
+            list.add(r)
         }
+        order.map { DateSection(it, map[it]!!) }
+    }
 
     /** 节头文案："10月1日 周四 · 6 张" */
     fun dateLabel(dateKey: String, count: Int): String {
@@ -355,6 +391,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearSelection() {
         photoRows.forEach { it.selected.value = false }
+        selectedCount.value = 0
         pairSelection.value = emptySet()
     }
 
@@ -388,9 +425,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  结果缓存：配对只依赖 photoRows 内容（仅在 listFiles 重建后失效）。此前每次
      *  读取都重新分组+排序（O(n log n) 大量分配），滑动中任何读到它的重组都会踩到。 */
     @Volatile private var pairRowsCache: List<PairRow>? = null
+    /** 配对缓存版本号：仅在重建时自增。
+     *  旧实现只写 @Volatile 字段 —— derivedStateOf 读不到它，所以重连/重新枚举后
+     *  配对结果变了，下游 derivedStateOf 也不会失效（网格继续显示旧配对）。
+     *  下游只要读一次 pairRowsAll（内部读 version）就建立了正确依赖。 */
+    private val pairRowsVersion = mutableStateOf(0)
 
     val pairRowsAll: List<PairRow>
-        get() = pairRowsCache ?: buildPairRows().also { pairRowsCache = it }
+        get() {
+            pairRowsVersion.value          // 建立依赖
+            return pairRowsCache ?: buildPairRows().also { pairRowsCache = it }
+        }
+
+    /** 重建配对缓存：枚举线程上调用（首次读取不落在主线程） */
+    fun refreshPairRows() {
+        pairRowsCache = buildPairRows()
+        pairRowsVersion.value++
+    }
 
     private fun buildPairRows(): List<PairRow> {
         val byKey = LinkedHashMap<String, MutableList<PhotoRow>>()
@@ -412,8 +463,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return rows.sortedByDescending { it.stamp }
     }
 
-    /** 合并模式的可见对（分块前全量）：格式筛选隐藏（①b）；下载状态=补全语义（②a）；日期照旧 */
-    private fun filteredPairs(): List<PairRow> {
+    /** 合并模式的可见对（分块前全量）：格式筛选隐藏（①b）；下载状态=补全语义（②a）；日期照旧
+     *  同 filteredPhotos：派生缓存，避免每次读都全表 filter + 每次返回新实例。 */
+    val filteredPairs: State<List<PairRow>> = derivedStateOf { computeFilteredPairs() }
+
+    private fun computeFilteredPairs(): List<PairRow> {
+        PerfTrace.tick("filterPairs#重算")
         val onlyUn = filterUntransferred.value
         val onlyDl = filterDownloaded.value
         val st = filterStart.value
@@ -429,23 +484,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 分块加载后的可见对 */
-    val visiblePairs: List<PairRow>
-        get() = applyChunk(filteredPairs())
+    val visiblePairs: List<PairRow> by derivedStateOf { applyChunk(filteredPairs.value) }
 
     data class PairSection(val dateKey: String, val rows: List<PairRow>)
 
-    val pairSections: List<PairSection>
-        get() {
-            val order = ArrayList<String>()
-            val map = LinkedHashMap<String, MutableList<PairRow>>()
-            for (p in visiblePairs) {
-                val d = p.stamp.take(8)
-                val list = map.getOrPut(d) { mutableListOf() }
-                if (list.isEmpty()) order.add(d)
-                list.add(p)
-            }
-            return order.map { PairSection(it, map[it]!!) }
+    val pairSections: List<PairSection> by derivedStateOf {
+        PerfTrace.tick("pairSections#重算")
+        val order = ArrayList<String>()
+        val map = LinkedHashMap<String, MutableList<PairRow>>()
+        for (p in visiblePairs) {
+            val d = p.stamp.take(8)
+            val list = map.getOrPut(d) { mutableListOf() }
+            if (list.isEmpty()) order.add(d)
+            list.add(p)
         }
+        order.map { PairSection(it, map[it]!!) }
+    }
 
     /* ---------- 已下载标记（跨会话持久化，键 = 合成文件名）---------- */
     private val downloadedNames = mutableStateOf<Set<String>>(emptySet())
@@ -1073,7 +1127,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ?: GPhoto2Bridge.nativePreviewNative(handle, off.toInt(), len)
     }
 
-    fun listFiles(): String = synchronized(camMutex) {
+    /** 枚举耗时计入 PerfTrace（"枚举"），明细日志由 verbose 开关控制 */
+    fun listFiles(): String = PerfTrace.measure("枚举") { listFilesInner() }
+
+    private fun listFilesInner(): String = synchronized(camMutex) {
+        if (demoMode.value) return "演示模式：共 ${photoRows.size} 个文件"
         if (!connected) return "未连接相机，请先连接后再读取照片"
         // USB 全量枚举（逐对象 GetObjectInfo）需数秒：立即给出加载提示，替代旧日志（如"就绪"）
         uiLog = "正在读取照片列表…"
@@ -1108,7 +1166,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         parsed.forEach { it.downloaded.value = it.name in downloadedNames.value }
         photoRows.clear()
         photoRows.addAll(parsed)
-        pairRowsCache = buildPairRows()   // 枚举线程上预构建配对缓存（滑动主线程零重算）
+        refreshPairRows()                 // 枚举线程上预构建配对缓存（滑动主线程零重算）
         displayLimit.value = if (chunkedLoad.value) chunkSize.value else Int.MAX_VALUE   // 重新枚举 → 分块进度重置
         val autoPreview = prefs.getBoolean("set_auto_preview", true)
         if (autoPreview) {
@@ -1116,6 +1174,152 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return "共 ${photoRows.size} 个文件"
         }
         return "共 ${photoRows.size} 个文件"
+    }
+
+    /* =====================================================================
+     *  演示数据模式（性能诊断）
+     *  ---------------------------------------------------------------------
+     *  相机连着时没有任何 adb 通道：USB 口被相机占着，Wi-Fi 又与相机热点互斥，
+     *  连不了家里网络 —— 所以 UI 流畅度只能在离线状态下测。
+     *  缩略图刻意用代码生成的渐变位图（解码成本≈0、886 行复用 8 个实例）：
+     *  若 mock 下仍然掉帧，就能 100% 锁定是重组问题而不是 IO/解码问题。
+     * ===================================================================== */
+    val demoMode = mutableStateOf(false)
+    /** 假下载回调粒度（KB）：64 = 复刻 USB 整包模式的高频回调（50MB≈800 次）；1024 = 分段模式 */
+    val demoStepKb = mutableStateOf(64)
+    val demoDownloadRunning = mutableStateOf(false)
+    @Volatile private var demoStop = false
+
+    private val demoBitmaps = ArrayList<Bitmap>()
+
+    /** 8 张共享渐变位图：行数再多内存开销也不变，且零解码 */
+    private fun demoBitmap(i: Int): Bitmap {
+        if (demoBitmaps.isEmpty()) {
+            repeat(8) { k ->
+                val b = Bitmap.createBitmap(160, 160, Bitmap.Config.RGB_565)
+                val cv = android.graphics.Canvas(b)
+                val g = android.graphics.LinearGradient(
+                    0f, 0f, 160f, 160f,
+                    android.graphics.Color.HSVToColor(floatArrayOf(k * 45f, 0.35f, 0.92f)),
+                    android.graphics.Color.HSVToColor(floatArrayOf(k * 45f + 30f, 0.5f, 0.55f)),
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+                cv.drawRect(0f, 0f, 160f, 160f, android.graphics.Paint().apply { shader = g })
+                demoBitmaps.add(b)
+            }
+        }
+        return demoBitmaps[i % demoBitmaps.size]
+    }
+
+    fun setDemoMode(on: Boolean) {
+        demoMode.value = on
+        if (on) loadDemoRows(886) else clearDemo()
+    }
+
+    private fun loadDemoRows(n: Int) {
+        stopDemoDownloads()
+        val rows = ArrayList<PhotoRow>(n)
+        for (i in 0 until n) {
+            val ld = java.time.LocalDate.now().minusDays((i % 30).toLong())
+            val hh = 8 + (i / 30) % 12
+            val stamp = "%04d%02d%02d-%02d%02d%02d".format(
+                ld.year, ld.monthValue, ld.dayOfMonth, hh, (i * 7) % 60, (i * 13) % 60
+            )
+            val type = if (i % 3 == 0) "NEF" else "JPG"
+            val r = PhotoRow(
+                "IMG_${stamp}_$i.${type.lowercase()}", 0x900000 + i, type, stamp, "DSC_${1000 + i}"
+            )
+            r.preview.value = demoBitmap(i)
+            rows.add(r)
+        }
+        rows.sortByDescending { it.stamp }
+        photoRows.clear()
+        photoRows.addAll(rows)
+        refreshPairRows()
+        displayLimit.value = if (chunkedLoad.value) chunkSize.value else Int.MAX_VALUE
+        connected = true
+        connPhase.value = "connected"
+        connChannel.value = "usb"
+        lastConnChannel.value = "usb"
+        connDetail.value = "Nikon Z 6_2 (演示)|DEMO"
+        connectedIp.value = "演示模式"
+        connText.value = "演示模式 · ${photoRows.size} 张"
+        uiLog = "演示模式：${photoRows.size} 张假数据"
+    }
+
+    private fun clearDemo() {
+        stopDemoDownloads()
+        photoRows.clear()
+        refreshPairRows()
+        connected = false
+        connPhase.value = "disconnected"
+        connChannel.value = ""
+        lastConnChannel.value = ""
+        connDetail.value = ""
+        connectedIp.value = ""
+        connText.value = "未连接 · 点按连接相机"
+    }
+
+    /** 假下载：走与真实下载同一条进度节流路径，用来复现/验证下载页的更新压力 */
+    fun startDemoDownloads(count: Int) {
+        stopDemoDownloads()
+        val step = demoStepKb.value * 1024L
+        val items = ArrayList<QueueItem>()
+        repeat(count) { i ->
+            val it = QueueItem(0xD00000 + i, "DEMO_${1000 + i}.JPG", "JPG", "20261001-120000")
+            it.total.value = 24L * 1024 * 1024
+            items.add(it)
+        }
+        downloads.enqueueDemo(items)
+        demoStop = false
+        demoDownloadRunning.value = true
+        Thread {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            for (it in items) {
+                if (demoStop) { it.status.value = QStatus.CANCELED; continue }
+                it.status.value = QStatus.RUNNING
+                var got = 0L
+                val total = it.total.value
+                while (got < total) {
+                    if (demoStop) break
+                    got = minOf(got + step, total)
+                    it.publishProgress(got, total)
+                    if (step <= 64 * 1024) Thread.sleep(1)   // 别让假任务瞬间跑完，采样不到
+                }
+                if (demoStop) { it.status.value = QStatus.CANCELED; break }
+                it.elapsedMs = 1
+                it.flushProgress(total)
+                it.status.value = QStatus.DONE
+                Thread.sleep(40)
+            }
+            demoDownloadRunning.value = false
+        }.apply { isDaemon = true; name = "demo-download"; start() }
+    }
+
+    fun stopDemoDownloads() {
+        demoStop = true
+        demoDownloadRunning.value = false
+        downloads.clearAll()
+    }
+
+    /** 演示模式下点单张下载：假驱动，不碰相机 */
+    private fun runDemoItem(item: QueueItem) {
+        if (item.total.value <= 0) item.total.value = 24L * 1024 * 1024
+        val total = item.total.value
+        val step = demoStepKb.value * 1024L
+        var got = 0L
+        while (got < total) {
+            if (demoStop || item.cancelRequested) {
+                item.status.value = QStatus.CANCELED
+                return
+            }
+            got = minOf(got + step, total)
+            item.publishProgress(got, total)
+            if (step <= 64 * 1024) Thread.sleep(1)
+        }
+        item.elapsedMs = 1
+        item.flushProgress(total)
+        item.status.value = QStatus.DONE
     }
 
     /** 保存到系统相册：自定义 SAF 目录优先；否则 MediaStore。
@@ -1267,6 +1471,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val downloadQueue get() = downloads.queue
     val activeDownloadCount get() = downloads.activeCount
 
+    /* 队列统计：一次遍历算出全部计数，取代下载页顶层的
+     * 2×any + 4×count + firstOrNull（7 次全队列遍历，且每次都订阅所有条目的 status）。
+     * 只订阅 status（低频：每张一次），**不读 got** —— got 是高频状态（节流后 250ms
+     * 一次），读它会把统计拖进每次进度更新，进而让整个下载页重组。
+     * 进度相关的读取单独放在 OverallProgressBar 里自订阅。 */
+    data class QueueStats(
+        val running: Int, val queued: Int, val done: Int,
+        val failed: Int, val canceled: Int
+    ) {
+        val hasActive get() = running + queued > 0
+        val hasFinished get() = done + canceled > 0
+        val denom get() = done + running + queued
+    }
+
+    val queueStats: QueueStats by derivedStateOf {
+        var r = 0; var q = 0; var d = 0; var f = 0; var c = 0
+        for (it in downloadQueue) when (it.status.value) {
+            QStatus.RUNNING -> r++
+            QStatus.QUEUED -> q++
+            QStatus.DONE -> d++
+            QStatus.FAILED -> f++
+            QStatus.CANCELED -> c++
+        }
+        QueueStats(r, q, d, f, c)
+    }
+
     /** 入队（单张：全屏预览页与网格触发统一走队列；单张不触发完成提醒） */
     fun enqueueDownload(row: PhotoRow) = downloads.enqueue(row)
 
@@ -1310,7 +1540,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!connected) { item.status.value = QStatus.FAILED; return }
         item.status.value = QStatus.RUNNING
         item.cancelRequested = false
-        item.got.value = 0
+        item.resetProgress()
+        if (demoMode.value) { runDemoItem(item); return }
         val startMs = System.currentTimeMillis()   // 下载耗时统计（DONE 时写入 elapsedMs）
         // USB 通道：开关开 → 单事务整包（0x1009，进度按 bulk 轮回调）失败回退分段；
         // 默认 → 偏移读分块（0x101B，1MB 粒度带进度）；分段首块失败回退整对象一次取回
@@ -1337,11 +1568,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (!connected) { item.status.value = QStatus.FAILED; return }
                 val whole = usb.getObject(item.handle) { n ->
                     val g = minOf(n, total)
-                    item.got.value = g
+                    // 节流：整包模式每 64KB 回调一次（50MB ≈ 800 次），直写会让下载页整页重组
+                    item.publishProgress(g, total)
                     updateSpeed(g)
                 }
                 if (whole != null) {
                     System.arraycopy(whole, 0, buf, 0, minOf(whole.size, buf.size))
+                    item.flushProgress(total)      // 终态前补一次 100%，避免停在 97% 直接跳完成
                     if (savePhoto(item.name, item.type, buf, item.stamp)) {
                         item.elapsedMs = System.currentTimeMillis() - startMs
                         item.status.value = QStatus.DONE
@@ -1352,7 +1585,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     return
                 }
-                item.got.value = 0   // 整包失败 → 回退分段路径；节流器基准同步归零
+                item.resetProgress() // 整包失败 → 回退分段路径；节流器基准同步归零
                 lastGot = 0; lastT = System.currentTimeMillis(); lastUi = 0
             }
             var got = 0L
@@ -1366,7 +1599,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val len = minOf(chunk.size.toLong(), total - got).toInt()
                 System.arraycopy(chunk, 0, buf, got.toInt(), len)
                 got += len
-                item.got.value = got
+                item.publishProgress(got, total)
                 updateSpeed(got)
             }
             if (fallbackWhole) {
@@ -1374,6 +1607,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (whole == null) { item.status.value = QStatus.FAILED; return }
                 System.arraycopy(whole, 0, buf, 0, minOf(whole.size, buf.size))
             }
+            item.flushProgress(total)
             if (savePhoto(item.name, item.type, buf, item.stamp)) {
                 item.elapsedMs = System.currentTimeMillis() - startMs
                 item.status.value = QStatus.DONE
@@ -1413,7 +1647,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val len = minOf(chunk.size.toLong(), total - got).toInt()
             System.arraycopy(chunk, 0, buf, got.toInt(), len)
             got += len
-            item.got.value = got
+            item.publishProgress(got, total)
             val now = System.currentTimeMillis()
             if (now - lastUi >= 250) {
                 val dt = (now - lastT).coerceAtLeast(1)
@@ -1427,6 +1661,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 lastNotif = now
             }
         }
+        item.flushProgress(total)
         if (savePhoto(item.name, item.type, buf, item.stamp)) {
             item.elapsedMs = System.currentTimeMillis() - startMs
             item.status.value = QStatus.DONE
@@ -1472,8 +1707,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         downloads.enqueueAll(fresh.map { QueueItem(it.handle, it.name, it.type, it.stamp) })
-        photoRows.forEach { it.selected.value = false }   // 进度由队列页接管
-        pairSelection.value = emptySet()
+        clearSelection()   // 进度由队列页接管（走统一出口，选中计数器一并归零）
     }
 
     private fun decodeScaled(buf: ByteArray, off: Int, len: Int): Bitmap? = try {
@@ -1703,8 +1937,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun thumbFile(key: String) =
         java.io.File(thumbDir, "$key.jpg")
 
+    /** 目录遍历 + 逐个 length() —— 只能在后台线程调用。
+     *  设置页首帧曾在主线程跑它（LaunchedEffect 直接调 refreshThumbCacheSize），
+     *  与 320ms 滑入动画撞在一起 → 打开设置页偶现卡顿。 */
+    fun computeThumbCacheBytes(): Long = thumbDir.listFiles()?.sumOf { it.length() } ?: 0L
+
     fun refreshThumbCacheSize() {
-        thumbCacheBytes = thumbDir.listFiles()?.sumOf { it.length() } ?: 0L
+        thumbCacheBytes = computeThumbCacheBytes()
     }
 
     /** 清空缩略图缓存（设置页手动入口） */
@@ -1772,7 +2011,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  新格子都会触发读磁盘。原实现"每格子开一个新线程"= 每秒 10~30 个线程创建
      *  + 并发 IO/解码争抢——首滑卡顿的元凶（多滑几次变流畅 = 格子进了内存缓存）。
      *  改为常驻单线程串行处理 + in-flight 去重 + 磁盘 miss 负缓存。 ---------- */
-    private val thumbIoQueue = java.util.concurrent.ConcurrentLinkedQueue<PhotoRow>()
+    /** LIFO 队列：最近进入可视区的格子优先读回（快速滑动时用户看的是当前位置，
+     *  而不是 3 秒前滑过的那批）。旧的 FIFO 无界队列会把滑过的旧请求全部排完，
+     *  新位置的缩略图要等几百次读盘才轮到 —— 表现为"越滑越空白"。 */
+    private val thumbIoQueue = ConcurrentLinkedDeque<PhotoRow>()
     private val thumbInFlight = java.util.Collections.newSetFromMap(
         java.util.Collections.synchronizedMap(java.util.IdentityHashMap<PhotoRow, Boolean>())
     )
@@ -1791,8 +2033,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             try {
                 while (true) {
-                    val row = thumbIoQueue.poll() ?: break
+                    val row = thumbIoQueue.pollLast() ?: break
                     try {
+                        // 出屏取消：排队期间格子已滚出可视区（且不是首轮加载）→ 直接丢弃。
+                        // 与 LIFO 配套：快速滑动时被滑过的请求不再占用读盘/解码。
+                        if (row.enteredOnce && !row.onScreen) continue
                         // 排队期间可能已被 loader 填充，再查一次避免重复 IO
                         if (row.preview.value == null && !thumbFast.containsKey(thumbKey(row))) {
                             val bmp = loadThumbFromCache(thumbKey(row))
@@ -1827,7 +2072,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             thumbNoCache.remove(key)               // 标记过期放行：清缓存/重连后自愈
         }
         if (!thumbInFlight.add(row)) return      // 已在队列，去重
-        thumbIoQueue.add(row)
+        thumbIoQueue.addLast(row)
         pumpThumbIo()
     }
 
@@ -1973,8 +2218,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *       （实测 0.67~0.83MB），RAW 数据一个字节不传。
      *  Z传 自身无缓存、翻页重拉 —— 这里加 LRU 缓存与 ±1 页预取，翻回秒显。 */
 
-    /** 内存 LRU：最近 6 张高清位图（解码采样至最长边 ≤2048px，单张 ~6MB） */
-    private val hiresCache = object : android.util.LruCache<Int, Bitmap>(6) {
+    /** 内存 LRU：高清位图（解码采样至最长边 ≤2048px，单张 ~4~6MB）。
+     *  按字节计（预算 = 堆上限/16，≤32MB）：旧实现没覆写 sizeOf，LruCache 退化为
+     *  按条目计数 —— 6 条 × 6MB ≈ 36MB 且不设上限，大图被频繁逐出，
+     *  翻回上一页要重新解码 50MB NEF（预览翻页卡顿的直接来源）。 */
+    private val hiresCache = object : android.util.LruCache<Int, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 16).toInt().coerceIn(12 * 1024 * 1024, 32 * 1024 * 1024)
+    ) {
+        override fun sizeOf(key: Int, value: Bitmap) = value.byteCount
         override fun entryRemoved(evicted: Boolean, key: Int?, old: Bitmap?, new: Bitmap?) {
             if (evicted) hiresTick.value++
         }
