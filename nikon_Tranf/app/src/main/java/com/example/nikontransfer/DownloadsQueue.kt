@@ -30,6 +30,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
@@ -233,10 +234,16 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                     }
                     val runningFrac = runningItem?.let { it.got.value.toFloat() / it.total.value } ?: 0f
                     val overall = ((done + runningFrac) / denom).coerceIn(0f, 1f)
+                    // 与队列行同款线性插值：总进度条随分块更新平滑推进
+                    val overallAnim by animateFloatAsState(
+                        targetValue = overall,
+                        animationSpec = tween(500, easing = LinearEasing),
+                        label = "queueOverall"
+                    )
                     val green = UiSpec.accent(vm.darkModeOn)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         LinearProgressIndicator(
-                            progress = { overall },
+                            progress = { overallAnim },
                             modifier = Modifier.weight(1f),
                             color = green
                         )
@@ -293,26 +300,33 @@ internal fun MainActivity.QueueThumb(handle: Int) {
     }
 
     @Composable
-internal fun MainActivity.QueueRow(item: QueueItem) {
+ internal fun MainActivity.QueueRow(item: QueueItem) {
         val st = item.status.value
         // 进度填充直接铺在卡片背景上：下载中按比例推进（浅绿），完成后整卡铺满（绿加深），
-        // 与未下载行一眼区分；排队/失败/取消不铺色
-        val fillFrac: Float
+        // 与未下载行一眼区分；排队/失败/取消不铺色。
+        // fillFrac 经 animateFloatAsState 线性插值（500ms）——分块更新（USB bulk 轮/Wi-Fi 1MB 块）
+        // 之间平滑推进，进度条不再一顿一顿；首次组合直接取目标值，滑回屏幕不重播动画
+        val fillFracTarget: Float
         val fillAlpha: Float
         when {
             st == QStatus.RUNNING && item.total.value > 0 -> {
-                fillFrac = (item.got.value.toFloat() / item.total.value).coerceIn(0f, 1f)
+                fillFracTarget = (item.got.value.toFloat() / item.total.value).coerceIn(0f, 1f)
                 fillAlpha = 0.20f
             }
             st == QStatus.DONE -> {
-                fillFrac = 1f
+                fillFracTarget = 1f
                 fillAlpha = 0.30f
             }
             else -> {
-                fillFrac = 0f
+                fillFracTarget = 0f
                 fillAlpha = 0f
             }
         }
+        val fillFrac by animateFloatAsState(
+            targetValue = fillFracTarget,
+            animationSpec = tween(500, easing = LinearEasing),
+            label = "queueRowFill"
+        )
         Surface(
             shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
@@ -511,9 +525,15 @@ internal fun MainActivity.DownloadStateSlot(
                 }
             }
             qItem != null && st == QStatus.RUNNING -> {
-                // 进度条直接长在按钮上：胶囊外形不变，浅绿填充随进度推进（与下载队列同款配色），点按取消
-                val frac = if (qItem.total.value > 0)
+                // 进度条直接长在按钮上：胶囊外形不变，浅绿填充随进度推进（与下载队列同款配色），点按取消。
+                // 填充 500ms 线性插值 + 实时速度（与队列行同款节流）：分块更新间平滑推进不顿挫
+                val fracTarget = if (qItem.total.value > 0)
                     (qItem.got.value.toFloat() / qItem.total.value).coerceIn(0f, 1f) else 0f
+                val frac by animateFloatAsState(
+                    targetValue = fracTarget,
+                    animationSpec = tween(500, easing = LinearEasing),
+                    label = "previewFill"
+                )
                 val green = UiSpec.accent(vm.darkModeOn)
                 Box(
                     modifier
@@ -532,8 +552,9 @@ internal fun MainActivity.DownloadStateSlot(
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            // tnum 等宽数字：数值刷新时文字宽度稳定不抖动
-                            "${humanSize(qItem.got.value)} / ${humanSize(qItem.total.value)}",
+                            // tnum 等宽数字：数值刷新时文字宽度稳定不抖动；速度与队列行同源
+                            "${humanSize(qItem.got.value)} / ${humanSize(qItem.total.value)}" +
+                                (qItem.speed.value.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: ""),
                             color = green,
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontFeatureSettings = "tnum"

@@ -1399,7 +1399,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (!connected) { item.status.value = QStatus.FAILED; return }
             // 末块请求长度须精确到文件尾：尼康对 offset+len 超界的 GetPartialObject 直接报错
             // （gphoto2 native 会自动截断，USB 侧必须自己做）
-            val want = minOf(0x20000L, total - got).toInt()
+            // 1MB 块（原 128KB）：0x9431 单次上限 1MB（C 层校验），Z传 高清预览 0.7~0.9MB
+            // 单次成功实证 —— 块越大 PTP-IP 往返越少，下载吞吐显著提升
+            val want = minOf(0x100000L, total - got).toInt()
             val chunk = readOff(item.handle, got, want)
             if (chunk == null) {
                 retries++
