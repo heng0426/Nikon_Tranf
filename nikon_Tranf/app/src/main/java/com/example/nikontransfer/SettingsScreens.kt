@@ -376,6 +376,13 @@ internal fun MainActivity.SettingsScreen(
                         ChunkSizePicker()
                     }
                 }
+                SettingsDivider()
+                SettingSwitch(
+                    title = "USB 整文件传输",
+                    subtitle = "开启后 USB 下载一次读完整文件（更快）；关闭按 1MB 分段读取。整包失败自动回退分段",
+                    checked = vm.usbWholeTransfer.value,
+                    onChange = { vm.setUsbWholeTransfer(it) }
+                )
             }
             SettingsSection(title = "外观", icon = { SectionIcon("外观") }) {
                 SettingSwitch(

@@ -648,6 +648,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("set_hotspot_hint", v).apply()
     }
 
+    /** USB 整文件传输开关（默认开=单事务 0x1009 整包读取更快，进度按 bulk 轮回调）：
+     *  关闭后下载走 1MB 分段 0x101B（兼容优先）。两种模式失败均自动回退另一路径。 */
+    val usbWholeTransfer = mutableStateOf(prefs.getBoolean("set_usb_whole", true))
+    fun setUsbWholeTransfer(v: Boolean) {
+        usbWholeTransfer.value = v
+        prefs.edit().putBoolean("set_usb_whole", v).apply()
+    }
+
     /* ---------- 扫描 ---------- */
 
     /** 收集所有 Wi-Fi 接口的 /24 网段前缀（如 "10.19.161"） */
@@ -1304,13 +1312,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         item.cancelRequested = false
         item.got.value = 0
         val startMs = System.currentTimeMillis()   // 下载耗时统计（DONE 时写入 elapsedMs）
-        // USB 通道：优先偏移读分块（0x101B，带进度）；首块失败回退整对象一次取回
+        // USB 通道：开关开 → 单事务整包（0x1009，进度按 bulk 轮回调）失败回退分段；
+        // 默认 → 偏移读分块（0x101B，1MB 粒度带进度）；分段首块失败回退整对象一次取回
         val usb = usbSession
         if (usb != null) {
             val total = sizeOf(item.handle)
             if (total <= 0) { item.status.value = QStatus.FAILED; return }
             item.total.value = total
             val buf = ByteArray(total.toInt())
+            // 实时速度节流器（250ms，与 Wi-Fi 分支同款）：整包回调与分段循环共用
+            var lastUi = 0L
+            var lastGot = 0L
+            var lastT = System.currentTimeMillis()
+            fun updateSpeed(nowGot: Long) {
+                val now = System.currentTimeMillis()
+                if (now - lastUi >= 250) {
+                    val dt = (now - lastT).coerceAtLeast(1)
+                    item.speed.value = humanSize((nowGot - lastGot).coerceAtLeast(0) * 1000 / dt) + "/s"
+                    lastUi = now; lastGot = nowGot; lastT = now
+                }
+            }
+            if (usbWholeTransfer.value) {
+                if (item.cancelRequested) { item.status.value = QStatus.CANCELED; return }
+                if (!connected) { item.status.value = QStatus.FAILED; return }
+                val whole = usb.getObject(item.handle) { n ->
+                    val g = minOf(n, total)
+                    item.got.value = g
+                    updateSpeed(g)
+                }
+                if (whole != null) {
+                    System.arraycopy(whole, 0, buf, 0, minOf(whole.size, buf.size))
+                    if (savePhoto(item.name, item.type, buf, item.stamp)) {
+                        item.elapsedMs = System.currentTimeMillis() - startMs
+                        item.status.value = QStatus.DONE
+                        photoRows.firstOrNull { it.handle == item.handle }?.downloaded?.value = true
+                        markDownloaded(item.name)
+                    } else {
+                        item.status.value = QStatus.FAILED
+                    }
+                    return
+                }
+                item.got.value = 0   // 整包失败 → 回退分段路径；节流器基准同步归零
+                lastGot = 0; lastT = System.currentTimeMillis(); lastUi = 0
+            }
             var got = 0L
             var fallbackWhole = false
             while (got < total) {
@@ -1323,6 +1367,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 System.arraycopy(chunk, 0, buf, got.toInt(), len)
                 got += len
                 item.got.value = got
+                updateSpeed(got)
             }
             if (fallbackWhole) {
                 val whole = usb.getObject(item.handle)

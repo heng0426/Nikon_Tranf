@@ -318,8 +318,12 @@ class UsbPtpSession(
 
     /** 整对象下载（0x1009）：Z6 II USB 无任何部分读取能力（0x1014/0x95C1 均不支持），
      *  下载/高清预览统一走整对象。数据阶段预分配零拷贝（50MB NEF 峰值仅 1×）。 */
-    fun getObject(handle: Int): ByteArray? = withRecovery {
-        val resp = transaction(OP_GET_OBJECT, intArrayOf(handle))
+    fun getObject(handle: Int): ByteArray? = getObject(handle) {}
+
+    /** 整对象一次事务读取（0x1009 GetObject）：onProgress 在每个 bulk 轮后回调已填字节数，
+     *  供整文件传输模式显示真实进度（单 PTP 事务，比 1MB 分段的 0x101B 往返更快）。 */
+    fun getObject(handle: Int, onProgress: (Long) -> Unit): ByteArray? = withRecovery {
+        val resp = transaction(OP_GET_OBJECT, intArrayOf(handle), onProgress)
         if (resp.code != RESP_OK) {
             val msg = "整读($handle)=0x${(resp.code and 0xFFFF).toString(16)}"
             Log.w("UsbPtp", msg)
@@ -433,7 +437,7 @@ class UsbPtpSession(
 
     private class Resp(val code: Int, val data: ByteArray, val params: IntArray)
 
-    private fun transaction(opcode: Int, params: IntArray = intArrayOf()): Resp {
+    private fun transaction(opcode: Int, params: IntArray = intArrayOf(), onProgress: (Long) -> Unit = {}): Resp {
         val conn = connection ?: throw IllegalStateException("会话未打开")
         txid++
         // ① Command 容器 → bulk OUT
@@ -463,6 +467,7 @@ class UsbPtpSession(
                 val data = ByteArray(payload)
                 var filled = minOf(n - 12, payload)
                 System.arraycopy(head, 12, data, 0, filled)
+                if (payload > 0) onProgress(filled.toLong())
                 while (filled < payload) {
                     val want = minOf(BULK_CHUNK, payload - filled)
                     val buf = ByteArray(want)
@@ -471,6 +476,7 @@ class UsbPtpSession(
                     val cp = minOf(r, payload - filled)
                     System.arraycopy(buf, 0, data, filled, cp)
                     filled += cp
+                    onProgress(filled.toLong())
                 }
                 // ③ Response（数据恰为 512 倍数时设备先发 ZLP → 吸收；读到非响应容器=错位）
                 n = bulkIn(head)

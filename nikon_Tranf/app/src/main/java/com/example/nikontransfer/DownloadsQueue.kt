@@ -432,7 +432,17 @@ internal fun MainActivity.QueueRow(item: QueueItem) {
                         }
                     }
                     when (st) {
-                        QStatus.QUEUED, QStatus.RUNNING -> TextButton(onClick = { vm.cancelDownload(item) }) { Text("取消") }
+                        QStatus.QUEUED, QStatus.RUNNING -> IconButton(
+                            onClick = { vm.cancelDownload(item) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "取消",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                         QStatus.FAILED -> TextButton(onClick = { vm.retryDownload(item) }) { Text("重试") }
                         else -> {}
                     }
