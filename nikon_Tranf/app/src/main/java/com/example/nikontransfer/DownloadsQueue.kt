@@ -132,6 +132,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asComposeRenderEffect
@@ -221,7 +222,9 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                         }
                     }
                 }
-                if (st.denom > 0) OverallProgressBar(done = st.done, denom = st.denom)
+                if (st.denom > 0 && !vm.perfHideOverallBar.value) {
+                    OverallProgressBar(done = st.done, denom = st.denom)
+                }
             }
             if (vm.downloadQueue.isEmpty()) {
                 Text(
@@ -259,15 +262,25 @@ internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
         // got 节流到 250ms 后，500ms 补间能完整跑完（此前每 64KB 就被打断重启 → 拖影）。
         val overallAnim by animateFloatAsState(
             targetValue = overall,
-            animationSpec = tween(500, easing = LinearEasing),
+            animationSpec = vm.progressSpec(),
             label = "queueOverall"
         )
         val green = UiSpec.accent(vm.darkModeOn)
+        val track = MaterialTheme.colorScheme.surfaceVariant
         Row(verticalAlignment = Alignment.CenterVertically) {
-            LinearProgressIndicator(
-                progress = { overallAnim },
-                modifier = Modifier.weight(1f),
-                color = green
+            /* 自绘进度条，不用 M3 的 LinearProgressIndicator：
+             * M3 内部对 progress 还有一层 spring 补间，跟外层补间叠加后动画永远
+             * 收敛不了 —— 每帧重组 + 重绘。这里改成 drawBehind 直接画两段矩形，
+             * 只走绘制阶段。 */
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .drawBehind {
+                        drawRect(track)
+                        drawRect(green, size = Size(size.width * overallAnim, size.height))
+                    }
             )
             Spacer(Modifier.width(8.dp))
             Text(
@@ -281,7 +294,7 @@ internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
     /** 队列行缩略图：handle → photoRows 既有预览位图（网格加载过即命中），无位图时兜底加载 */
     @Composable
 internal fun MainActivity.QueueThumb(handle: Int) {
-        val row = vm.photoRows.firstOrNull { it.handle == handle }
+        val row = vm.rowForHandle(handle)   // O(1)：原 firstOrNull 是 O(n)，886 行 × 20 个队列行
         LaunchedEffect(handle) { row?.let { vm.ensureThumb(it) } }
         val bmp = row?.preview?.value
         Box(
@@ -329,7 +342,7 @@ internal fun MainActivity.QueueThumb(handle: Int) {
         }
         val fillFrac by animateFloatAsState(
             targetValue = fillFracTarget,
-            animationSpec = tween(500, easing = LinearEasing),
+            animationSpec = vm.progressSpec(),
             label = "queueRowFill"
         )
         Surface(
@@ -337,18 +350,24 @@ internal fun MainActivity.QueueThumb(handle: Int) {
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
         ) {
             Box(Modifier.fillMaxWidth()) {
-                if (fillFrac > 0f) {
+                if (fillAlpha > 0f && !vm.perfHideRowFill.value) {
                     val green = UiSpec.accent(vm.darkModeOn)
-                    // matchParentSize 与 fillMaxWidth 直接链式组合会互相覆盖（填充恒满宽），
-                    // 经 BoxWithConstraints 按比例换算宽度，填充层才能精确停在进度位置
-                    BoxWithConstraints(Modifier.matchParentSize()) {
-                        Box(
-                            Modifier
-                                .fillMaxHeight()
-                                .width(maxWidth * fillFrac)
-                                .background(green.copy(alpha = fillAlpha))
-                        )
-                    }
+                    /* 填充层用 drawBehind 画，不再用一个"宽度随进度变化"的 Box。
+                     * 原因（实测）：宽度参与布局 → 正在下载的那一行每帧重新测量，
+                     * 中位帧从 8.6ms 涨到 15.1ms。drawBehind 只走绘制阶段，
+                     * 不改变任何测量/布局，动画再密也只是一次重绘。
+                     * 之前还踩过 BoxWithConstraints —— 那个会额外发起一次子合成。 */
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .drawBehind {
+                                drawRect(
+                                    color = green,
+                                    alpha = fillAlpha,
+                                    size = Size(size.width * fillFrac, size.height)
+                                )
+                            }
+                    )
                 }
                 Row(
                     // 高度锁定 60dp（原实际高度）：下载中（有取消按钮）与已完成（无按钮）
@@ -356,7 +375,7 @@ internal fun MainActivity.QueueThumb(handle: Int) {
                     Modifier.fillMaxWidth().height(UiSpec.QUEUE_ROW_H).padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    QueueThumb(item.handle)
+                    if (!vm.perfHideRowThumb.value) QueueThumb(item.handle)
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {

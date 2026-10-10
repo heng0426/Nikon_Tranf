@@ -20,9 +20,19 @@ import android.view.Choreographer
 
 object PerfTrace {
 
-    const val TAG = "Perf"
+    /** 用 PerfTrace 而不是 Perf：系统会用 "Perf" 这个 tag 刷 "Connecting to perf service"，
+     *  logcat -s Perf 会被淹没。 */
+    const val TAG = "PerfTrace"
     private const val CAP = 1000            // 环形窗口：最近 1000 帧
-    private const val JANK_NS = 16_666_667L // 60Hz 单帧预算；超过即算掉帧
+
+    /** 单帧预算（ns），由 attach(hz) 按实际刷新率设定。
+     *  不能写死 16.67ms：这台机（1200x2670）实测跑在 120Hz，8.33ms 一帧，
+     *  按 60Hz 预算算会把"丢一帧"判成正常，掉帧率永远 ≈0。
+     *  没拿到刷新率时回退 60Hz。 */
+    @Volatile private var periodNs = 16_666_667L
+    /** 掉帧判定线：超过 1.5 个帧周期 = 至少错过一次 vsync */
+    private val jankNs: Long get() = periodNs * 3L / 2L
+    val hz: Float get() = 1_000_000_000f / periodNs
 
     /** 逐次明细日志开关（默认关）：886 张缩略图逐张打日志本身就会拖慢主线程，
      *  而且会把真正想看的信号淹掉。需要单步定位时在诊断页打开。 */
@@ -41,8 +51,10 @@ object PerfTrace {
 
     private val callback = Choreographer.FrameCallback { onFrame(it) }
 
-    /** 主线程调用一次即开始常驻采样（幂等）。放在 Activity.onCreate。 */
-    fun attach() {
+    /** 主线程调用一次即开始常驻采样（幂等）。放在 Activity.onCreate。
+     *  hz = 当前显示刷新率，决定单帧预算与掉帧判定线。 */
+    fun attach(hz: Float = 0f) {
+        if (hz > 0f) periodNs = (1_000_000_000f / hz).toLong().coerceIn(4_000_000L, 33_000_000L)
         if (started || Looper.myLooper() != Looper.getMainLooper()) return
         started = true
         Choreographer.getInstance().postFrameCallback(callback)
@@ -75,18 +87,20 @@ object PerfTrace {
 
     data class Stats(
         val windowFrames: Int,   // 窗口内样本数
-        val jankPct: Float,      // 窗口内掉帧比例（%）
+        val jankPct: Float,      // 窗口内掉帧比例（%）：超过 1.5 个帧周期
         val p50Ms: Float,
         val p95Ms: Float,
         val maxMs: Float,
         val fps: Float,          // 窗口平均帧率
-        val totalFrames: Long    // 累计总帧数
+        val totalFrames: Long,   // 累计总帧数
+        val hz: Float,           // 单帧预算对应的刷新率
+        val budgetMs: Float      // 单帧预算（ms）
     )
 
     /** 取当前窗口统计（窗口不足 2 帧时返回全零，避免首帧误导）。 */
     fun snapshot(): Stats {
         val n = filled
-        if (n < 2) return Stats(n, 0f, 0f, 0f, 0f, 0f, totalFrames)
+        if (n < 2) return Stats(n, 0f, 0f, 0f, 0f, 0f, totalFrames, hz, periodNs / 1_000_000f)
         val copy = LongArray(n)
         synchronized(this) {
             // 环形缓冲按写入顺序摊平：head 指向最旧的一帧
@@ -96,7 +110,7 @@ object PerfTrace {
         var jank = 0
         var sum = 0L
         for (d in copy) {
-            if (d > JANK_NS) jank++
+            if (d > jankNs) jank++
             sum += d
         }
         val avgMs = sum / n / 1_000_000.0
@@ -109,7 +123,9 @@ object PerfTrace {
             p95Ms = p95,
             maxMs = maxNs / 1_000_000f,
             fps = if (avgMs > 0) (1000f / avgMs.toFloat()) else 0f,
-            totalFrames = totalFrames
+            totalFrames = totalFrames,
+            hz = hz,
+            budgetMs = periodNs / 1_000_000f
         )
     }
 

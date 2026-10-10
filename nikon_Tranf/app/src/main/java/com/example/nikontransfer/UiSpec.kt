@@ -117,5 +117,5 @@ object UiSpec {
     /** 下载进度写入节流（ms）：got 是可观察状态，写入即唤醒观察者。
      *  USB 整包模式每 64KB 回调一次（50MB ≈ 800 次），不节流会让下载页整页重组。
      *  250ms 与速度刷新同频，配合 500ms 线性补间，进度条能完整跑完动画。 */
-    const val PROGRESS_THROTTLE_MS = 250L
+    var PROGRESS_THROTTLE_MS = 250L
 }

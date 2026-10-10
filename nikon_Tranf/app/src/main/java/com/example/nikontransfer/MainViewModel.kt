@@ -224,10 +224,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /* ---------- 相册 / 下载 / 预览 ---------- */
     val photoRows = mutableStateListOf<PhotoRow>()
+
+    /** handle → 行的索引。下载队列行/预览页按句柄取缩略图时原来是
+     *  `photoRows.firstOrNull { it.handle == handle }` —— 20 个队列行 × 886 行
+     *  = 每次重组一万多次比较，而且这个查找发生在每个队列行的组合里。 */
+    private val rowByHandle = java.util.concurrent.ConcurrentHashMap<Int, PhotoRow>()
+
+    fun rowForHandle(handle: Int): PhotoRow? = rowByHandle[handle]
+
+    /** photoRows 整体替换后调用（枚举 / 演示数据 / 清空） */
+    private fun rebuildRowIndex() {
+        rowByHandle.clear()
+        for (r in photoRows) rowByHandle[r.handle] = r
+    }
     @Volatile private var previewGen = 0
     @Volatile private var nefDumped = false
     @Volatile private var downloadBusy = false
     val downloadProgress = mutableStateOf("")
+
+    /* ---------- 自动化性能测量：请求打开某个页面 ----------
+     * 页面显隐是 Activity 内的 remember 状态，VM 够不到。用计数器形式下发意图：
+     * 计数值变化即触发一次打开（避免"打开→关闭→再打开"被去重）。 */
+    val openDownloadsRequest = mutableStateOf(0)
+    val openSettingsRequest = mutableStateOf(0)
+    fun requestOpenDownloads() { openDownloadsRequest.value++ }
+    fun requestOpenSettings() { openSettingsRequest.value++ }
 
     /* ---------- 多选模式 ---------- */
     val selectMode = mutableStateOf(false)
@@ -1166,6 +1187,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         parsed.forEach { it.downloaded.value = it.name in downloadedNames.value }
         photoRows.clear()
         photoRows.addAll(parsed)
+        rebuildRowIndex()
         refreshPairRows()                 // 枚举线程上预构建配对缓存（滑动主线程零重算）
         displayLimit.value = if (chunkedLoad.value) chunkSize.value else Int.MAX_VALUE   // 重新枚举 → 分块进度重置
         val autoPreview = prefs.getBoolean("set_auto_preview", true)
@@ -1188,6 +1210,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 假下载回调粒度（KB）：64 = 复刻 USB 整包模式的高频回调（50MB≈800 次）；1024 = 分段模式 */
     val demoStepKb = mutableStateOf(64)
     val demoDownloadRunning = mutableStateOf(false)
+    /* 进度条补间时长（ms），0 = snap（不插值）。
+     * 实测（同一轮内对照，120Hz / 8.33ms 预算）：
+     *   500ms → p50 16.5ms（中位帧直接掉到 60Hz）
+     *   250ms → p50 16.5ms   120ms → p50 16.5ms
+     *   0(snap) → p50 8.5ms
+     * 只要补间在跑，就意味着"每帧重组一行"，而一次队列行重组的成本就超过 8.33ms。
+     * 补间时长小于更新间隔也没用 —— 250ms 的更新间隔配任何时长的补间都是持续动画。
+     * 所以默认关掉插值，靠节流频率（250ms ≈ 4 次/秒）保证进度推进的观感。 */
+    val progressTweenMs = mutableStateOf(0)
+    /** 测量用：运行时摘掉总进度条（定位 M3 LinearProgressIndicator 自带补间的开销） */
+    val perfHideOverallBar = mutableStateOf(false)
+    /** 测量用：运行时摘掉队列行的进度填充层 */
+    val perfHideRowFill = mutableStateOf(false)
+    /** 测量用：运行时摘掉队列行缩略图 */
+    val perfHideRowThumb = mutableStateOf(false)
+
+    /** 进度补间的 AnimationSpec：0 = snap。
+     *  注意补间时长与更新间隔的关系 —— 500ms 补间配 250ms 更新，动画永远跑不完，
+     *  于是每一帧都在重组 + 重新测量；时长小于更新间隔时动画才能停下来。 */
+    fun progressSpec(): androidx.compose.animation.core.AnimationSpec<Float> {
+        val ms = progressTweenMs.value
+        return if (ms <= 0) androidx.compose.animation.core.snap()
+        else androidx.compose.animation.core.tween(ms, easing = androidx.compose.animation.core.LinearEasing)
+    }
     @Volatile private var demoStop = false
 
     private val demoBitmaps = ArrayList<Bitmap>()
@@ -1235,6 +1281,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         rows.sortByDescending { it.stamp }
         photoRows.clear()
         photoRows.addAll(rows)
+        rebuildRowIndex()
         refreshPairRows()
         displayLimit.value = if (chunkedLoad.value) chunkSize.value else Int.MAX_VALUE
         connected = true
@@ -1250,6 +1297,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun clearDemo() {
         stopDemoDownloads()
         photoRows.clear()
+        rebuildRowIndex()
         refreshPairRows()
         connected = false
         connPhase.value = "disconnected"
@@ -1280,11 +1328,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 it.status.value = QStatus.RUNNING
                 var got = 0L
                 val total = it.total.value
+                var idx = 0
+                val every = paceEvery(total, step)
                 while (got < total) {
                     if (demoStop) break
                     got = minOf(got + step, total)
                     it.publishProgress(got, total)
-                    if (step <= 64 * 1024) Thread.sleep(1)   // 别让假任务瞬间跑完，采样不到
+                    if (idx++ % every == 0) paceOnce()   // 见下：按步数均摊，两档总时长一致
                 }
                 if (demoStop) { it.status.value = QStatus.CANCELED; break }
                 it.elapsedMs = 1
@@ -1296,11 +1346,83 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }.apply { isDaemon = true; name = "demo-download"; start() }
     }
 
+    /** 只入队不跑：用来把"页面本身的开销"和"下载活动带来的开销"分开测 */
+    fun enqueueDemoItems(count: Int) {
+        val items = ArrayList<QueueItem>()
+        repeat(count) { i ->
+            val it = QueueItem(0xD00000 + i, "DEMO_${1000 + i}.JPG", "JPG", "20261001-120000")
+            it.total.value = 24L * 1024 * 1024
+            items.add(it)
+        }
+        downloads.enqueueDemo(items)
+    }
+
+    /* 假下载的节拍控制。
+     * 两个坑都踩过：
+     *  ① 每步 Thread.sleep(1)：64KB 档 384 步/文件 ≈ 每秒几百次定时器唤醒，
+     *     实测把帧率从 108 压到 54 —— 这是 sleep 空转造出来的假象，真实 USB 是阻塞读。
+     *  ② 只给 64KB 档配节拍：1MB 档（24 步）不睡，20 个文件瞬间跑完，
+     *     测出来的"1MB 很流畅"其实是空页面在空转。
+     * 现在按步数均摊：每个文件固定 12 次 sleep × 100ms ≈ 1.2s，与步长无关，
+     * 于是"回调频率"成为两档之间唯一的变量 —— 这才是我要测的东西。 */
+    private fun paceEvery(total: Long, step: Long): Int =
+        maxOf(1, ((total / step.coerceAtLeast(1)) / 12L).toInt())
+
+    private fun paceOnce() {
+        try { Thread.sleep(100) } catch (_: InterruptedException) {}
+    }
+
     fun stopDemoDownloads() {
         demoStop = true
         demoDownloadRunning.value = false
         downloads.clearAll()
     }
+
+    /* ---------- 对照实验用：把"后台线程活动"与"Compose 状态写入"拆开测 ----------
+     * 实测发现下载页一有活动就稳定掉到 60fps，且与队列长度无关（1 条和 20 条一样），
+     * 说明开销是个常量，跟"画多少行"没关系。三组对照定位它到底来自哪里。 */
+    @Volatile private var spinStop = false
+
+    /** A：纯空转，完全不碰 Compose 状态 */
+    fun spinOnly() {
+        spinStop = true
+        Thread {
+            spinStop = false
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            var i = 0
+            while (!spinStop && i < 384 * 20) {
+                i++
+                if (i % 32 == 0) try { Thread.sleep(100) } catch (_: InterruptedException) { break }
+            }
+        }.apply { isDaemon = true; name = "spin-only"; start() }
+    }
+
+    /** B/C：同样的循环，但每次迭代调用 publishProgress。
+     *  live=false → 写在一个没人订阅的孤儿 QueueItem 上（只有快照写入成本）
+     *  live=true  → 写在一个已入队、UI 正在订阅的 QueueItem 上（还有重组成本） */
+    fun spinWriting(live: Boolean) {
+        spinStop = true
+        val dummy = QueueItem(0xE00001, "SPIN.JPG", "JPG", "20261001-120000").apply {
+            total.value = 24L * 1024 * 1024
+        }
+        val target = if (live) {
+            downloads.enqueueDemo(listOf(dummy)); dummy
+        } else dummy
+        Thread {
+            spinStop = false
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            var got = 0L
+            var i = 0
+            while (!spinStop && i < 384 * 20) {
+                i++
+                got += 65536L
+                target.publishProgress(got, 24L * 1024 * 1024)
+                if (i % 32 == 0) try { Thread.sleep(100) } catch (_: InterruptedException) { break }
+            }
+        }.apply { isDaemon = true; name = "spin-write"; start() }
+    }
+
+    fun stopSpin() { spinStop = true }
 
     /** 演示模式下点单张下载：假驱动，不碰相机 */
     private fun runDemoItem(item: QueueItem) {
@@ -1308,6 +1430,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val total = item.total.value
         val step = demoStepKb.value * 1024L
         var got = 0L
+        var idx = 0
+        val every = paceEvery(total, step)
         while (got < total) {
             if (demoStop || item.cancelRequested) {
                 item.status.value = QStatus.CANCELED
@@ -1315,7 +1439,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             got = minOf(got + step, total)
             item.publishProgress(got, total)
-            if (step <= 64 * 1024) Thread.sleep(1)
+            if (idx++ % every == 0) paceOnce()
         }
         item.elapsedMs = 1
         item.flushProgress(total)
@@ -2004,6 +2128,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         thumbNoCache.remove(key)
         thumbMem.put(key, bmp)
         thumbFast[key] = bmp
+        PerfTrace.tick("thumb#加载")
         if (row.onScreen || !row.enteredOnce) row.preview.value = bmp
     }
 

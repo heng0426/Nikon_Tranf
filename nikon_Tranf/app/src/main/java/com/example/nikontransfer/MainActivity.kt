@@ -3,7 +3,10 @@ package com.example.nikontransfer
 import android.Manifest
 import android.content.ContentUris
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -234,9 +237,88 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Activity 已在栈顶时 am start 走的是 onNewIntent，不是 onCreate ——
+     *  只处理 onCreate 会让 `--ez demo true` 静默失效（实测表现为演示数据没加载，
+     *  测出来"很流畅"其实是空网格在空转）。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra("demo", false)) vm.setDemoMode(true)
+    }
+
+    /* ---------- 自动化性能测量入口（仅 debuggable 包注册，release 零影响）----------
+     * 存在的理由：手动进设置页开演示模式、再手滑，采样窗口不可控、结果不可复现，
+     * 前后对比就没有意义。有了它就能用 adb 跑同一套动作：
+     *   adb shell am start -n com.example.nikontransfer/.MainActivity --ez demo true
+     *   adb shell am broadcast -a com.example.nikontransfer.PERF --es cmd reset
+     *   adb shell am broadcast -a com.example.nikontransfer.PERF --es cmd select --ei n 200
+     *   adb shell am broadcast -a com.example.nikontransfer.PERF --es cmd download --ei n 20
+     *   adb shell am broadcast -a com.example.nikontransfer.PERF --es cmd dump --es tag scroll
+     * 读数走 logcat -s Perf。 */
+    private val perfReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            when (i.getStringExtra("cmd")) {
+                "reset" -> { PerfTrace.reset(); Log.i(PerfTrace.TAG, "PERF reset") }
+                "select" -> {
+                    val n = i.getIntExtra("n", 100)
+                    vm.setSelectedAll(vm.visiblePhotos.take(n), true)
+                    Log.i(PerfTrace.TAG, "PERF select $n")
+                }
+                "clear" -> vm.clearSelection()
+                "openDownloads" -> vm.requestOpenDownloads()
+                "openSettings" -> vm.requestOpenSettings()
+                "download" -> vm.startDemoDownloads(i.getIntExtra("n", 20))
+                "enqueue" -> vm.enqueueDemoItems(i.getIntExtra("n", 20))
+                "step" -> vm.demoStepKb.value = i.getIntExtra("n", 64)
+                "tween" -> vm.progressTweenMs.value = i.getIntExtra("n", 500)
+                // 三组对照：纯空转 / 写状态但无人订阅 / 写状态且 UI 订阅
+                "spin" -> vm.spinOnly()
+                "write" -> vm.spinWriting(false)
+                "writelive" -> vm.spinWriting(true)
+                "stopdl" -> vm.stopDemoDownloads()
+                "stopSpin" -> vm.stopSpin()
+                "hidebar" -> vm.perfHideOverallBar.value = !vm.perfHideOverallBar.value
+                "hidefill" -> vm.perfHideRowFill.value = !vm.perfHideRowFill.value
+                "hidethumb" -> vm.perfHideRowThumb.value = !vm.perfHideRowThumb.value
+                "throttle" -> UiSpec.PROGRESS_THROTTLE_MS = i.getIntExtra("n", 250).toLong()
+                "dump" -> dumpPerf(i.getStringExtra("tag") ?: "dump")
+            }
+        }
+    }
+
+    /** 一次性把帧率统计与派生路径重算次数打成一行，便于脚本抓取 */
+    private fun dumpPerf(tag: String) {
+        val s = PerfTrace.snapshot()
+        val names = listOf(
+            "filterPhotos#重算", "filterPairs#重算", "sections#重算",
+            "pairSections#重算", "枚举", "thumb#加载"
+        )
+        val counters = names.joinToString(" | ") { n ->
+            val c = PerfTrace.countOf(n)
+            val a = PerfTrace.avgMs(n)
+            when {
+                c == 0L -> "$n=-"
+                a != null && a > 0f -> "$n=${c}次/均${"%.2f".format(a)}ms"
+                else -> "$n=${c}次"
+            }
+        }
+        // rows/visible 是"网格真的渲染了"的校验位：Choreographer 即使完全空闲也按
+        // 刷新率回调，fps≈120 不能证明界面在画东西。
+        Log.i(
+            PerfTrace.TAG,
+            "PERF[$tag] fps=${"%.1f".format(s.fps)} jank=${"%.1f".format(s.jankPct)}% " +
+                "p50=${"%.1f".format(s.p50Ms)} p95=${"%.1f".format(s.p95Ms)} " +
+                "max=${"%.1f".format(s.maxMs)} frames=${s.windowFrames}/${s.totalFrames} " +
+                "budget=${"%.1f".format(s.budgetMs)}ms(${s.hz.toInt()}Hz) " +
+                "rows=${vm.photoRows.size} visible=${vm.visiblePhotos.size} sel=${vm.selectedCount.value} " +
+                "q=${vm.downloadQueue.size} :: $counters"
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 自动化入口：adb shell am start ... --ez demo true 直接进演示模式
+        if (intent?.getBooleanExtra("demo", false) == true) vm.setDemoMode(true)
         // 请求最高刷新率：HyperOS「智能刷新率」把无帧率声明的应用归入 normal=60Hz 档，
         // 照片网格滑动会被锁 60fps（实测 framestats：janky≈0 但帧距被 vsync 节拍钉在 ~20ms）。
         // 显式投票同分辨率的最高刷新模式（120Hz），浏览照片属高频交互，值得这点功耗。
@@ -257,8 +339,17 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED
         ) notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        // 帧率采样常驻启动（幂等）：相机连着时没有 adb 通道，只能自己采样
-        PerfTrace.attach()
+        // 帧率采样常驻启动（幂等）：相机连着时没有 adb 通道，只能自己采样。
+        // 传入实际刷新率 —— 这台机跑 120Hz，按 60Hz 预算算掉帧率会永远 ≈0。
+        val hz = if (Build.VERSION.SDK_INT >= 30) (display?.refreshRate ?: 60f) else 60f
+        PerfTrace.attach(hz)
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            val f = IntentFilter("com.example.nikontransfer.PERF")
+            // 必须 EXPORTED：adb shell 的 uid 是 2000，NOT_EXPORTED 会把它挡在外面
+            // （只放通同 UID / system）。这是 debug 包专属入口，无敏感数据。
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(perfReceiver, f, Context.RECEIVER_EXPORTED)
+            else registerReceiver(perfReceiver, f)
+        }
         setContent {
             NikonTransferTheme(dark = vm.darkModeOn) {
                 Surface(Modifier.fillMaxSize()) {
@@ -293,6 +384,13 @@ class MainActivity : ComponentActivity() {
         val scope = rememberCoroutineScope()
         var showSettings by remember { mutableStateOf(false) }
         var showDownloads by remember { mutableStateOf(false) }
+        // 自动化测量入口：VM 下发"打开某页"的意图（计数器变化即触发一次）
+        LaunchedEffect(vm.openSettingsRequest.value) {
+            if (vm.openSettingsRequest.value > 0) showSettings = true
+        }
+        LaunchedEffect(vm.openDownloadsRequest.value) {
+            if (vm.openDownloadsRequest.value > 0) showDownloads = true
+        }
         var previewIndex by remember { mutableStateOf(-1) }
         var pairPreviewIndex by remember { mutableStateOf(-1) }
         // 预览返回高亮：记住刚预览的那张（句柄/时间戳），返回网格时脉冲提示
