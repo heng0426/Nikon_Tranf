@@ -101,7 +101,7 @@ object UiSpec {
     val PLACEHOLDER_TEXT = Color(0xFF777777)
 
     /* ---------- 布局尺寸 ---------- */
-    val PILL_SLOT = 20.dp        // 置顶日期胶囊槽位高（数字越小胶囊下方留白越小）
+    val PILL_SLOT = 24.dp        // 置顶日期胶囊槽位高（数字越小胶囊下方留白越小）
     val CONN_INFO_H = 48.dp      // 连接信息卡片内容行高（锁高，容两行）
     val QUEUE_ROW_H = 60.dp      // 下载队列行内容行高（锁高，状态切换不跳变）
     val PREVIEW_SLOT_H = 40.dp   // 预览页下载槽行高（锁高，四态垂直居中）

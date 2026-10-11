@@ -57,7 +57,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -189,16 +188,12 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
         val st = vm.queueStats
         val listState = rememberLazyListState()
         Column(
-            // 顶部与主页顶栏同款公式（见主页"顶栏高度只改这里"注释）：不算状态栏 inset、
-            // 顶部固定 40dp，返回按钮行与主页顶栏按钮同一水平线
+            // 顶部与主页顶栏同款公式（见主页"顶栏垂直位置"注释）：safeDrawing.Top
+            // 自适应状态栏实际高度 + 12dp 余量，返回按钮行与主页顶栏按钮同一水平线
             Modifier.fillMaxSize()
-                .windowInsetsPadding(
-                    WindowInsets.safeDrawing.only(
-                        WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal
-                    )
-                )
+                .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
-                .padding(top = 40.dp),
+                .padding(top = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
