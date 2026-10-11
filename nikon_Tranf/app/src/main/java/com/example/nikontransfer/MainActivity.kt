@@ -532,8 +532,9 @@ class MainActivity : ComponentActivity() {
                         ) {
                             FunnelIcon(if (vm.filterActive) UiSpec.accent(vm.darkModeOn) else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        // 连接指示（常驻，筛选旁，同款圆角外框，不可点击）：
+                        // 连接指示（常驻，筛选旁，同款圆角外框）：
                         // 已连接=当前通道图标（USB 蓝 / Wi-Fi 青）；连接中=琥珀色；断开=断开前通道图标红色
+                        // 已连接时可点击 → 弹出连接详情浮层（型号/序列号/通道 + 断开；无重连入口），3 秒自动收起
                         val red = phase == "disconnected"
                         val amber = phase == "connecting"
                         val isUsbConn = vm.lastConnChannel.value == "usb"
@@ -543,7 +544,12 @@ class MainActivity : ComponentActivity() {
                                 .graphicsLayer { translationX = connShake.value * 6.dp.toPx() }
                                 .size(34.dp)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .then(
+                                    if (phase == "connected") Modifier.clickable {
+                                        vm.showConnDetail.value = !vm.showConnDetail.value
+                                    } else Modifier
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             val iconColor by animateColorAsState(
@@ -569,7 +575,14 @@ class MainActivity : ComponentActivity() {
                 }
                 // 详情浮层 + 状态条收纳进内层 Column（无 spacedBy：卡片移除时不会带走间距导致下方跳动）
                 Column {
-                // 连接详情浮层：点击 Wi-Fi 图标后显示 3 秒（展开+淡入 / 收起+淡出）
+                // 详情浮层 3 秒自动收起（再次点击图标可提前关闭；离开组合自动取消）
+                LaunchedEffect(showConnDetail.value) {
+                    if (showConnDetail.value) {
+                        kotlinx.coroutines.delay(3000)
+                        vm.showConnDetail.value = false
+                    }
+                }
+                // 连接详情浮层：点击顶栏连接图标后显示 3 秒（展开+淡入 / 收起+淡出）
                 AnimatedVisibility(
                     visible = showConnDetail.value && phase == "connected",
                     enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(UiSpec.STANDARD)),
