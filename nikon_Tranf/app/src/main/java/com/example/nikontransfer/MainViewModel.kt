@@ -12,6 +12,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.net.ConnectivityManager
 import android.net.LinkAddress
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.provider.MediaStore
 import android.util.Log
@@ -832,9 +833,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** netId → 可达热点网段 的探测结果缓存（同一热点会话内网段不变，复用免重探） */
     private val hotspotNetIdCache = HashMap<String, Int>()
 
-    /** 进程绑定前的默认 netId（还原用；null = 未做过手工绑定） */
-    private var prevProcessNetId: Int? = null
-
     /** netId 探测：热点没有 Network 对象，但 netd 规则链为 local/legacy netId
      *  保留了兜底表且恰好覆盖热点直连路由（小米 11 实测 fwmark 0x10062/0x10063
      *  → 表 97 = 热点直连 192.168.18.0/24 dev wlan1）。逐个 netId 把进程默认
@@ -879,39 +877,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return null
     }
 
-    /** 进程默认网络绑到任意 netId（含非受管）：反射
-     *  NetworkUtils.bindProcessToNetworkHandle —— 与 bindProcessToNetwork 同一
-     *  底层（libnetd_client setNetworkForProcess），但【不经 ConnectivityService
-     *  校验 netId 归属】，Java 与 native（gphoto2）socket 的 fwmark 一并生效。
-     *  返回绑定前的 netId（还原用），失败返回 null。 */
+    /** 进程默认网络绑到任意 netId（含非受管）：公开 API 伪造通道——
+     *  ① 用任意真实 Network 对象序列化成 Parcel，把首字段（= netId）改写为
+     *     目标值再反序列化，得到 netId 任意、类型完全合法的 Network 对象；
+     *  ② cm.bindProcessToNetwork(伪造对象) —— framework 内部直达
+     *     NetworkUtils.bindProcessToNetworkHandle（libnetd_client
+     *     setNetworkForProcess），【不校验 netId 归属】，且是 framework 内部
+     *     调用，不受 hidden API 拦截（bindProcessToNetworkHandle 直接反射会被
+     *     Android 9+ hidden API 封锁，小米 11 实测）。
+     *  Java 与 native（gphoto2）socket 的 fwmark 一并生效。 */
     private fun bindProcessToNetId(netId: Int): Boolean {
-        try {
-            val cls = Class.forName("android.net.NetworkUtils")
-            if (prevProcessNetId == null) {
-                prevProcessNetId = try {
-                    cls.getMethod("getBoundNetworkForProcess").invoke(null) as? Int
-                } catch (_: Throwable) { 0 }
+        return try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val real = cm.allNetworks.firstOrNull()
+            if (real == null) {
+                Log.w("GPhoto2", "netId=$netId 绑定失败: 无真实 Network 可做 parcel 模板")
+                return false
             }
-            cls.getMethod("bindProcessToNetworkHandle", Int::class.javaPrimitiveType)
-                .invoke(null, netId)
-            Log.i("GPhoto2", "网络策略: 进程绑定 netId=$netId（热点专用通道）")
-            return true
+            val p = android.os.Parcel.obtain()
+            val forged = try {
+                real.writeToParcel(p, 0)
+                p.setDataPosition(0)
+                p.writeInt(netId)               // Network parcel 首字段 = netId
+                p.setDataPosition(0)
+                Network.CREATOR.createFromParcel(p)
+            } finally {
+                p.recycle()
+            }
+            val ok = cm.bindProcessToNetwork(forged)
+            if (ok) Log.i("GPhoto2", "网络策略: 进程绑定 netId=$netId（热点专用通道）")
+            else Log.w("GPhoto2", "netId=$netId 绑定失败: bindProcessToNetwork 返回 false")
+            ok
         } catch (t: Throwable) {
-            Log.w("GPhoto2", "netId=$netId 进程绑定失败: ${t.message}")
-            return false
+            Log.w("GPhoto2", "netId=$netId 绑定失败: ${t.message}")
+            false
         }
     }
 
-    /** 还原进程默认网络：netId 绑定是手工的、系统不会自动还原；热点关闭后该
-     *  netId 路由失效会拖垮 App 全部网络功能，连接失败/取消/断开时必须还原。 */
+    /** 还原进程默认网络：netId 绑定是手工伪造的、系统不会自动还原；热点关闭后
+     *  该 netId 路由失效会拖垮 App 全部网络功能，连接失败/取消/断开时必须还原。
+     *  bindProcessToNetwork(null) = 清除进程绑定，恢复系统默认网络。 */
     private fun restoreProcessNetId() {
-        val prev = prevProcessNetId ?: return
-        prevProcessNetId = null
         try {
-            Class.forName("android.net.NetworkUtils")
-                .getMethod("bindProcessToNetworkHandle", Int::class.javaPrimitiveType)
-                .invoke(null, prev)
-            Log.i("GPhoto2", "网络策略: 进程默认网络还原 netId=$prev")
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.bindProcessToNetwork(null)
+            Log.i("GPhoto2", "网络策略: 进程默认网络已还原（清除绑定）")
         } catch (t: Throwable) {
             Log.w("GPhoto2", "进程默认网络还原失败: ${t.message}")
         }
