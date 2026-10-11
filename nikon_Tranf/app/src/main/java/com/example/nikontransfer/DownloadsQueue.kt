@@ -262,9 +262,12 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
                         Pill("总数量 ${st.denom}", bg = amber.copy(alpha = 0.14f), fg = amber, rolling = true)
                         Pill("排队中 ${st.queued}", bg = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), fg = MaterialTheme.colorScheme.primary, rolling = true)
                     }
-                    // 第二排（按阶段切换）
+                    // 第二排（按阶段切换）。runningItem 在两条目交接瞬间会短暂为 null
+                    // （worker 取下一条的空档，演示模式固定 40ms），此时只要还有排队
+                    // （且本批已开跑）就保持速率排 —— 否则每张完成时第二排消失一帧
+                    // 再出现，整卡高度跳一下 = "闪一下"。
                     when {
-                        st.runningItem != null -> BatchPaceRow(st)
+                        st.runningItem != null || (st.queued > 0 && st.done > 0) -> BatchPaceRow(st)
                         !st.hasActive && st.hasFinished && st.msDone > 0L -> BatchDoneRow(st)
                     }
                 }

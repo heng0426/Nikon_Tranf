@@ -1708,7 +1708,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         val remain = st.byteDenom - st.byteDone - cur.got.value
                         batchEtaMs.value = if (bps > 0 && remain > 0) remain * 1000 / bps else 0L
                     }
-                } else {
+                } else if (!st.hasActive) {
+                    // 条目交接空档（有排队、暂无下载中）保留最后一次速度/ETA，避免闪"…"
                     if (batchSpeedBps.value != 0L) batchSpeedBps.value = 0L
                     if (batchEtaMs.value != 0L) batchEtaMs.value = 0L
                 }
