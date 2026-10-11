@@ -1237,6 +1237,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 只好关掉插值靠节流频率撑观感。进度读取下沉到绘制阶段后（drawBehind 内读
      * State.value，见 RowFillLayer / OverallFill / PreviewRunningButton），动画帧
      * 只剩一次 drawRect，零重组零布局 —— 补间成本近零，线性插值默认打开。
+     * 实测（120Hz 真机，同进程四轮交替对照，演示下载 20 张）：tween250 p50=8.2ms /
+     * jank 7.6% / fps≈108，snap p50=16.5ms / jank 54~57% / fps≈72 —— snap 下内容
+     * 近静态，HyperOS 智能刷新率把屏幕降回 60Hz，帧距翻倍反被计入掉帧；补间让内容
+     * 持续有帧，屏幕稳在 120Hz。线性补间在此设备上是双赢：更平滑且测得更"快"。
      * 测具仍可运行时调（广播 cmd=tween；0 回退 snap 做对照）。 */
     val progressTweenMs = mutableStateOf(250)
     /** 测量用：运行时摘掉总进度条（定位 M3 LinearProgressIndicator 自带补间的开销） */
