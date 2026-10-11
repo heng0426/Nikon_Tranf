@@ -255,15 +255,11 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
                     Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // 第一排（恒定）：已完成 / 总数量 / 排队中
+                    // 第一排（恒定）：已完成 / 总数量 / 排队中 —— 绿 / amber / primary 三色同族
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Pill("已完成 ${st.done}", bg = green.copy(alpha = 0.14f), fg = green, rolling = true)
-                        Pill(
-                            "总数量 ${st.denom}",
-                            bg = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.10f),
-                            fg = MaterialTheme.colorScheme.onSurfaceVariant,
-                            rolling = true
-                        )
+                        val amber = UiSpec.amber(vm.darkModeOn)
+                        Pill("总数量 ${st.denom}", bg = amber.copy(alpha = 0.14f), fg = amber, rolling = true)
                         Pill("排队中 ${st.queued}", bg = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), fg = MaterialTheme.colorScheme.primary, rolling = true)
                     }
                     // 第二排（按阶段切换）

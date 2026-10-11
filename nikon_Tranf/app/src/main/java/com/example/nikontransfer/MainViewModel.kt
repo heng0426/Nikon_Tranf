@@ -1679,22 +1679,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val batchAvgBps = mutableStateOf(0L)     // 批次完成后冻结：平均速度 = 已完成字节/总时长
     val batchTotalMs = mutableStateOf(0L)    // 批次完成后冻结：首张 RUNNING → 全部终态的墙钟时长
     private var speedTicker: Thread? = null
+    @Volatile private var batchActive = false
     @Volatile private var batchStartMs = 0L
+    @Volatile private var batchStartBytes = 0L
 
-    /** 500ms 采样线程：累计字节 = Σ已完成 + 当前条目 got，8s 滑窗求速度与 ETA。
-     *  只在批次活跃期间存活；条目间隙（有排队、暂无下载中）继续等；
-     *  全部终态后写入平均速度/总时长并退出。ensureSpeedTicker 幂等。 */
+    /** 500ms 采样线程：累计字节 = 本批已完成(ΣDONE.total - 批次起点快照) + 当前条目 got，
+     *  8s 滑窗求速度与 ETA；全部终态后写入平均速度/总时长并冻结。
+     *  线程常驻不退出 —— 旧版"批次结束即退出"有竞态：收尾窗口（≤500ms）内再次入队，
+     *  ensureSpeedTicker 误判线程存活而不再启动，此后批次速度/统计全部冻结成旧值。
+     *  分子扣掉 batchStartBytes：队列里留着的上一批 DONE 条目不许算进本批平均速度。 */
     private fun ensureSpeedTicker() {
         if (speedTicker?.isAlive == true) return
         speedTicker = Thread {
-            val window = ArrayDeque<Pair<Long, Long>>()   // (tMs, 累计字节)
+            val window = ArrayDeque<Pair<Long, Long>>()   // (tMs, 本批累计字节)
             while (true) {
                 val st = scanQueueStats()
                 val now = System.currentTimeMillis()
                 val cur = st.runningItem
                 if (cur != null) {
-                    if (batchStartMs == 0L) { batchStartMs = now; window.clear() }
-                    val cum = st.byteDone + cur.got.value
+                    if (!batchActive) {
+                        batchActive = true
+                        batchStartMs = now
+                        batchStartBytes = st.byteDone
+                        window.clear()
+                    }
+                    val cum = st.byteDone - batchStartBytes + cur.got.value
                     window.addLast(now to cum)
                     while (window.size > 2 && now - window.first().first > 8000) window.removeFirst()
                     val (t0, b0) = window.first()
@@ -1702,21 +1711,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (dt >= 1500 && cum > b0) {
                         val bps = (cum - b0) * 1000 / dt
                         batchSpeedBps.value = bps
-                        val remain = st.byteDenom - cum
+                        val remain = st.byteDenom - st.byteDone - cur.got.value
                         batchEtaMs.value = if (bps > 0 && remain > 0) remain * 1000 / bps else 0L
                     }
-                } else if (!st.hasActive) {
-                    if (batchStartMs != 0L) {
-                        val dur = (now - batchStartMs).coerceAtLeast(0L)
-                        batchTotalMs.value = dur
-                        batchAvgBps.value = if (dur > 1000 && st.byteDone > 0) st.byteDone * 1000 / dur else 0L
-                        batchStartMs = 0L
-                    }
+                } else if (batchActive && !st.hasActive) {
+                    val dur = (now - batchStartMs).coerceAtLeast(0L)
+                    val bytes = st.byteDone - batchStartBytes
+                    batchTotalMs.value = dur
+                    batchAvgBps.value = if (dur > 1000 && bytes > 0) bytes * 1000 / dur else 0L
+                    batchActive = false
+                    batchStartMs = 0L
                     batchSpeedBps.value = 0L
                     batchEtaMs.value = 0L
-                    return@Thread
                 }
-                try { Thread.sleep(500) } catch (_: InterruptedException) { return@Thread }
+                try { Thread.sleep(500) } catch (_: InterruptedException) { break }
             }
         }.apply { isDaemon = true; name = "batch-speed"; start() }
     }
