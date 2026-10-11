@@ -200,7 +200,18 @@ internal fun MainActivity.SettingsScreen(
             vm.thumbCacheBytes = bytes
         }
 
-        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
+        // 顶部与主页顶栏同款公式（主页注释"顶栏高度只改这里"）：不算状态栏 inset、
+        // 顶部固定 40dp —— 原 safeDrawingPadding+16dp 会比主页顶栏低状态栏差值几个 dp
+        Column(
+            Modifier.fillMaxSize()
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(
+                        WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal
+                    )
+                )
+                .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                .padding(top = 40.dp)
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 返回按钮：34dp 圆角色块容器，与顶栏按钮同款
                 Box(

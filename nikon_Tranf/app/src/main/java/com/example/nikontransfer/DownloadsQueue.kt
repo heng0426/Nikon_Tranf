@@ -189,7 +189,16 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
         val st = vm.queueStats
         val listState = rememberLazyListState()
         Column(
-            Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
+            // 顶部与主页顶栏同款公式（见主页"顶栏高度只改这里"注释）：不算状态栏 inset、
+            // 顶部固定 40dp，返回按钮行与主页顶栏按钮同一水平线
+            Modifier.fillMaxSize()
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(
+                        WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal
+                    )
+                )
+                .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                .padding(top = 40.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
