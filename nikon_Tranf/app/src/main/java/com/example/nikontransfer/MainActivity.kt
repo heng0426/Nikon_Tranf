@@ -574,14 +574,16 @@ class MainActivity : ComponentActivity() {
                         Spacer(Modifier.weight(1f))
                         // 合并 RAW/JPG 快捷开关（下载队列左侧）：两枚类型小徽章
                         // （JPG 青 / NEF 紫 = 队列行类型徽章同色，白字缩写）——
-                        // 合并态徽章斜向贴合叠成一摞，文件态横向分开，动画过渡；
+                        // 合并态徽章斜向贴合叠成一摞，文件态上下完全分开，动画过渡；
                         // 与设置页"合并展示"同一开关（setMergePairs 持久化 + 清空多选）
+                        // 合并态：徽章斜向贴合叠成一摞（±3dp/2dp 重叠）；
+                        // 文件态：上下两枚完全分离（±7dp 垂直，水平归零不重叠）
                         val offX by animateDpAsState(
-                            if (mergeOn) 3.dp else 6.dp,
+                            if (mergeOn) 3.dp else 0.dp,
                             tween(UiSpec.STANDARD), label = "mergeBadgeX"
                         )
                         val offY by animateDpAsState(
-                            if (mergeOn) 2.dp else 0.dp,
+                            if (mergeOn) 2.dp else 7.dp,
                             tween(UiSpec.STANDARD), label = "mergeBadgeY"
                         )
                         Box(
