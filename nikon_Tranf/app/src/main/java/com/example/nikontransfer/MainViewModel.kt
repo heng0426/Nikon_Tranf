@@ -464,6 +464,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pairRowsVersion.value++
     }
 
+    /* ---------- 同秒排序 ----------
+     * stamp 只有秒级精度，sortedByDescending 是稳定排序：同一秒并列时完全保留
+     * 枚举输出顺序 —— USB 快路径 = BFS 文件夹序（JPG 目录整段在前、NEF 在后，
+     * 各自旧→新），Wi-Fi = C 侧 qsort 句柄升序（旧→新）。表现为同秒连拍内部
+     * 顺序与整体"从新到旧"相反、同张 JPG/NEF 被文件夹分组拆开。 */
+    /** 同秒并列时的拍摄序键：fileNo 数字部分（"DSC_1234"→1234）优先；
+     *  USB 快路径（0x9434 表只回 3 段）与 Wi-Fi 枚举都拿不到文件名，
+     *  兜底句柄低 16 位槽位号（尼康句柄 = 目录<<16 | 槽位，同目录内随拍摄递增，
+     *  JPG/NEF 同一张的槽位号一致 → 跨类型可比）。值越大 = 拍摄越晚。 */
+    private fun PhotoRow.captureSeq(): Int =
+        fileNo?.takeLastWhile { c -> c.isDigit() }?.toIntOrNull() ?: (handle and 0xffff)
+
+    /** 配对行的同秒拍摄序：取代表行（JPG 优先，缺则为 NEF）按同规则计算 */
+    private fun PairRow.captureSeq(): Int =
+        (jpg ?: nef)?.captureSeq() ?: -1
+
     private fun buildPairRows(): List<PairRow> {
         val byKey = LinkedHashMap<String, MutableList<PhotoRow>>()
         for (r in photoRows) {
@@ -481,7 +497,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 rows.add(PairRow("$key#$i", stamp, jpg, nef))
             }
         }
-        return rows.sortedByDescending { it.stamp }
+        // 同秒并列按拍摄序打破（从新到旧）：不依赖 photoRows 恰好已排好序，
+        // 显式声明，防止上游排序变化悄悄破坏配对组间的先后
+        return rows.sortedWith(
+            compareByDescending<PairRow> { it.stamp }
+                .thenByDescending { it.captureSeq() }
+        )
     }
 
     /** 合并模式的可见对（分块前全量）：格式筛选隐藏（①b）；下载状态=补全语义（②a）；日期照旧
@@ -1182,7 +1203,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val fileNo = p.getOrNull(3)?.substringBeforeLast('.')
             val name = "IMG_${stamp}_${p[0].takeLast(4).padStart(4, '0')}.${type.lowercase()}"
             PhotoRow(name, handle, type, stamp, fileNo)
-        }.sortedByDescending { it.stamp }              // 从新到旧
+        }.sortedWith(
+            compareByDescending<PhotoRow> { it.stamp }                  // 从新到旧
+                .thenByDescending { it.captureSeq() }                   // 同秒：晚拍的在前（连拍不再内部倒序）
+                .thenBy { if (it.type.equals("NEF", true)) 1 else 0 }   // 同张兜底：JPG 在 NEF 前
+        )
         syncDownloadedNames()                          // 本地删除过的照片不再标记已下载
         parsed.forEach { it.downloaded.value = it.name in downloadedNames.value }
         photoRows.clear()
@@ -1278,7 +1303,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             r.preview.value = demoBitmap(i)
             rows.add(r)
         }
-        rows.sortByDescending { it.stamp }
+        rows.sortWith(
+            compareByDescending<PhotoRow> { it.stamp }
+                .thenByDescending { it.captureSeq() }
+                .thenBy { if (it.type.equals("NEF", true)) 1 else 0 }
+        )
         photoRows.clear()
         photoRows.addAll(rows)
         rebuildRowIndex()
