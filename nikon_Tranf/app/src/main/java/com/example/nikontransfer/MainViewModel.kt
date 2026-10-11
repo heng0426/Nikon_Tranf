@@ -1628,7 +1628,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 2×any + 4×count + firstOrNull（7 次全队列遍历，且每次都订阅所有条目的 status）。
      * 只订阅 status（低频：每张一次），**不读 got** —— got 是高频状态（节流后 250ms
      * 一次），读它会把统计拖进每次进度更新，进而让整个下载页重组。
-     * 进度相关的读取单独放在 OverallProgressBar 里自订阅。 */
+     * 进度相关的读取单独放在下载页的 OverallCard 里自订阅。 */
     data class QueueStats(
         val running: Int, val queued: Int, val done: Int,
         val failed: Int, val canceled: Int

@@ -197,34 +197,11 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                     TextButton(onClick = { vm.clearFinished() }) { Text("清空已完成") }
                 }
             }
-            // 汇总胶囊 + 总进度条：进度 = (已完成数 + 当前任务字节比例) / 未完成任务总数。
-            // 不按字节累加——排队任务在开始下载前 total=0，按字节累加会让分母失真。
-            if (vm.downloadQueue.isNotEmpty()) {
-                // 统计胶囊：只保留「排队中」「已完成」两项（高度固定，不随任务状态变化）
-                val green = UiSpec.accent(vm.darkModeOn)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (st.queued > 0) {
-                        Surface(shape = RoundedCornerShape(UiSpec.ROUND_SMALL), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)) {
-                            RollingText(
-                                "排队中 ${st.queued}",
-                                Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                    if (st.done > 0) {
-                        Surface(shape = RoundedCornerShape(UiSpec.ROUND_SMALL), color = green.copy(alpha = 0.14f)) {
-                            RollingText(
-                                "已完成 ${st.done}",
-                                Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                color = green
-                            )
-                        }
-                    }
-                }
-                if (st.denom > 0 && !vm.perfHideOverallBar.value) {
-                    OverallProgressBar(done = st.done, denom = st.denom)
-                }
+            // 总览卡片：状态计数胶囊 + 总进度收进同一张卡（进度 = 已完成数 + 当前任务
+            // 字节比例，除以未完成任务总数；不按字节累加——排队任务开始前 total=0，
+            // 按字节累加会让分母失真）。denom=0（全部取消/失败）时不显示。
+            if (vm.downloadQueue.isNotEmpty() && st.denom > 0 && !vm.perfHideOverallBar.value) {
+                OverallCard(st)
             }
             if (vm.downloadQueue.isEmpty()) {
                 Text(
@@ -243,13 +220,16 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
         }
     }
 
-    /** 总进度卡片：与队列行同款卡片（ROUND_LARGE + 半透明 surfaceVariant 底），
+    /** 总览卡片：状态计数胶囊（下载中/排队中/已完成）+ 总进度胶囊收进同一张卡。
+     *  卡片底色用 primary 着色，与队列行的 surfaceVariant 灰卡一眼区分；
      *  绿色填充按总进度比例铺在卡片背景上，与队列行的填充语言一致。
      *  独立 composable 的原因不变：got 是高频状态（节流后 250ms 一次，
-     *  节流前整包模式 64KB 一次），留在页面顶层读它会让标题栏、统计胶囊、
-     *  整个 LazyColumn 跟着一起重组；抽成独立作用域后，更新只作用这一张卡。 */
+     *  节流前整包模式 64KB 一次），留在页面顶层读它会让标题栏、整个
+     *  LazyColumn 跟着一起重组；抽成独立作用域后，更新只作用这一张卡。
+     *  参数 st 只含各状态计数（低频：每次状态变化一次），不含任何 got 读取。
+     *  行高恒定：denom>0 时 下载中/排队中/已完成 至少一个非零，第一行不会变空。 */
     @Composable
-internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
+internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats) {
         val frac by remember {
             derivedStateOf {
                 val it = vm.downloadQueue.firstOrNull {
@@ -258,7 +238,7 @@ internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
                 if (it == null) 0f else (it.got.value.toFloat() / it.total.value).coerceIn(0f, 1f)
             }
         }
-        val overall = ((done + frac) / denom).coerceIn(0f, 1f)
+        val overall = ((st.done + frac) / st.denom).coerceIn(0f, 1f)
         // 与队列行同款线性插值：总进度随分块更新平滑推进。
         // got 节流到 250ms 后，500ms 补间能完整跑完（此前每 64KB 就被打断重启 → 拖影）。
         val overallAnim by animateFloatAsState(
@@ -269,7 +249,8 @@ internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
         val green = UiSpec.accent(vm.darkModeOn)
         Surface(
             shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            // primary 着色底：与队列行的 surfaceVariant 灰卡区分（这是汇总卡）
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
         ) {
             Box(Modifier.fillMaxWidth()) {
                 /* 填充层 drawBehind（与队列行同款）：进度变化只触发重绘，不参与
@@ -286,24 +267,69 @@ internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
                             )
                         }
                 )
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        "总进度",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        "$done/$denom · ${(overall * 100).roundToInt()}%",
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontFeatureSettings = "tnum"
-                        ),
-                        color = green
-                    )
+                    // 第一行：状态计数胶囊（低频变化，保留 RollingText 滚动数字）
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (st.running > 0) {
+                            Pill("下载中 ${st.running}", bg = green.copy(alpha = 0.14f), fg = green, rolling = true)
+                        }
+                        if (st.queued > 0) {
+                            Pill("排队中 ${st.queued}", bg = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), fg = MaterialTheme.colorScheme.primary, rolling = true)
+                        }
+                        if (st.done > 0) {
+                            Pill("已完成 ${st.done}", bg = green.copy(alpha = 0.14f), fg = green, rolling = true)
+                        }
+                    }
+                    // 第二行：总进度标签 + 数值（数值 250ms 一次高频变化，tnum 等宽防抖动）
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Pill(
+                            "总进度",
+                            bg = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.10f),
+                            fg = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Pill(
+                            "${st.done}/${st.denom} · ${(overall * 100).roundToInt()}%",
+                            bg = green.copy(alpha = 0.14f),
+                            fg = green,
+                            mono = true
+                        )
+                    }
                 }
+            }
+        }
+    }
+
+    /** 总览卡内的文字胶囊：ROUND_SMALL + 着色底，与全局胶囊风格一致。
+     *  rolling = true 时数字变化走 RollingText 滚动动画（仅用于低频计数）；
+     *  mono = true 时加 tnum 等宽数字（高频数值防抖动，如总进度 250ms 一次）。 */
+    @Composable
+    private fun MainActivity.Pill(
+        text: String,
+        bg: Color,
+        fg: Color,
+        rolling: Boolean = false,
+        mono: Boolean = false
+    ) {
+        Surface(shape = RoundedCornerShape(UiSpec.ROUND_SMALL), color = bg) {
+            if (rolling) {
+                RollingText(
+                    text,
+                    Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    color = fg
+                )
+            } else {
+                Text(
+                    text,
+                    Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    color = fg,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFeatureSettings = if (mono) "tnum" else null
+                    )
+                )
             }
         }
     }
