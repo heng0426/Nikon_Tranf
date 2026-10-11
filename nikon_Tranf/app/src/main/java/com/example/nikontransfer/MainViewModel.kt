@@ -839,42 +839,52 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  网络绑过去（反射 bindProcessToNetworkHandle，同步改写 Java 与 native
      *  socket 的 fwmark 来源），用普通 Socket 连探针地址验证可达性，
      *  哪个 netId 能路由到热点网段就停在哪个上。
-     *  判定（探测目标是网段内几乎无设备的 .254）：
-     *  - ENETUNREACH（立即失败）= 该 netId 的表里没有热点路由 → 跳过；
-     *  - ECONNREFUSED / 超时 / EHOSTUNREACH = 路由已通（ARP 无应答属正常）。
-     *  优先试已知的 local/legacy netId（98/99，规则链可见），再全扫 1..128；
-     *  错的立即失败、对的 ~350ms，整体 <1s。 */
+     *  判定分两轮（默认路由黑洞超时与 ARP 超时不可区分，必须分层）：
+     *  ① 精确探针 = 上次相机 IP:15740（在线设备，命中必有明确响应）：
+     *     连接成功 / ECONNREFUSED = 路由通命中；超时 = 黑洞（包被默认路由
+     *     发去了互联网网关）→ 该 netId 判不可达；
+     *  ② 宽容探针 = 网段 .254（无精确探针才用）：超时也命中（赌 98/99 优先序）。
+     *  ENETUNREACH（立即失败）= 表里无热点路由 → 两轮都跳过。
+     *  优先试已知的 local/legacy netId（98/99，规则链可见），再全扫 1..128。 */
     private fun probeHotspotNetId(prefix: String): Int? {
         hotspotNetIdCache[prefix]?.let { n ->
             if (bindProcessToNetId(n)) return n
         }
-        val probe = java.net.InetSocketAddress("$prefix.254", 48080)
+        val camIp = prefs.getString("camera_ip", null)
         val candidates = (listOf(98, 99) + (1..128).toList()).distinct()
-        for (n in candidates) {
-            if (!bindProcessToNetId(n)) continue
-            try {
-                val s = java.net.Socket()
-                try { s.connect(probe, 350) } finally { runCatching { s.close() } }
-                hotspotNetIdCache[prefix] = n
-                Log.i("GPhoto2", "网络策略: netId=$n 可达热点网段 $prefix.x（直连成功）")
-                return n
-            } catch (e: java.net.SocketTimeoutException) {
-                hotspotNetIdCache[prefix] = n
-                Log.i("GPhoto2", "网络策略: netId=$n 可达热点网段 $prefix.x（ARP 超时=路由通）")
-                return n
-            } catch (e: java.net.ConnectException) {
-                val m = e.message?.lowercase() ?: ""
-                if (!m.contains("unreach")) {   // ENETUNREACH=无路由；refused/EHOSTUNREACH=路由通
-                    hotspotNetIdCache[prefix] = n
-                    Log.i("GPhoto2", "网络策略: netId=$n 可达热点网段 $prefix.x（${e.message}）")
-                    return n
+        val probes = ArrayList<Pair<String, Boolean>>()   // (探针 IP, 超时是否算命中)
+        if (camIp != null && camIp.startsWith("$prefix."))
+            probes.add(camIp to false)
+        probes.add("$prefix.254" to (probes.isEmpty()))   // 无相机 IP 才用宽容判定
+        for ((ip, timeoutHits) in probes) {
+            val probe = java.net.InetSocketAddress(ip, 15740)
+            for (n in candidates) {
+                if (!bindProcessToNetId(n)) continue
+                try {
+                    val s = java.net.Socket()
+                    try { s.connect(probe, 400) } finally { runCatching { s.close() } }
+                    return hotspotNetIdHit(prefix, n, ip, "直连成功")
+                } catch (e: java.net.SocketTimeoutException) {
+                    if (timeoutHits) return hotspotNetIdHit(prefix, n, ip, "ARP 超时=路由通（宽容判定）")
+                    Log.i("GPhoto2", "网络策略: netId=$n 超时（默认路由黑洞，跳过）")
+                } catch (e: java.net.ConnectException) {
+                    val m = e.message?.lowercase() ?: ""
+                    if (!m.contains("unreach"))   // ENETUNREACH=无路由；refused/EHOSTUNREACH=路由通
+                        return hotspotNetIdHit(prefix, n, ip, "${e.message}")
+                } catch (_: Throwable) {
                 }
-            } catch (_: Throwable) {
             }
         }
         restoreProcessNetId()   // 全部候选失败：还原，别把进程停在坏 netId 上
         Log.i("GPhoto2", "网络策略: 热点网段 $prefix.x 无可达 netId")
         return null
+    }
+
+    /** netId 探测命中：记录缓存并打日志 */
+    private fun hotspotNetIdHit(prefix: String, n: Int, ip: String, why: String): Int {
+        hotspotNetIdCache[prefix] = n
+        Log.i("GPhoto2", "网络策略: netId=$n 可达热点网段 $prefix.x via $ip（$why）")
+        return n
     }
 
     /** 进程默认网络绑到任意 netId（含非受管）：公开 API 伪造通道——
