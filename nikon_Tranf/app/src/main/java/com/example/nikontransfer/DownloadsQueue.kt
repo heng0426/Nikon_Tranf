@@ -228,20 +228,11 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                     TextButton(onClick = { vm.clearFinished() }) { Text("清空已完成") }
                 }
             }
-            // 总览卡片：状态计数胶囊 + 总进度收进同一张卡（进度 = 已完成数 + 当前任务
-            // 字节比例，除以未完成任务总数；不按字节累加——排队任务开始前 total=0，
-            // 按字节累加会让分母失真）。denom=0（全部取消/失败）时不显示。
-            if (vm.downloadQueue.isNotEmpty() && st.denom > 0 && !vm.perfHideOverallBar.value) {
+            // 总览卡片（总计卡）：恒显示（空队列 = 0/0/0），与有任务时统一风格。
+            // 空队列时第二排两个分支（速率排/完成排）都不命中 → 只有一排计数胶囊；
+            // 填充为 0；点击滚动空转。perfHideOverallBar 仅性能测具隐藏用。
+            if (!vm.perfHideOverallBar.value) {
                 OverallCard(st, listState)
-            }
-            if (vm.downloadQueue.isEmpty()) {
-                Text(
-                    "暂无下载任务\n\n选择照片下载后，任务将显示在这里",
-                    Modifier.fillMaxWidth().padding(vertical = 48.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
             }
             LazyColumn(Modifier.fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(vm.downloadQueue, key = { it.handle }) { item ->
