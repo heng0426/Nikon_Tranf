@@ -1348,6 +1348,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             items.add(it)
         }
         downloads.enqueueDemo(items)
+        ensureSpeedTicker()   // 诊断页假下载同样走批次速度统计
         demoStop = false
         demoDownloadRunning.value = true
         Thread {
@@ -1626,34 +1627,130 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /* 队列统计：一次遍历算出全部计数，取代下载页顶层的
      * 2×any + 4×count + firstOrNull（7 次全队列遍历，且每次都订阅所有条目的 status）。
-     * 只订阅 status（低频：每张一次），**不读 got** —— got 是高频状态（节流后 250ms
+     * 只订阅 status/total/expected（低频），**不读 got** —— got 是高频状态（节流后 250ms
      * 一次），读它会把统计拖进每次进度更新，进而让整个下载页重组。
-     * 进度相关的读取单独放在下载页的 OverallCard 里自订阅。 */
+     * got 相关读取单独放在下载页 OverallCard 的窄作用域（OverallFill/PercentPill）里。 */
     data class QueueStats(
         val running: Int, val queued: Int, val done: Int,
-        val failed: Int, val canceled: Int
+        val failed: Int, val canceled: Int,
+        val runningItem: QueueItem?,     // 正在下载的条目（串行 worker，至多一条）
+        val byteDone: Long,              // Σ DONE.total：已完成字节
+        val byteQueuedKnown: Long,       // Σ QUEUED 已知大小（预取 expected / 演示预置 total）
+        val queuedUnknown: Int,          // 大小未知的排队条目数（分母按均值估计）
+        val byteRunningTotal: Long       // RUNNING 条目 total 之和（开始下载时才写入）
     ) {
         val hasActive get() = running + queued > 0
         val hasFinished get() = done + canceled > 0
         val denom get() = done + running + queued
+        /** 已知大小条目的平均字节（估计未知排队条目用）；整批全未知时 0 */
+        val avgKnownBytes: Long
+            get() {
+                val cnt = done + running + queued - queuedUnknown
+                return if (cnt > 0) (byteDone + byteRunningTotal + byteQueuedKnown) / cnt else 0L
+            }
+        /** 字节权重分母：已完成 + 下载中 + 排队（已知/均值估计）。全未知时 0 → UI 退回按张数 */
+        val byteDenom: Long
+            get() = byteDone + byteRunningTotal + byteQueuedKnown + queuedUnknown * avgKnownBytes
     }
 
-    val queueStats: QueueStats by derivedStateOf {
+    private fun scanQueueStats(): QueueStats {
         var r = 0; var q = 0; var d = 0; var f = 0; var c = 0
+        var run: QueueItem? = null
+        var bDone = 0L; var bQueued = 0L; var qUnknown = 0; var bRun = 0L
         for (it in downloadQueue) when (it.status.value) {
-            QStatus.RUNNING -> r++
-            QStatus.QUEUED -> q++
-            QStatus.DONE -> d++
+            QStatus.RUNNING -> { r++; if (run == null) run = it; bRun += it.total.value }
+            QStatus.QUEUED -> {
+                q++
+                val sz = if (it.expectedBytes.value > 0) it.expectedBytes.value else it.total.value
+                if (sz > 0) bQueued += sz else qUnknown++
+            }
+            QStatus.DONE -> { d++; bDone += it.total.value }
             QStatus.FAILED -> f++
             QStatus.CANCELED -> c++
         }
-        QueueStats(r, q, d, f, c)
+        return QueueStats(r, q, d, f, c, run, bDone, bQueued, qUnknown, bRun)
+    }
+
+    val queueStats: QueueStats by derivedStateOf { scanQueueStats() }
+
+    /* ---------- 批次速度 / 剩余时间 / 完成统计（总览卡第二排）---------- */
+    val batchSpeedBps = mutableStateOf(0L)   // 滑窗瞬时速度（字节/秒）
+    val batchEtaMs = mutableStateOf(0L)      // 按滑窗速度推算的剩余毫秒
+    val batchAvgBps = mutableStateOf(0L)     // 批次完成后冻结：平均速度 = 已完成字节/总时长
+    val batchTotalMs = mutableStateOf(0L)    // 批次完成后冻结：首张 RUNNING → 全部终态的墙钟时长
+    private var speedTicker: Thread? = null
+    @Volatile private var batchStartMs = 0L
+
+    /** 500ms 采样线程：累计字节 = Σ已完成 + 当前条目 got，8s 滑窗求速度与 ETA。
+     *  只在批次活跃期间存活；条目间隙（有排队、暂无下载中）继续等；
+     *  全部终态后写入平均速度/总时长并退出。ensureSpeedTicker 幂等。 */
+    private fun ensureSpeedTicker() {
+        if (speedTicker?.isAlive == true) return
+        speedTicker = Thread {
+            val window = ArrayDeque<Pair<Long, Long>>()   // (tMs, 累计字节)
+            while (true) {
+                val st = scanQueueStats()
+                val now = System.currentTimeMillis()
+                val cur = st.runningItem
+                if (cur != null) {
+                    if (batchStartMs == 0L) { batchStartMs = now; window.clear() }
+                    val cum = st.byteDone + cur.got.value
+                    window.addLast(now to cum)
+                    while (window.size > 2 && now - window.first().first > 8000) window.removeFirst()
+                    val (t0, b0) = window.first()
+                    val dt = now - t0
+                    if (dt >= 1500 && cum > b0) {
+                        val bps = (cum - b0) * 1000 / dt
+                        batchSpeedBps.value = bps
+                        val remain = st.byteDenom - cum
+                        batchEtaMs.value = if (bps > 0 && remain > 0) remain * 1000 / bps else 0L
+                    }
+                } else if (!st.hasActive) {
+                    if (batchStartMs != 0L) {
+                        val dur = (now - batchStartMs).coerceAtLeast(0L)
+                        batchTotalMs.value = dur
+                        batchAvgBps.value = if (dur > 1000 && st.byteDone > 0) st.byteDone * 1000 / dur else 0L
+                        batchStartMs = 0L
+                    }
+                    batchSpeedBps.value = 0L
+                    batchEtaMs.value = 0L
+                    return@Thread
+                }
+                try { Thread.sleep(500) } catch (_: InterruptedException) { return@Thread }
+            }
+        }.apply { isDaemon = true; name = "batch-speed"; start() }
+    }
+
+    @Volatile private var prefetchInFlight = false
+
+    /** 入队后预取文件大小（0x9421，走 camMutex 串行）：字节权重进度分母的前提。
+     *  查询失败（-1）的条目保持 expectedBytes=0，分母按已知均值估计；
+     *  真实值在该条目开始下载时由 runQueueItem 写入 total 自然替换。 */
+    private fun prefetchSizes() {
+        if (demoMode.value || prefetchInFlight) return
+        prefetchInFlight = true
+        Thread {
+            try {
+                for (it in downloadQueue.toList()) {
+                    if (it.status.value != QStatus.QUEUED) continue
+                    if (it.expectedBytes.value > 0 || it.total.value > 0) continue
+                    val s = sizeOf(it.handle)
+                    if (s > 0) it.expectedBytes.value = s
+                }
+            } finally { prefetchInFlight = false }
+        }.apply { isDaemon = true; name = "size-prefetch"; start() }
     }
 
     /** 入队（单张：全屏预览页与网格触发统一走队列；单张不触发完成提醒） */
-    fun enqueueDownload(row: PhotoRow) = downloads.enqueue(row)
+    fun enqueueDownload(row: PhotoRow) {
+        downloads.enqueue(row)
+        prefetchSizes()
+    }
 
-    fun retryDownload(item: QueueItem) = downloads.retry(item)
+    fun retryDownload(item: QueueItem) {
+        downloads.retry(item)
+        prefetchSizes()   // 复位重排的条目可能还没预取到大小
+    }
 
     fun cancelDownload(item: QueueItem) = downloads.cancel(item)
 
@@ -1694,6 +1791,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         item.status.value = QStatus.RUNNING
         item.cancelRequested = false
         item.resetProgress()
+        ensureSpeedTicker()   // 批次速度/ETA 采样（幂等；全部终态后自退出）
         if (demoMode.value) { runDemoItem(item); return }
         val startMs = System.currentTimeMillis()   // 下载耗时统计（DONE 时写入 elapsedMs）
         // USB 通道：开关开 → 单事务整包（0x1009，进度按 bulk 轮回调）失败回退分段；
@@ -1860,6 +1958,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         downloads.enqueueAll(fresh.map { QueueItem(it.handle, it.name, it.type, it.stamp) })
+        prefetchSizes()       // 字节权重进度：入队即后台预取各文件大小
         clearSelection()   // 进度由队列页接管（走统一出口，选中计数器一并归零）
     }
 

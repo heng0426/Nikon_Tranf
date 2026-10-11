@@ -77,7 +77,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -181,6 +183,7 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
         // 原来是页面顶层 2×any + 4×count + firstOrNull 共 7 次全队列遍历，
         // 且其中 firstOrNull 还读了 got —— 一个字节变化就会让整页重算。
         val st = vm.queueStats
+        val listState = rememberLazyListState()
         Column(
             Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -201,7 +204,7 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
             // 字节比例，除以未完成任务总数；不按字节累加——排队任务开始前 total=0，
             // 按字节累加会让分母失真）。denom=0（全部取消/失败）时不显示。
             if (vm.downloadQueue.isNotEmpty() && st.denom > 0 && !vm.perfHideOverallBar.value) {
-                OverallCard(st)
+                OverallCard(st, listState)
             }
             if (vm.downloadQueue.isEmpty()) {
                 Text(
@@ -212,7 +215,7 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
-            LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            LazyColumn(Modifier.fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(vm.downloadQueue, key = { it.handle }) { item ->
                     QueueRow(item)
                 }
@@ -220,87 +223,140 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
         }
     }
 
-    /** 总览卡片：状态计数胶囊（下载中/排队中/已完成）+ 总进度胶囊收进同一张卡。
-     *  卡片底色用 primary 着色，与队列行的 surfaceVariant 灰卡一眼区分；
-     *  绿色填充按总进度比例铺在卡片背景上，与队列行的填充语言一致。
-     *  独立 composable 的原因不变：got 是高频状态（节流后 250ms 一次，
-     *  节流前整包模式 64KB 一次），留在页面顶层读它会让标题栏、整个
-     *  LazyColumn 跟着一起重组；抽成独立作用域后，更新只作用这一张卡。
-     *  参数 st 只含各状态计数（低频：每次状态变化一次），不含任何 got 读取。
-     *  行高恒定：denom>0 时 下载中/排队中/已完成 至少一个非零，第一行不会变空。 */
+    /** 总览卡片。
+     *  第一排恒定三胶囊：已完成 / 总数量 / 排队中（"下载中"不再占位 —— 总数量-已完成-排队中
+     *  的差就是正在下载的那条，串行 worker 至多一条）。
+     *  第二排按阶段切换：下载中 → [滑窗速度][剩 mm:ss][百分比]；批次完成 → [平均速度][总时长]；
+     *  仅排队（还没开跑）→ 无第二排。
+     *  进度口径：字节权重 Σ已收/Σ总字节 —— 入队后台预取 0x9421 大小，未知条目按已知均值估计，
+     *  整批全未知时退回按张数。点击卡片滚动到正在下载（或第一个排队）的行。
+     *  got（高频）读取全部关进 OverallFill / PercentPill 两个窄作用域，整卡其余部分只在
+     *  状态变化（低频）时重组；速度/ETA 由 VM 500ms 采样线程写入，本卡只读结果。 */
     @Composable
-internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats) {
-        val frac by remember {
-            derivedStateOf {
-                val it = vm.downloadQueue.firstOrNull {
-                    it.status.value == QStatus.RUNNING && it.total.value > 0
-                }
-                if (it == null) 0f else (it.got.value.toFloat() / it.total.value).coerceIn(0f, 1f)
-            }
-        }
-        val overall = ((st.done + frac) / st.denom).coerceIn(0f, 1f)
-        // 与队列行同款线性插值：总进度随分块更新平滑推进。
-        // got 节流到 250ms 后，500ms 补间能完整跑完（此前每 64KB 就被打断重启 → 拖影）。
-        val overallAnim by animateFloatAsState(
-            targetValue = overall,
-            animationSpec = vm.progressSpec(),
-            label = "queueOverall"
-        )
+internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: LazyListState) {
+        val scope = rememberCoroutineScope()
         val green = UiSpec.accent(vm.darkModeOn)
         Surface(
             shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
             // primary 着色底：与队列行的 surfaceVariant 灰卡区分（这是汇总卡）
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+            modifier = Modifier.clickable {
+                val runningIdx = st.runningItem?.let { cur ->
+                    vm.downloadQueue.indexOfFirst { q -> q === cur }.takeIf { ix -> ix >= 0 }
+                }
+                val idx = runningIdx
+                    ?: vm.downloadQueue.indexOfFirst { it.status.value == QStatus.QUEUED }.takeIf { ix -> ix >= 0 }
+                if (idx != null) scope.launch { listState.animateScrollToItem(idx) }
+            }
         ) {
             Box(Modifier.fillMaxWidth()) {
-                /* 填充层 drawBehind（与队列行同款）：进度变化只触发重绘，不参与
-                 * 测量/布局。M3 LinearProgressIndicator 内部还有一层 spring，与外层
-                 * 补间叠加永不收敛，所以进度可视化全部自绘（之前实测 16.5ms 教训）。 */
-                Box(
-                    Modifier
-                        .matchParentSize()
-                        .drawBehind {
-                            drawRect(
-                                color = green,
-                                alpha = 0.20f,
-                                size = Size(size.width * overallAnim, size.height)
-                            )
-                        }
-                )
+                OverallFill(st, Modifier.matchParentSize())
                 Column(
                     Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // 第一行：状态计数胶囊（低频变化，保留 RollingText 滚动数字）
+                    // 第一排（恒定）：已完成 / 总数量 / 排队中
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (st.running > 0) {
-                            Pill("下载中 ${st.running}", bg = green.copy(alpha = 0.14f), fg = green, rolling = true)
-                        }
-                        if (st.queued > 0) {
-                            Pill("排队中 ${st.queued}", bg = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), fg = MaterialTheme.colorScheme.primary, rolling = true)
-                        }
-                        if (st.done > 0) {
-                            Pill("已完成 ${st.done}", bg = green.copy(alpha = 0.14f), fg = green, rolling = true)
-                        }
-                    }
-                    // 第二行：总进度标签 + 数值（数值 250ms 一次高频变化，tnum 等宽防抖动）
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Pill("已完成 ${st.done}", bg = green.copy(alpha = 0.14f), fg = green, rolling = true)
                         Pill(
-                            "总进度",
+                            "总数量 ${st.denom}",
                             bg = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.10f),
-                            fg = MaterialTheme.colorScheme.onSurfaceVariant
+                            fg = MaterialTheme.colorScheme.onSurfaceVariant,
+                            rolling = true
                         )
-                        Spacer(Modifier.weight(1f))
-                        Pill(
-                            "${st.done}/${st.denom} · ${(overall * 100).roundToInt()}%",
-                            bg = green.copy(alpha = 0.14f),
-                            fg = green,
-                            mono = true
-                        )
+                        Pill("排队中 ${st.queued}", bg = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), fg = MaterialTheme.colorScheme.primary, rolling = true)
+                    }
+                    // 第二排（按阶段切换）
+                    when {
+                        st.runningItem != null -> BatchPaceRow(st)
+                        !st.hasActive && st.hasFinished && vm.batchAvgBps.value > 0L -> BatchDoneRow()
                     }
                 }
             }
         }
+    }
+
+    /** 卡底绿色进度填充：字节权重比例（整批未知大小时退回按张数）。
+     *  got 变化只重算这一个窄作用域；drawBehind 只走绘制阶段，不参与测量/布局。
+     *  modifier 由调用处传 matchParentSize（BoxScope 接收者扩展，跨不出父 Box 作用域）。 */
+    @Composable
+    private fun MainActivity.OverallFill(st: MainViewModel.QueueStats, modifier: Modifier) {
+        val frac by remember(st) {
+            derivedStateOf {
+                val cur = st.runningItem
+                val num = st.byteDone + (cur?.got?.value ?: 0L)
+                when {
+                    st.byteDenom > 0 -> (num.toDouble() / st.byteDenom).toFloat().coerceIn(0f, 1f)
+                    st.denom > 0 -> {
+                        val curFrac = if (cur != null && cur.total.value > 0)
+                            (cur.got.value.toFloat() / cur.total.value).coerceIn(0f, 1f) else 0f
+                        ((st.done + curFrac) / st.denom).coerceIn(0f, 1f)
+                    }
+                    else -> 0f
+                }
+            }
+        }
+        val anim by animateFloatAsState(frac, animationSpec = vm.progressSpec(), label = "queueOverall")
+        val green = UiSpec.accent(vm.darkModeOn)
+        Box(
+            modifier.drawBehind {
+                drawRect(color = green, alpha = 0.20f, size = Size(size.width * anim, size.height))
+            }
+        )
+    }
+
+    /** 第二排（下载中）：[滑窗速度] [剩 mm:ss] [百分比]。速度/ETA 读 VM 500ms 采样结果，
+     *  变化只重组本行；百分比跟 got 走（250ms），单独收进 PercentPill。 */
+    @Composable
+    private fun MainActivity.BatchPaceRow(st: MainViewModel.QueueStats) {
+        val green = UiSpec.accent(vm.darkModeOn)
+        val speed = vm.batchSpeedBps.value
+        val eta = vm.batchEtaMs.value
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Pill(if (speed > 0) "${humanSize(speed)}/s" else "…", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+            Pill(if (eta > 0) "剩 ${fmtDur(eta)}" else "剩 …", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+            PercentPill(st)
+        }
+    }
+
+    /** 第二排（批次完成后）：平均速度 + 总下载时长（冻结值，下一批开始前不变） */
+    @Composable
+    private fun MainActivity.BatchDoneRow() {
+        val green = UiSpec.accent(vm.darkModeOn)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Pill("平均 ${humanSize(vm.batchAvgBps.value)}/s", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+            Pill("总时长 ${fmtDur(vm.batchTotalMs.value)}", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+        }
+    }
+
+    /** 百分比胶囊：字节权重（整批未知大小时退回按张数）。got 变化只重组这一个胶囊。 */
+    @Composable
+    private fun MainActivity.PercentPill(st: MainViewModel.QueueStats) {
+        val pct by remember(st) {
+            derivedStateOf {
+                val cur = st.runningItem
+                val num = st.byteDone + (cur?.got?.value ?: 0L)
+                val v = when {
+                    st.byteDenom > 0 -> num * 100.0 / st.byteDenom
+                    st.denom > 0 -> {
+                        val curFrac = if (cur != null && cur.total.value > 0)
+                            cur.got.value.toDouble() / cur.total.value else 0.0
+                        (st.done + curFrac) * 100.0 / st.denom
+                    }
+                    else -> 0.0
+                }
+                v.roundToInt()
+            }
+        }
+        val green = UiSpec.accent(vm.darkModeOn)
+        Pill("$pct%", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+    }
+
+    /** 毫秒 → m:ss（满 1 小时 h:mm:ss） */
+    private fun fmtDur(ms: Long): String {
+        val s = ms / 1000
+        return if (s >= 3600) String.format(java.util.Locale.US, "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60)
+        else String.format(java.util.Locale.US, "%d:%02d", s / 60, s % 60)
     }
 
     /** 总览卡内的文字胶囊：ROUND_SMALL + 着色底，与全局胶囊风格一致。

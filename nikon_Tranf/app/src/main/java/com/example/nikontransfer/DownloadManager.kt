@@ -11,6 +11,8 @@ class QueueItem(val handle: Int, val name: String, val type: String, val stamp: 
     val status = mutableStateOf(QStatus.QUEUED)
     val total = mutableStateOf(0L)
     val got = mutableStateOf(0L)
+    /** 入队后后台预取的文件大小（0x9421）；0 = 未知，总进度分母按已知均值估计 */
+    val expectedBytes = mutableStateOf(0L)
     val speed = mutableStateOf("")
     @Volatile var cancelRequested = false
     /** 实际下载耗时（ms）：DONE 时有效，0 = 未完成/被取消 */
