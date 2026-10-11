@@ -33,6 +33,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
@@ -144,6 +145,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
@@ -160,6 +162,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.nikontransfer.ui.theme.NikonTransferTheme
 import kotlinx.coroutines.Dispatchers
@@ -532,25 +535,6 @@ class MainActivity : ComponentActivity() {
                         ) {
                             FunnelIcon(if (vm.filterActive) UiSpec.accent(vm.darkModeOn) else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        // 合并 RAW/JPG 快捷开关（同款 34dp 外框，漏斗右侧）：
-                        // 开=accent 绿高亮，关=灰；与设置页"合并展示"同一开关
-                        // （setMergePairs 持久化 + 切换时清空多选）
-                        val mergeIconColor by animateColorAsState(
-                            if (mergeOn) UiSpec.accent(vm.darkModeOn) else MaterialTheme.colorScheme.onSurfaceVariant,
-                            animationSpec = tween(UiSpec.STANDARD),
-                            label = "mergeIconColor"
-                        )
-                        Box(
-                            Modifier
-                                .padding(start = 10.dp)
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .clickable { vm.setMergePairs(!mergeOn) },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            MergeIcon(mergeIconColor)
-                        }
                         // 连接指示（常驻，筛选旁，同款圆角外框）：
                         // 已连接=当前通道图标（USB 蓝 / Wi-Fi 青）；连接中=琥珀色；断开=断开前通道图标红色
                         // 已连接时可点击 → 弹出连接详情浮层（型号/序列号/通道 + 断开；无重连入口），3 秒自动收起
@@ -588,6 +572,31 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         Spacer(Modifier.weight(1f))
+                        // 合并 RAW/JPG 快捷开关（下载队列左侧）：两枚类型小徽章
+                        // （JPG 青 / NEF 紫 = 队列行类型徽章同色，白字缩写）——
+                        // 合并态徽章斜向贴合叠成一摞，文件态横向分开，动画过渡；
+                        // 与设置页"合并展示"同一开关（setMergePairs 持久化 + 清空多选）
+                        val offX by animateDpAsState(
+                            if (mergeOn) 3.dp else 6.dp,
+                            tween(UiSpec.STANDARD), label = "mergeBadgeX"
+                        )
+                        val offY by animateDpAsState(
+                            if (mergeOn) 2.dp else 0.dp,
+                            tween(UiSpec.STANDARD), label = "mergeBadgeY"
+                        )
+                        Box(
+                            Modifier
+                                .padding(start = 10.dp)
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable { vm.setMergePairs(!mergeOn) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            TypeBadge("NEF", badgeColor("NEF"), Modifier.offset(x = offX, y = -offY))
+                            TypeBadge("JPG", badgeColor("JPG"), Modifier.offset(x = -offX, y = offY))
+                        }
+                        Spacer(Modifier.width(10.dp))
                         // 下载队列按钮：无任务=下载图标；有任务=数字直接替换图标（青绿底白字，99+ 封顶）
                         TopBarDownloadButton(onClick = { showDownloads = true })
                     }
@@ -1437,6 +1446,19 @@ class MainActivity : ComponentActivity() {
             } else {
                 DownloadIcon(MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+    }
+
+    /** 类型小徽章（合并开关内）：JPG 青 / NEF 紫 = 队列行类型徽章同色，白字缩写 */
+    @Composable
+    private fun TypeBadge(text: String, color: Color, modifier: Modifier = Modifier) {
+        Surface(shape = RoundedCornerShape(4.dp), color = color, modifier = modifier) {
+            Text(
+                text,
+                Modifier.padding(horizontal = 3.dp, vertical = 1.dp),
+                color = Color.White,
+                style = TextStyle(fontSize = 7.sp, fontWeight = FontWeight.Bold, lineHeight = 8.sp)
+            )
         }
     }
 
