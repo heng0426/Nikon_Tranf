@@ -331,6 +331,13 @@ internal fun MainActivity.SettingsScreen(
                     onChange = { vm.setMergePairs(it) }
                 )
                 SettingsDivider()
+                // 短/长按反转：网格点选交互习惯因人而异（多选为主 vs 预览为主）
+                SettingSwitch(
+                    title = "短按选中、长按预览",
+                    subtitle = "反转网格的短按/长按：开 = 短按切换选中（进入多选），长按进预览；关 = 默认短按预览、长按选中",
+                    checked = vm.swapPressOn.value,
+                    onChange = { vm.setSwapPress(it) }
+                )
                 SettingSwitch(
                     title = "下载时跳过已下载",
                     subtitle = "批量下载所选时自动排除已下载的文件（预览页重新下载不受影响）",

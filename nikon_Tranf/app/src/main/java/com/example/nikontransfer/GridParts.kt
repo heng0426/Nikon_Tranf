@@ -225,10 +225,20 @@ internal fun MainActivity.PairCell(
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .combinedClickable(
-                    onClick = onTap,
+                    // 短/长按反转（vm.swapPressOn.value，设置页开关）：开 = 短按选中、长按进预览；
+                    // 关 = 默认短按预览、长按选中。触感反馈跟随"选中"动作，两种模式一致。
+                    onClick = {
+                        if (vm.swapPressOn.value) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLongPress()
+                        } else onTap()
+                    },
                     onLongClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onLongPress()
+                        if (vm.swapPressOn.value) onTap()
+                        else {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLongPress()
+                        }
                     }
                 ),
             contentAlignment = Alignment.Center
@@ -346,10 +356,20 @@ internal fun MainActivity.GridCell(
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .combinedClickable(
-                    onClick = onTap,
+                    // 短/长按反转（vm.swapPressOn.value，设置页开关）：开 = 短按选中、长按进预览；
+                    // 关 = 默认短按预览、长按选中。触感反馈跟随"选中"动作，两种模式一致。
+                    onClick = {
+                        if (vm.swapPressOn.value) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLongPress()
+                        } else onTap()
+                    },
                     onLongClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onLongPress()
+                        if (vm.swapPressOn.value) onTap()
+                        else {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLongPress()
+                        }
                     }
                 ),
             contentAlignment = Alignment.Center

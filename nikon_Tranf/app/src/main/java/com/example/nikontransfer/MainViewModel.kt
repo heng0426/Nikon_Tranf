@@ -297,6 +297,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         filterEnd.value = todayKey()
     }
 
+    /* ---------- 短/长按反转（网格点选交互）----------
+     *  关（默认）= 短按进预览、长按选中（进入多选）；
+     *  开 = 反转：短按选中、长按进预览。合并/文件两模式共用，持久化 set_swap_press。 */
+    val swapPressOn = mutableStateOf(prefs.getBoolean("set_swap_press", false))
+    fun setSwapPress(on: Boolean) {
+        swapPressOn.value = on
+        prefs.edit().putBoolean("set_swap_press", on).apply()
+    }
+
     /* ---------- 分块加载：照片很多时先显示一部分，滚近已加载末尾自动追加 ----------
      *  关闭 = 全量显示（现状）。合并模式按合并格计块，文件模式按照片计块。
      *  全选/选当天/下载统计等口径一律基于"已加载可见项"，与网格所见一致。 */
