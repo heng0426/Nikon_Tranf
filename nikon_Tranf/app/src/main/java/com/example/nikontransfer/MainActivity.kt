@@ -877,7 +877,17 @@ class MainActivity : ComponentActivity() {
                         countText = if (vm.chunkedLoad.value) "已加载 ${pairs.size}/${vm.fullVisibleCount()} 张"
                         else "共 ${pairs.size} 张",
                         collapsed = sec != null && sec.dateKey in vm.collapsedDates.value,
-                        onToggle = if (sec != null) ({ vm.toggleDateCollapsed(sec.dateKey) }) else null
+                        onToggle = if (sec != null) ({
+                            val wasCollapsed = sec.dateKey in vm.collapsedDates.value
+                            vm.toggleDateCollapsed(sec.dateKey)
+                            // 收起 → 下个日期节头对齐到置顶槽正下方（置顶气泡随滚动同步为该日期）；
+                            // 展开 → 回到本节节头；收起末节回落本节头
+                            val target = hdrIndexAfterToggle(
+                                vm.pairSections.map { it.dateKey to it.rows.size },
+                                vm.collapsedDates.value, sec.dateKey, !wasCollapsed
+                            )
+                            scope.launch { mergeGridState.animateScrollToItem(target) }
+                        }) else null
                     )
                     // 免疫无障碍扫描：GKD/记账类服务监听 CONTENT_CHANGED 且全树遍历坐标，
                     // 网格几百节点 × 每帧滚动 = 主线程每帧 6-17ms 语义计算（实测 trace 热点）。
@@ -954,7 +964,15 @@ class MainActivity : ComponentActivity() {
                         countText = if (vm.chunkedLoad.value) "已加载 ${visible.size}/${vm.fullVisibleCount()} 张"
                         else "共 ${visible.size} 张",
                         collapsed = sec != null && sec.dateKey in vm.collapsedDates.value,
-                        onToggle = if (sec != null) ({ vm.toggleDateCollapsed(sec.dateKey) }) else null
+                        onToggle = if (sec != null) ({
+                            val wasCollapsed = sec.dateKey in vm.collapsedDates.value
+                            vm.toggleDateCollapsed(sec.dateKey)
+                            val target = hdrIndexAfterToggle(
+                                vm.visibleSections.map { it.dateKey to it.rows.size },
+                                vm.collapsedDates.value, sec.dateKey, !wasCollapsed
+                            )
+                            scope.launch { fileGridState.animateScrollToItem(target) }
+                        }) else null
                     )
                     // 免疫无障碍扫描（同合并模式）：语义子树清空，服务扫描成本归零
                     Box(Modifier.fillMaxWidth().weight(1f).clearAndSetSemantics { }) {

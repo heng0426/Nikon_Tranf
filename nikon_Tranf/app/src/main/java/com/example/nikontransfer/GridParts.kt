@@ -424,6 +424,30 @@ internal fun DateBubble(text: String) {
 
     /** 日期胶囊槽位高度：只改这个数字——数字越小，胶囊下方留白越小（建议 24~30） */
 
+    /** 折叠切换后应对齐到视口首行的网格 item index（含节头；折叠节按 1 个 item 计，
+     *  与置顶胶囊 pillSec / 滚动条气泡同一套映射口径）：
+     *  收起 → 下一分节节头（让"下个日期的气泡"顶到置顶槽正下方；无下一节则回落本节头）；
+     *  展开 → 本分节节头。sections = (dateKey, 行数) 按显示顺序。 */
+    internal fun hdrIndexAfterToggle(
+        sections: List<Pair<String, Int>>,
+        collapsed: Set<String>,
+        key: String,
+        nowCollapsed: Boolean
+    ): Int {
+        var acc = 0
+        for ((i, s) in sections.withIndex()) {
+            if (s.first == key) {
+                return when {
+                    !nowCollapsed -> acc                 // 展开：本节节头
+                    i + 1 < sections.size -> acc + 1     // 收起：下一节节头
+                    else -> acc                          // 收起末节：回落本节头
+                }
+            }
+            acc += 1 + if (s.first in collapsed) 0 else s.second
+        }
+        return 0
+    }
+
     /** 置顶信息胶囊槽（合并/文件共用）：左=当前分节日期，右=张数（分块开启时为已加载/总量）。
      *  固定槽位随滚动更新，不与照片重叠。
      *  onToggle 非空时日期胶囊可点击 → 折叠/展开当前日期（与节头胶囊同视觉语言：
