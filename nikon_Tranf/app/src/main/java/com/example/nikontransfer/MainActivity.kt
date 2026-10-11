@@ -572,6 +572,26 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         Spacer(Modifier.weight(1f))
+                        // 短/长按反转快捷开关（JPG/NEF 合并按钮旁）：与设置页
+                        // "短按选中、长按预览"同一开关（setSwapPress 持久化）。
+                        // 开 = 短按选中/长按预览（accent 绿），关 = 默认短按预览/长按选中（灰）
+                        val swapIconColor by animateColorAsState(
+                            if (vm.swapPressOn.value) UiSpec.accent(vm.darkModeOn)
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            animationSpec = tween(UiSpec.STANDARD),
+                            label = "swapPressIconColor"
+                        )
+                        Box(
+                            Modifier
+                                .padding(start = 10.dp)
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable { vm.setSwapPress(!vm.swapPressOn.value) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            SwapPressIcon(swapIconColor)
+                        }
                         // 合并 RAW/JPG 快捷开关（下载队列左侧）：两枚类型小徽章
                         // （JPG 青 / NEF 紫 = 队列行类型徽章同色，白字缩写）——
                         // 合并态徽章斜向贴合叠成一摞，文件态上下完全分开，动画过渡；
