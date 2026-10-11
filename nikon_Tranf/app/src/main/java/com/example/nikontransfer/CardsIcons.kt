@@ -174,7 +174,7 @@ import kotlinx.coroutines.withContext
 
     @Composable
 internal fun MainActivity.FunnelIcon(color: Color, modifier: Modifier = Modifier) {
-        Canvas(modifier.size(20.dp)) {
+        Canvas(modifier.size(UiSpec.ICON_STD)) {
             val w = size.width
             val h = size.height
             val p = Path().apply {
@@ -196,7 +196,7 @@ internal fun MainActivity.FunnelIcon(color: Color, modifier: Modifier = Modifier
      *  （现改用文字徽章，此图标留作传输语义）。颜色由调用方传入。 */
     @Composable
 internal fun MainActivity.SwapPressIcon(color: Color, modifier: Modifier = Modifier) {
-        Canvas(modifier.size(20.dp)) {
+        Canvas(modifier.size(UiSpec.ICON_STD)) {
             val w = size.width
             val h = size.height
             val sw = w * 0.10f
@@ -219,7 +219,7 @@ internal fun MainActivity.SwapPressIcon(color: Color, modifier: Modifier = Modif
     /** 齿轮图标（描边风格：8齿外圈 + 双层同心圆孔），风格同图片示例 */
     @Composable
 internal fun MainActivity.GearIcon(color: Color, modifier: Modifier = Modifier) {
-        Canvas(modifier.size(20.dp)) {
+        Canvas(modifier.size(UiSpec.ICON_STD)) {
             val w = size.width
             val h = size.height
             val cx = (w / 2f).toDouble()
@@ -307,7 +307,7 @@ internal fun MainActivity.WifiIcon(color: Color, modifier: Modifier = Modifier) 
     /** 下载形状（向下箭头 + 底部托盘），用于下载队列指示（同自绘风格） */
     @Composable
     internal fun DownloadIcon(color: Color, modifier: Modifier = Modifier) {
-        Canvas(modifier.size(20.dp)) {
+        Canvas(modifier.size(UiSpec.ICON_STD)) {
             val w = size.width
             val h = size.height
             val stroke = w * 0.13f
@@ -341,7 +341,7 @@ internal fun MainActivity.WifiIcon(color: Color, modifier: Modifier = Modifier) 
     /** 标准 USB Trident 标志：主干+箭头+底部圆+右侧方块+左右分支曲线，700×700 坐标系精确映射 */
     @Composable
 internal fun MainActivity.UsbIcon(color: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier.size(20.dp)) {
+    Canvas(modifier.size(UiSpec.ICON_STD)) {
         val s = size.width / 700f                      // 700×700 坐标系映射到实际尺寸
         fun pt(x: Float, y: Float) = Offset(x * s, y * s)
         val w = 36f * s                                // 线宽
@@ -486,7 +486,7 @@ internal fun MainActivity.UsbChannelCard(
                         .background(primary.copy(alpha = if (dark) 0.20f else 0.12f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    UsbIcon(primary, Modifier.size(if (compact) 20.dp else 26.dp))
+                    UsbIcon(primary, Modifier.size(if (compact) UiSpec.ICON_STD else 26.dp))
                 }
                 Spacer(Modifier.width(if (compact) 10.dp else 14.dp))
                 Column(Modifier.weight(1f)) {
@@ -521,7 +521,7 @@ internal fun MainActivity.UsbChannelCard(
                     CircularProgressIndicator(
                         color = primary,
                         strokeWidth = if (compact) 2.dp else 3.dp,
-                        modifier = Modifier.size(if (compact) 18.dp else 24.dp)
+                        modifier = Modifier.size(if (compact) UiSpec.ICON_SM else 24.dp)
                     )
                 } else if (!compact && !active) {
                     // 连接中不显示「连接 ›」（进度状态由下方信息卡片承载），高度不受影响
@@ -582,7 +582,7 @@ internal fun MainActivity.WifiChannelCard(
                         .background(primary.copy(alpha = if (dark) 0.20f else 0.12f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    WifiIcon(primary, Modifier.size(if (compact) 20.dp else 26.dp))
+                    WifiIcon(primary, Modifier.size(if (compact) UiSpec.ICON_STD else 26.dp))
                 }
                 Spacer(Modifier.width(if (compact) 10.dp else 14.dp))
                 Column(Modifier.weight(1f)) {
@@ -617,7 +617,7 @@ internal fun MainActivity.WifiChannelCard(
                     CircularProgressIndicator(
                         color = primary,
                         strokeWidth = if (compact) 2.dp else 3.dp,
-                        modifier = Modifier.size(if (compact) 18.dp else 24.dp)
+                        modifier = Modifier.size(if (compact) UiSpec.ICON_SM else 24.dp)
                     )
                 } else if (!compact) {
                     // 描边胶囊「扫描相机」：空闲时显示；连接中隐藏（状态行占位）

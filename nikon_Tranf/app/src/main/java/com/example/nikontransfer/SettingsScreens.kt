@@ -210,14 +210,14 @@ internal fun MainActivity.SettingsScreen(
             Modifier.fillMaxSize()
                 // 与主页/下载队列同款顶栏公式：safeDrawing.Top 自适应状态栏 + TOPBAR_GAP 余量
                 .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                .padding(start = UiSpec.PAGE_PAD, end = UiSpec.PAGE_PAD, bottom = UiSpec.PAGE_PAD)
                 .padding(top = UiSpec.TOPBAR_GAP)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 返回按钮：34dp 圆角色块容器，与顶栏按钮同款
                 Box(
                     Modifier
-                        .size(34.dp)
+                        .size(UiSpec.TOPBAR_BTN)
                         .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable(onClick = onBack),
@@ -226,7 +226,7 @@ internal fun MainActivity.SettingsScreen(
                     Icon(
                         Icons.Filled.ArrowBack,
                         contentDescription = "返回",
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(UiSpec.ICON_STD),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -651,7 +651,7 @@ internal fun MainActivity.SettingsSection(
                     Modifier
                         .size(28.dp)
                         .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = UiSpec.PILL_TINT)),
                     contentAlignment = Alignment.Center
                 ) { icon() }
                 Spacer(Modifier.width(8.dp))
@@ -890,7 +890,7 @@ internal fun MainActivity.DemoDownloadPanel() {
                 text,
                 Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
                 color = Color.White,
-                style = TextStyle(fontSize = 8.sp, fontWeight = FontWeight.Bold, lineHeight = 9.sp)
+                style = TextStyle(fontSize = UiSpec.BADGE_FONT, fontWeight = FontWeight.Bold, lineHeight = 9.sp)
             )
         }
     }
@@ -903,11 +903,11 @@ internal fun MainActivity.ActionPill(text: String, onClick: () -> Unit) {
                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .border(
                     1.dp,
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                    MaterialTheme.colorScheme.primary.copy(alpha = UiSpec.OUTLINE_ALPHA),
                     RoundedCornerShape(UiSpec.ROUND_SMALL)
                 )
                 .clickable(onClick = onClick)
-                .padding(horizontal = 12.dp, vertical = 6.dp),
+                .padding(horizontal = UiSpec.ACTION_HPAD, vertical = UiSpec.ACTION_VPAD),
             contentAlignment = Alignment.Center
         ) {
             Text(text, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)

@@ -364,7 +364,7 @@ internal fun MainActivity.PairPager(
                                 Icons.Filled.Check,
                                 contentDescription = "已选择",
                                 tint = Color.White,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(UiSpec.ICON_SM)
                             )
                         }
                     }
@@ -628,7 +628,7 @@ internal fun MainActivity.PreviewPager(
                                 Icons.Filled.Check,
                                 contentDescription = "已选择",
                                 tint = Color.White,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(UiSpec.ICON_SM)
                             )
                         }
                     }

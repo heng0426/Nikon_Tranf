@@ -2,6 +2,7 @@ package com.example.nikontransfer
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /* =====================================================================
  *  UiSpec — 全局可调参数中心
@@ -102,7 +103,16 @@ object UiSpec {
 
     /* ---------- 布局尺寸 ---------- */
     val TOPBAR_GAP = 12.dp       // 状态栏到顶栏的余量：主页/下载队列/设置三页顶栏共用（状态栏高度由 safeDrawing 自动吃掉，调位置只改这里）
+    val PAGE_PAD = 16.dp         // 页面水平/底部边距：主页/下载队列/设置三页根容器共用
     val PILL_SLOT = 24.dp        // 置顶日期胶囊槽位高（数字越小胶囊下方留白越小）
+    val TOPBAR_BTN = 34.dp       // 顶栏圆角按钮容器（返回/筛选/齿轮/反转/合并/下载按钮）
+    val ICON_STD = 20.dp         // 标准图标：自绘图标画布 / 双卡连接图标 / 顶栏按钮内图标
+    val ICON_SM = 18.dp          // 行内小图标：胶囊下拉箭头 / 队列行重试·取消 / 预览行图标
+    val PILL_HPAD = 10.dp        // 信息胶囊水平内边距（置顶日期/张数/节头胶囊共用）
+    val PILL_VPAD = 4.dp         // 信息胶囊垂直内边距（同上，气泡高度 = 字高 + 2×此值）
+    val PILL_GAP = 6.dp          // 置顶槽内两个气泡（日期+张数）的间距
+    val ACTION_HPAD = 12.dp      // 描边动作胶囊（ActionPill/两段式确认）水平内边距
+    val ACTION_VPAD = 6.dp       // 描边动作胶囊垂直内边距
     val CONN_INFO_H = 48.dp      // 连接信息卡片内容行高（锁高，容两行）
     val QUEUE_ROW_H = 60.dp      // 下载队列行内容行高（锁高，状态切换不跳变）
     val PREVIEW_SLOT_H = 40.dp   // 预览页下载槽行高（锁高，四态垂直居中）
@@ -111,6 +121,17 @@ object UiSpec {
     val DRAG_STRIP_W = 24.dp     // 滚动条拖动层宽度（右缘热区）
     val SCROLLBAR_THICKNESS = 9.dp // 滚动条拖块厚度
     val SEL_BORDER_W = 3.dp      // 多选选中态/高亮描边宽
+
+    /* ---------- 透明度 ---------- */
+    val OUTLINE_ALPHA = 0.45f    // 描边胶囊描边强度（ActionPill / 两段式确认未armed态）
+    val PILL_SOLID = 0.95f       // 信息胶囊正常底透明度（surfaceVariant 上）
+    val PILL_DIM = 0.55f         // 信息胶囊折叠/淡化态底透明度
+    val PILL_TINT = 0.14f        // 状态胶囊淡底强度（已完成绿/总数量amber/排队中primary 的浅色填充）
+    val DONE_FILL_ALPHA = 0.20f  // 队列行/总览卡下载完成绿色填充
+
+    /* ---------- 迷你徽章字号 ---------- */
+    val BADGE_FONT = 8.sp        // 文字徽章：顶栏「短⇆长」反转徽章 / 设置页类型小徽章
+    val TYPE_BADGE_FONT = 7.sp   // 顶栏合并按钮 JPG/NEF 类型徽章（更小一档）
 
     /* ---------- 行为参数 ---------- */
     const val CHUNK_TRIGGER = 24 // 分块加载：距已加载末尾该项数内自动追加（≈8 行格子）

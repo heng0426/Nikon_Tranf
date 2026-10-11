@@ -201,7 +201,7 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                 // 会让图标左缘缩进 12dp，与下方卡片不对齐）；Box 左缘 = 16dp 页边距 = 卡片左缘
                 Box(
                     Modifier
-                        .size(34.dp)
+                        .size(UiSpec.TOPBAR_BTN)
                         .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable(onClick = onBack),
@@ -210,7 +210,7 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                     Icon(
                         Icons.Filled.ArrowBack,
                         contentDescription = "返回",
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(UiSpec.ICON_STD),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -241,7 +241,7 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                                 .border(
                                     1.dp,
                                     if (confirmCancelAll) MaterialTheme.colorScheme.error
-                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = UiSpec.OUTLINE_ALPHA),
                                     RoundedCornerShape(UiSpec.ROUND_SMALL)
                                 )
                                 .clickable {
@@ -252,7 +252,7 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                                         confirmCancelAll = true
                                     }
                                 }
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                                .padding(horizontal = UiSpec.ACTION_HPAD, vertical = UiSpec.ACTION_VPAD),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
@@ -316,10 +316,10 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
                 ) {
                     // 第一排（恒定）：已完成 / 总数量 / 排队中 —— 绿 / amber / primary 三色同族
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Pill("已完成 ${st.done}", bg = green.copy(alpha = 0.14f), fg = green, rolling = true)
+                        Pill("已完成 ${st.done}", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, rolling = true)
                         val amber = UiSpec.amber(vm.darkModeOn)
-                        Pill("总数量 ${st.denom}", bg = amber.copy(alpha = 0.14f), fg = amber, rolling = true)
-                        Pill("排队中 ${st.queued}", bg = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), fg = MaterialTheme.colorScheme.primary, rolling = true)
+                        Pill("总数量 ${st.denom}", bg = amber.copy(alpha = UiSpec.PILL_TINT), fg = amber, rolling = true)
+                        Pill("排队中 ${st.queued}", bg = MaterialTheme.colorScheme.primary.copy(alpha = UiSpec.PILL_TINT), fg = MaterialTheme.colorScheme.primary, rolling = true)
                     }
                     // 第二排（按阶段切换）。runningItem 在两条目交接瞬间会短暂为 null
                     // （worker 取下一条的空档，演示模式固定 40ms），此时只要还有排队
@@ -360,7 +360,7 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
         val green = UiSpec.accent(vm.darkModeOn)
         Box(
             modifier.drawBehind {
-                drawRect(color = green, alpha = 0.20f, size = Size(size.width * animState.value, size.height))
+                drawRect(color = green, alpha = UiSpec.DONE_FILL_ALPHA, size = Size(size.width * animState.value, size.height))
             }
         )
     }
@@ -373,8 +373,8 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
         val speed = vm.batchSpeedBps.value
         val eta = vm.batchEtaMs.value
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Pill(if (speed > 0) "${humanSize(speed)}/s" else "…", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
-            Pill(if (eta > 0) "剩 ${fmtDur(eta)}" else "剩 …", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+            Pill(if (speed > 0) "${humanSize(speed)}/s" else "…", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
+            Pill(if (eta > 0) "剩 ${fmtDur(eta)}" else "剩 …", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
             PercentPill(st)
         }
     }
@@ -386,8 +386,8 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
     private fun MainActivity.BatchDoneRow(st: MainViewModel.QueueStats) {
         val green = UiSpec.accent(vm.darkModeOn)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Pill("平均 ${humanSize(st.queueAvgBps)}/s", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
-            Pill("总时长 ${fmtDur(st.msDone)}", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+            Pill("平均 ${humanSize(st.queueAvgBps)}/s", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
+            Pill("总时长 ${fmtDur(st.msDone)}", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
         }
     }
 
@@ -411,7 +411,7 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
             }
         }
         val green = UiSpec.accent(vm.darkModeOn)
-        Pill("$pct%", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+        Pill("$pct%", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
     }
 
     /** 毫秒 → m:ss（满 1 小时 h:mm:ss） */
@@ -538,7 +538,7 @@ internal fun MainActivity.QueueThumb(handle: Int) {
                                     ) {
                                         Surface(
                                             shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
-                                            color = green.copy(alpha = 0.14f)
+                                            color = green.copy(alpha = UiSpec.PILL_TINT)
                                         ) {
                                             Text(
                                                 "已完成 ✓",
@@ -550,7 +550,7 @@ internal fun MainActivity.QueueThumb(handle: Int) {
                                         if (item.elapsedMs > 0) {
                                             Surface(
                                                 shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
-                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = UiSpec.PILL_TINT)
                                             ) {
                                                 Text(
                                                     "%.1fs".format(item.elapsedMs / 1000.0),
@@ -586,7 +586,7 @@ internal fun MainActivity.QueueThumb(handle: Int) {
                                 Icons.Filled.Close,
                                 contentDescription = "取消",
                                 tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(UiSpec.ICON_SM)
                             )
                         }
                         QStatus.FAILED -> TextButton(onClick = { vm.retryDownload(item) }) { Text("重试") }
@@ -650,7 +650,7 @@ internal fun MainActivity.QueueThumb(handle: Int) {
         val green = UiSpec.accent(vm.darkModeOn)
         Surface(
             shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
-            color = green.copy(alpha = 0.14f)
+            color = green.copy(alpha = UiSpec.PILL_TINT)
         ) {
             Text(
                 "${humanSize(item.got.value)} / ${humanSize(item.total.value)} · ${item.speed.value}",
@@ -822,7 +822,7 @@ internal fun MainActivity.DownloadStateSlot(
         ) {
             Box(
                 Modifier.matchParentSize().drawBehind {
-                    drawRect(color = green, alpha = 0.20f, size = Size(size.width * fillAnim.value, size.height))
+                    drawRect(color = green, alpha = UiSpec.DONE_FILL_ALPHA, size = Size(size.width * fillAnim.value, size.height))
                 }
             )
             Row(

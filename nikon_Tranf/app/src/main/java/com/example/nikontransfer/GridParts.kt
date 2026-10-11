@@ -264,7 +264,7 @@ internal fun MainActivity.PairCell(
                 Modifier.align(Alignment.BottomEnd).padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(3.dp)
             ) {
-                if (pair.jpgDownloaded) DLBadge("J", Color(0xFF00695C))
+                if (pair.jpgDownloaded) DLBadge("J", UiSpec.JPG_TEAL)
                 if (pair.nefDownloaded) DLBadge("N", UiSpec.NEF_PURPLE)
             }
             if (selected) {
@@ -485,20 +485,20 @@ internal fun MainActivity.PinnedPillSlot(
                     animationSpec = tween(UiSpec.STANDARD),
                     label = "pinFoldArrow"
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(UiSpec.PILL_GAP)) {
                     Surface(
                         shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
-                        color = if (collapsed) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
+                        color = if (collapsed) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = UiSpec.PILL_DIM)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = UiSpec.PILL_SOLID),
                         modifier = if (onToggle != null)
                             Modifier.clip(RoundedCornerShape(UiSpec.ROUND_LARGE)).clickable(onClick = onToggle)
                         else Modifier
                     ) {
                         Row(
                             Modifier.padding(
-                                start = 10.dp,
-                                end = if (onToggle != null) 5.dp else 10.dp,
-                                top = 4.dp, bottom = 4.dp
+                                start = UiSpec.PILL_HPAD,
+                                end = if (onToggle != null) 5.dp else UiSpec.PILL_HPAD,
+                                top = UiSpec.PILL_VPAD, bottom = UiSpec.PILL_VPAD
                             ),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -511,7 +511,7 @@ internal fun MainActivity.PinnedPillSlot(
                                 Icon(
                                     Icons.Filled.ArrowDropDown,
                                     contentDescription = if (collapsed) "展开当前日期照片" else "收起当前日期照片",
-                                    modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = arrow },
+                                    modifier = Modifier.size(UiSpec.ICON_SM).graphicsLayer { rotationZ = arrow },
                                     tint = MaterialTheme.colorScheme.primary
                                 )
                             }
@@ -519,11 +519,11 @@ internal fun MainActivity.PinnedPillSlot(
                     }
                     Surface(
                         shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = UiSpec.PILL_SOLID)
                     ) {
                         Text(
                             countText,
-                            Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            Modifier.padding(horizontal = UiSpec.PILL_HPAD, vertical = UiSpec.PILL_VPAD),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -617,12 +617,12 @@ internal fun MainActivity.DateHeaderPill(
         ) {
             Surface(
                 shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
-                color = if (collapsed) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                color = if (collapsed) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = UiSpec.PILL_DIM)
                 else MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.clip(RoundedCornerShape(UiSpec.ROUND_LARGE)).clickable(onClick = onToggle)
             ) {
                 Row(
-                    Modifier.padding(start = 10.dp, end = 5.dp, top = 4.dp, bottom = 4.dp),
+                    Modifier.padding(start = UiSpec.PILL_HPAD, end = 5.dp, top = UiSpec.PILL_VPAD, bottom = UiSpec.PILL_VPAD),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
@@ -633,7 +633,7 @@ internal fun MainActivity.DateHeaderPill(
                     Icon(
                         Icons.Filled.ArrowDropDown,
                         contentDescription = if (collapsed) "展开当天照片" else "折叠当天照片",
-                        modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = arrow },
+                        modifier = Modifier.size(UiSpec.ICON_SM).graphicsLayer { rotationZ = arrow },
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
@@ -760,7 +760,7 @@ internal fun MainActivity.FilterBigButton(
         Box(
             modifier
                 .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
-                .background(if (selected) Color(0xFF00695C) else MaterialTheme.colorScheme.surfaceVariant)
+                .background(if (selected) UiSpec.JPG_TEAL else MaterialTheme.colorScheme.surfaceVariant)
                 .clickable(onClick = onClick)
                 .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center

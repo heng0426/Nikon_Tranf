@@ -483,7 +483,7 @@ class MainActivity : ComponentActivity() {
                     //    刘海/挖孔一并覆盖），TOPBAR_GAP 只是「状态栏到顶栏」的余量
                     //    ——数字越大越往下，越小越往上，0 = 紧贴状态栏
                     .windowInsetsPadding(WindowInsets.safeDrawing)
-                    .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+                    .padding(start = UiSpec.PAGE_PAD, end = UiSpec.PAGE_PAD, bottom = UiSpec.PAGE_PAD)
                     .padding(top = UiSpec.TOPBAR_GAP),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -511,7 +511,7 @@ class MainActivity : ComponentActivity() {
                     // 设置齿轮按钮（方框圆角，同款 34dp / RoundedCornerShape(UiSpec.ROUND_SMALL)）
                     Box(
                         Modifier
-                            .size(34.dp)
+                            .size(UiSpec.TOPBAR_BTN)
                             .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .clickable { showSettings = true },
@@ -524,7 +524,7 @@ class MainActivity : ComponentActivity() {
                         Box(
                             Modifier
                                 .padding(start = 10.dp)
-                                .size(34.dp)
+                                .size(UiSpec.TOPBAR_BTN)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .clickable { showFilter = true },
@@ -542,7 +542,7 @@ class MainActivity : ComponentActivity() {
                             Modifier
                                 .padding(start = 10.dp)
                                 .graphicsLayer { translationX = connShake.value * 6.dp.toPx() }
-                                .size(34.dp)
+                                .size(UiSpec.TOPBAR_BTN)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .then(
@@ -563,9 +563,9 @@ class MainActivity : ComponentActivity() {
                                 label = "connIconColor"
                             )
                             if (isUsbConn) {
-                                UsbIcon(iconColor, Modifier.size(20.dp))
+                                UsbIcon(iconColor, Modifier.size(UiSpec.ICON_STD))
                             } else {
-                                WifiIcon(iconColor, Modifier.size(20.dp))
+                                WifiIcon(iconColor, Modifier.size(UiSpec.ICON_STD))
                             }
                         }
                         Spacer(Modifier.weight(1f))
@@ -581,7 +581,7 @@ class MainActivity : ComponentActivity() {
                         Box(
                             Modifier
                                 .padding(start = 10.dp)
-                                .size(34.dp)
+                                .size(UiSpec.TOPBAR_BTN)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .clickable { vm.setSwapPress(!vm.swapPressOn.value) },
@@ -590,7 +590,7 @@ class MainActivity : ComponentActivity() {
                             Text(
                                 "短⇆长",
                                 color = swapIconColor,
-                                fontSize = 8.sp,
+                                fontSize = UiSpec.BADGE_FONT,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1
                             )
@@ -612,7 +612,7 @@ class MainActivity : ComponentActivity() {
                         Box(
                             Modifier
                                 .padding(start = 10.dp)
-                                .size(34.dp)
+                                .size(UiSpec.TOPBAR_BTN)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .clickable { vm.setMergePairs(!mergeOn) },
@@ -1452,7 +1452,7 @@ class MainActivity : ComponentActivity() {
         val active = vm.activeDownloadCount
         Box(
             Modifier
-                .size(34.dp)
+                .size(UiSpec.TOPBAR_BTN)
                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .background(
                     if (active > 0)
@@ -1482,7 +1482,7 @@ class MainActivity : ComponentActivity() {
                 text,
                 Modifier.padding(horizontal = 3.dp, vertical = 1.dp),
                 color = Color.White,
-                style = TextStyle(fontSize = 7.sp, fontWeight = FontWeight.Bold, lineHeight = 8.sp)
+                style = TextStyle(fontSize = UiSpec.TYPE_BADGE_FONT, fontWeight = FontWeight.Bold, lineHeight = 8.sp)
             )
         }
     }
