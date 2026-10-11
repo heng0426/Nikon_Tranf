@@ -809,11 +809,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return found
     }
 
+    /** 扫描/探测阶段的网络绑定：把进程绑到当前受管 Wi-Fi 网络（相机必经之路）。
+     *  移动数据在线时默认网络是数据通道，未绑定的 socket（含 JNI 原生侧）全部
+     *  走数据接口，发往相机热点网段(192.168.x.x)的探测包到不了相机
+     *  → "扫描不到相机"。连接阶段由 bindToWifiNetwork(cameraIp) 按相机 IP
+     *  精确绑定；此函数用于还不知道相机 IP 的扫描/探测阶段（旧手机默认网络
+     *  恰好是 Wi-Fi 所以从未暴露）。绑定在 Wi-Fi 断开时由系统自动还原。 */
+    private fun bindProcessToWifiForScan() {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        for (net in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(net) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                if (cm.bindProcessToNetwork(net)) {
+                    Log.i("GPhoto2", "网络策略: 扫描阶段绑定 Wi-Fi 网络")
+                    return
+                }
+            }
+        }
+        Log.i("GPhoto2", "网络策略: 无受管 Wi-Fi，扫描走默认网络")
+    }
+
     /** 设置页「扫描相机」：扫全部网段 + 读取相机名 */
     fun scanForCameras() {
         scanning.value = true
         try {
             GPhoto2Bridge.setup(ctx)
+            bindProcessToWifiForScan()
             val candidates = ArrayList<String>()
             for (subnet in wifiSubnets()) {
                 scanText.value = "正在扫描 $subnet.x…"
@@ -969,6 +990,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pendingChannel.value = "wifi"   // 标记当前尝试通道（双卡进度归位用）
         try {
             GPhoto2Bridge.setup(ctx)
+            bindProcessToWifiForScan()   // 上次 IP 探测/网段扫描都需走 Wi-Fi（移动数据在线时默认网络是数据通道）
             if (wifiCancelled()) return false
             if (!preferScan) {
                 // ① 上次相机 IP
