@@ -758,7 +758,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /* ---------- 扫描 ---------- */
 
-    /** 收集所有 Wi-Fi 接口的 /24 网段前缀（如 "10.19.161"） */
+    /** 收集所有 Wi-Fi 侧接口的 /24 网段前缀（如 "10.19.161"）。
+     *  双来源合并：① 受管网络列表（手机连 Wi-Fi；部分机型热点也暴露在其中）；
+     *  ② 直接枚举网卡接口（兜底）——部分 MIUI 的热点只挂在 swlan0/ap0 上且
+     *  【不】暴露为受管网络，只看受管列表会在"相机连手机热点"拓扑下拿空，
+     *  误报"未发现可用 Wi-Fi 网络"。 */
     private fun wifiSubnets(): List<String> {
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val out = LinkedHashSet<String>()
@@ -773,7 +777,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     out.add("${a[0].toInt() and 0xFF}.${a[1].toInt() and 0xFF}.${a[2].toInt() and 0xFF}")
             }
         }
+        out.addAll(interfaceWifiAddrs().map { it.first })
         return out.toList()
+    }
+
+    /** 网卡侧 Wi-Fi 接口的 IPv4（/24 前缀 → 本机地址）。
+     *  接口典型名：wlan0（Wi-Fi 客户端）/ swlan0、ap0、softap0（热点）；
+     *  蜂窝（rmnet/ccmni）与回环排除。枚举失败返回空表（不阻断扫描）。 */
+    private fun interfaceWifiAddrs(): List<Pair<String, java.net.InetAddress>> {
+        val out = LinkedHashMap<String, java.net.InetAddress>()
+        try {
+            for (nif in java.net.NetworkInterface.getNetworkInterfaces()) {
+                if (nif == null || !nif.isUp || nif.isLoopback) continue
+                val name = nif.name.lowercase()
+                val wifiSide = name.startsWith("wlan") || name.startsWith("swlan") ||
+                    name.startsWith("softap") || name.startsWith("ap")
+                if (!wifiSide) continue
+                for (ia in nif.inetAddresses) {
+                    val a = (ia as? java.net.Inet4Address)?.address ?: continue
+                    if (a.size != 4) continue
+                    val prefix = "${a[0].toInt() and 0xFF}.${a[1].toInt() and 0xFF}.${a[2].toInt() and 0xFF}"
+                    if (!out.containsKey(prefix)) out[prefix] = ia
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w("GPhoto2", "网卡网段枚举失败: ${t.message}")
+        }
+        return out.map { it.key to it.value }
     }
 
     /** 并发扫描网段的 15740 端口（PTP/IP），返回开放的 IP 列表。
@@ -784,6 +814,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         progress: (Int, Int) -> Unit
     ): List<String> {
         val found = java.util.Collections.synchronizedList(ArrayList<String>())
+        // 本网段对应的本机接口地址（热点网段 = 热点接口的本机地址）：给每个扫描
+        // socket 绑定该源地址，强制从热点接口出包。热点-only 时热点不是受管网络、
+        // 进程默认网络往往是移动数据，不绑定的 socket 在部分机型上到不了热点客户端。
+        val bindAddr = interfaceWifiAddrs().firstOrNull { it.first == subnet }?.second
         val pool = java.util.concurrent.Executors.newFixedThreadPool(16)
         val ips = (1..254).map { "$subnet.$it" }
         val latch = java.util.concurrent.CountDownLatch(ips.size)
@@ -794,6 +828,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (abort?.invoke() == true) return@execute   // 取消：跳过本目标
                     val s = java.net.Socket()
                     try {
+                        try { bindAddr?.let { s.bind(java.net.InetSocketAddress(it, 0)) } } catch (_: Throwable) {}
                         s.connect(java.net.InetSocketAddress(ip, 15740), 300)
                         found.add(ip)
                     } finally { s.close() }
@@ -826,7 +861,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        Log.i("GPhoto2", "网络策略: 无受管 Wi-Fi，扫描走默认网络")
+        Log.i("GPhoto2", "网络策略: 无受管 Wi-Fi（热点-only 时网段来自网卡枚举，扫描 socket 按源地址出包）")
     }
 
     /** 设置页「扫描相机」：扫全部网段 + 读取相机名 */
@@ -1003,7 +1038,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     Log.i("GPhoto2", "上次 IP $lastIp 不可达，转为网段扫描")
                 }
             }
-            // ② 网段扫描：只扫手机当前已连接的 Wi-Fi 网段（热点/路由器均动态探测）
+            // ② 网段扫描：手机当前 Wi-Fi 侧网段（受管列表 + 网卡接口兜底，热点/路由器均覆盖）
             val subnets = wifiSubnets()
             if (subnets.isEmpty()) {
                 connText.value = "未发现可用 Wi-Fi 网络"
