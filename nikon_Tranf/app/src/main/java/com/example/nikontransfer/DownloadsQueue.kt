@@ -630,7 +630,16 @@ internal fun MainActivity.DismissibleQueueRow(item: QueueItem, modifier: Modifie
                 }
             }
         ) {
-            QueueRow(item)
+            // QueueRow 卡片是半透明底（surfaceVariant 45%），不垫实底会把底层的
+            // 红色背景/删除图标透出来；垫与页面同色的不透明底 + 同款圆角，
+            // 红底只在行被划开时露出。垫底随行一起滑动，视觉与改动前完全一致。
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
+                    .background(MaterialTheme.colorScheme.surface)
+            ) {
+                QueueRow(item)
+            }
         }
     }
 
