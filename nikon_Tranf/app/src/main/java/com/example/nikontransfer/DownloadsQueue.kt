@@ -193,9 +193,24 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+                // 返回按钮：与设置页同款 34dp 圆角色块容器（原 IconButton 48dp 触控目标
+                // 会让图标左缘缩进 12dp，与下方卡片不对齐）；Box 左缘 = 16dp 页边距 = 卡片左缘
+                Box(
+                    Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(onClick = onBack),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.ArrowBack,
+                        contentDescription = "返回",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
+                Spacer(Modifier.width(10.dp))
                 Text("下载队列", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 if (st.hasActive) {
                     TextButton(onClick = { vm.cancelAllDownloads() }) { Text("全部取消") }
