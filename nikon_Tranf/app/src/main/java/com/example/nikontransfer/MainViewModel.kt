@@ -80,6 +80,15 @@ fun humanSize(b: Long): String = when {
     else -> "${b}B"
 }
 
+/** 已下载照片统计（设置·存储分区展示）：JPG 与 RAW 分别计数 + 占用空间 */
+data class DlPhotoStats(
+    val jpgCount: Int, val jpgBytes: Long,
+    val rawCount: Int, val rawBytes: Long
+) {
+    val totalCount: Int get() = jpgCount + rawCount
+    val totalBytes: Long get() = jpgBytes + rawBytes
+}
+
 /** 连接与相册的全部状态和逻辑。
  *  放在 ViewModel 里：MIUI 等系统在 App 切后台后可能销毁重建 Activity，
  *  ViewModel 跨重建存活 —— 前台服务维持的相机会话不会被 UI 重置丢掉。 */
@@ -674,6 +683,84 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /* ---------- 存储统计：已下载照片（设置·存储分区展示）---------- */
+
+    val dlPhotoStats = mutableStateOf<DlPhotoStats?>(null)
+
+    /** 后台重算已下载照片统计（进入设置页时与手动「刷新」触发） */
+    fun refreshDownloadStats() {
+        Thread {
+            try {
+                dlPhotoStats.value = computeDownloadStats()
+            } catch (t: Throwable) {
+                Log.w("GPhoto2", "存储统计失败", t)
+            }
+        }.start()
+    }
+
+    /** 统计数据源与保存逻辑对齐（两处同时统计——换过目录的旧文件也真实占用空间）：
+     *  ① 默认位置（MediaStore）：Pictures/NikonTransfer% + NEF 回退 Download/NikonTransfer%；
+     *  ② 自定义目录（SAF tree）：根 + 日期子目录（写入最多两级，遍历同深防失控）。
+     *  按扩展名分类：jpg/jpeg → JPG，nef/nrw → RAW（尼康 RAW 家族），其余忽略。 */
+    private fun computeDownloadStats(): DlPhotoStats {
+        var jpgN = 0
+        var jpgB = 0L
+        var rawN = 0
+        var rawB = 0L
+        fun add(name: String?, size: Long) {
+            val ext = name?.substringAfterLast('.', "")?.lowercase() ?: return
+            when (ext) {
+                "jpg", "jpeg" -> { jpgN++; jpgB += size }
+                "nef", "nrw" -> { rawN++; rawB += size }
+            }
+        }
+        try {
+            val col = MediaStore.Files.getContentUri("external_primary")
+            ctx.contentResolver.query(
+                col,
+                arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.SIZE),
+                "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? OR ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
+                arrayOf("Pictures/NikonTransfer%", "Download/NikonTransfer%"),
+                null
+            )?.use { c ->
+                while (c.moveToNext())
+                    add(c.getString(0), if (c.isNull(1)) 0L else c.getLong(1))
+            }
+        } catch (t: Throwable) {
+            Log.w("GPhoto2", "存储统计 MediaStore 查询失败", t)
+        }
+        customDirUri.value?.let { uriStr ->
+            try {
+                val treeUri = android.net.Uri.parse(uriStr)
+                fun walk(docId: String, depth: Int) {
+                    val dirs = mutableListOf<String>()
+                    ctx.contentResolver.query(
+                        android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId),
+                        arrayOf(
+                            android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                            android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                            android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE,
+                            android.provider.DocumentsContract.Document.COLUMN_SIZE
+                        ),
+                        null, null, null
+                    )?.use { c ->
+                        while (c.moveToNext()) {
+                            if (c.getString(2) == android.provider.DocumentsContract.Document.MIME_TYPE_DIR)
+                                c.getString(0)?.let { dirs.add(it) }
+                            else
+                                add(c.getString(1), if (c.isNull(3)) 0L else c.getLong(3))
+                        }
+                    }
+                    if (depth < 2) for (d in dirs) walk(d, depth + 1)
+                }
+                walk(android.provider.DocumentsContract.getTreeDocumentId(treeUri), 0)
+            } catch (t: Throwable) {
+                Log.w("GPhoto2", "存储统计 SAF 遍历失败", t)
+            }
+        }
+        return DlPhotoStats(jpgN, jpgB, rawN, rawB)
+    }
+
     /* ---------- 高清预览开关（默认关，持久化；Q3 定案）---------- */
     var hiresOn: Boolean by mutableStateOf(prefs.getBoolean("set_hires_preview", false))
 
@@ -956,7 +1043,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         // 热点 Wi-Fi 高 RTT（实测 ping 52~235ms，SoftAp 排队/省电唤醒更慢），
                         // 300ms 会把唯一在线的相机漏成"无设备"；1200ms 下 16 并发扫 /24
                         // 最坏 ~19s，仍在 40s latch 内
-                        s.connect(java.net.InetSocketAddress(ip, 15740), 1200)
+                        s.connect(java.net.InetSocketAddress(ip, 15740), 400)
                         found.add(ip)
                     } finally { s.close() }
                 } catch (_: Throwable) {

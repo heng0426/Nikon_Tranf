@@ -143,7 +143,9 @@ import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -200,6 +202,7 @@ internal fun MainActivity.SettingsScreen(
         LaunchedEffect(Unit) {
             val bytes = withContext(Dispatchers.IO) { vm.computeThumbCacheBytes() }
             vm.thumbCacheBytes = bytes
+            vm.refreshDownloadStats()   // 已下载照片统计（JPG/RAW 分类，内部自带线程）
         }
 
         // 顶部与主页顶栏同款公式（主页注释"顶栏高度只改这里"）：不算状态栏 inset、
@@ -451,6 +454,52 @@ internal fun MainActivity.SettingsScreen(
                     if (vm.customDirUri.value != null) {
                         ActionPill("恢复默认") { vm.setCustomDir(null) }
                     }
+                }
+                SettingsDivider()
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("已下载照片", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                        val st = vm.dlPhotoStats.value
+                        when {
+                            st == null -> Text(
+                                "统计中…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            st.totalCount == 0 -> Text(
+                                "暂无已下载照片",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            else -> {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    DlTypeBadge("JPG", UiSpec.JPG_TEAL)
+                                    Text(
+                                        "${st.jpgCount} 张 · ${humanSize(st.jpgBytes)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    DlTypeBadge("RAW", UiSpec.NEF_PURPLE)
+                                    Text(
+                                        "${st.rawCount} 张 · ${humanSize(st.rawBytes)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text(
+                                    "合计 ${st.totalCount} 张 · ${humanSize(st.totalBytes)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    ActionPill("刷新") { vm.refreshDownloadStats() }
                 }
                 SettingsDivider()
                 Row(
@@ -830,6 +879,23 @@ internal fun MainActivity.DemoDownloadPanel() {
                 ActionPill("开始 20 个") { vm.startDemoDownloads(20) }
                 if (vm.demoDownloadRunning.value) ActionPill("停止") { vm.stopDemoDownloads() }
             }
+        }
+    }
+
+    /** 存储统计的类型小徽章：JPG 青 / RAW 紫（与队列行/合并开关的类型徽章同色系） */
+    @Composable
+    internal fun MainActivity.DlTypeBadge(text: String, color: Color) {
+        Surface(
+            shape = RoundedCornerShape(4.dp),
+            color = color,
+            modifier = Modifier.padding(end = 4.dp)
+        ) {
+            Text(
+                text,
+                Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                color = Color.White,
+                style = TextStyle(fontSize = 8.sp, fontWeight = FontWeight.Bold, lineHeight = 9.sp)
+            )
         }
     }
 
