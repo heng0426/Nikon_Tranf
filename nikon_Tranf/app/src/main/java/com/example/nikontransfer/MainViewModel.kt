@@ -1746,6 +1746,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cancelDownload(item: QueueItem) = downloads.cancel(item)
 
+    /** 划走队列条目：未下载/下载中 → 取消下载，已完成/已取消/失败 → 移出队列（见 DownloadManager.dismiss） */
+    fun dismissDownload(item: QueueItem) = downloads.dismiss(item)
+
     fun clearFinished() = downloads.clearFinished()
 
     fun cancelAllDownloads() = downloads.cancelAll()

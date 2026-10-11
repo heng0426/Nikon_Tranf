@@ -95,6 +95,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
@@ -115,8 +116,11 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -217,7 +221,7 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
             }
             LazyColumn(Modifier.fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(vm.downloadQueue, key = { it.handle }) { item ->
-                    QueueRow(item)
+                    DismissibleQueueRow(item, Modifier.animateItem())
                 }
             }
         }
@@ -586,6 +590,47 @@ internal fun MainActivity.QueueThumb(handle: Int) {
                     }
                 }
             }
+        }
+    }
+
+    /** 可划走的队列行：左右滑动越过阈值松手即离开队列。
+     *  未下载 → 移出队列；下载中 → 请求取消（当前分块写完即停）并移出；
+     *  已完成/已取消/失败 → 直接移除。红色背景 + 删除图标跟随滑动方向露出。
+     *  移除走 DownloadManager.dismiss（锁内 remove），worker 收尾对已移除条目写终态无副作用。 */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+internal fun MainActivity.DismissibleQueueRow(item: QueueItem, modifier: Modifier = Modifier) {
+        val dismissState = rememberSwipeToDismissBoxState(
+            confirmValueChange = { v ->
+                if (v == SwipeToDismissBoxValue.Settled) false
+                else { vm.dismissDownload(item); true }
+            }
+        )
+        SwipeToDismissBox(
+            state = dismissState,
+            modifier = modifier,
+            enableDismissFromStartToEnd = true,
+            enableDismissFromEndToStart = true,
+            backgroundContent = {
+                // 露出的背景：errorContainer 红底 + 删除图标，图标贴随滑动来向的一侧
+                val fromStart = dismissState.dismissDirection == SwipeToDismissBoxValue.StartToEnd
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
+                        .background(MaterialTheme.colorScheme.errorContainer),
+                    contentAlignment = if (fromStart) Alignment.CenterStart else Alignment.CenterEnd
+                ) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "移出队列",
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                        tint = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        ) {
+            QueueRow(item)
         }
     }
 

@@ -114,6 +114,14 @@ class DownloadManager(
         }
     }
 
+    /** 划走条目（滑动删除）：未下载 → 移出队列；下载中 → 置取消标志（当前分块写完即停）
+     *  并立刻移出列表 —— worker 收尾对已移除条目写终态无副作用（对象不再被任何 UI 引用，
+     *  queueStats/总览卡都只遍历列表）；已完成/已取消/失败 → 直接移除。 */
+    fun dismiss(item: QueueItem) {
+        if (item.status.value == QStatus.RUNNING) item.cancelRequested = true
+        synchronized(lock) { queue.remove(item) }
+    }
+
     /** 清空已完成/已取消条目（失败项保留以便重试） */
     fun clearFinished() {
         synchronized(lock) {
