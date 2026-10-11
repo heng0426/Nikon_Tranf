@@ -208,10 +208,10 @@ internal fun MainActivity.SettingsScreen(
         // 顶部固定 40dp —— 原 safeDrawingPadding+16dp 会比主页顶栏低状态栏差值几个 dp
         Column(
             Modifier.fillMaxSize()
-                // 与主页/下载队列同款顶栏公式：safeDrawing.Top 自适应状态栏实际高度 + 12dp 余量
+                // 与主页/下载队列同款顶栏公式：safeDrawing.Top 自适应状态栏 + TOPBAR_GAP 余量
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
-                .padding(top = 12.dp)
+                .padding(top = UiSpec.TOPBAR_GAP)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 返回按钮：34dp 圆角色块容器，与顶栏按钮同款

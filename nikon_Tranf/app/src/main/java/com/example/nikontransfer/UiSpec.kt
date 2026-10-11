@@ -101,6 +101,7 @@ object UiSpec {
     val PLACEHOLDER_TEXT = Color(0xFF777777)
 
     /* ---------- 布局尺寸 ---------- */
+    val TOPBAR_GAP = 12.dp       // 状态栏到顶栏的余量：主页/下载队列/设置三页顶栏共用（状态栏高度由 safeDrawing 自动吃掉，调位置只改这里）
     val PILL_SLOT = 24.dp        // 置顶日期胶囊槽位高（数字越小胶囊下方留白越小）
     val CONN_INFO_H = 48.dp      // 连接信息卡片内容行高（锁高，容两行）
     val QUEUE_ROW_H = 60.dp      // 下载队列行内容行高（锁高，状态切换不跳变）

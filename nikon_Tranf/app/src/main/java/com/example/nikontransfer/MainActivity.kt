@@ -480,12 +480,11 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     // ★ 顶栏垂直位置：safeDrawing 含状态栏实际高度（机型自适应，
-                    //    刘海/挖孔一并覆盖），下面 padding(top) 只是「状态栏到顶栏」
-                    //    的余量——数字越大越往下，越小越往上，0 = 紧贴状态栏。
-                    //    12dp 在状态栏 ~28dp 的机型上与旧固定 40dp 观感一致。
+                    //    刘海/挖孔一并覆盖），TOPBAR_GAP 只是「状态栏到顶栏」的余量
+                    //    ——数字越大越往下，越小越往上，0 = 紧贴状态栏
                     .windowInsetsPadding(WindowInsets.safeDrawing)
                     .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
-                    .padding(top = 12.dp),
+                    .padding(top = UiSpec.TOPBAR_GAP),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 val phase = connPhase.value
