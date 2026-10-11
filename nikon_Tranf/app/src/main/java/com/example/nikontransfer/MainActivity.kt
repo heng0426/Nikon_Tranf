@@ -532,6 +532,25 @@ class MainActivity : ComponentActivity() {
                         ) {
                             FunnelIcon(if (vm.filterActive) UiSpec.accent(vm.darkModeOn) else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                        // 合并 RAW/JPG 快捷开关（同款 34dp 外框，漏斗右侧）：
+                        // 开=accent 绿高亮，关=灰；与设置页"合并展示"同一开关
+                        // （setMergePairs 持久化 + 切换时清空多选）
+                        val mergeIconColor by animateColorAsState(
+                            if (mergeOn) UiSpec.accent(vm.darkModeOn) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            animationSpec = tween(UiSpec.STANDARD),
+                            label = "mergeIconColor"
+                        )
+                        Box(
+                            Modifier
+                                .padding(start = 10.dp)
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable { vm.setMergePairs(!mergeOn) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            MergeIcon(mergeIconColor)
+                        }
                         // 连接指示（常驻，筛选旁，同款圆角外框）：
                         // 已连接=当前通道图标（USB 蓝 / Wi-Fi 青）；连接中=琥珀色；断开=断开前通道图标红色
                         // 已连接时可点击 → 弹出连接详情浮层（型号/序列号/通道 + 断开；无重连入口），3 秒自动收起

@@ -131,6 +131,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asComposeRenderEffect
@@ -188,6 +189,36 @@ internal fun MainActivity.FunnelIcon(color: Color, modifier: Modifier = Modifier
                 close()
             }
             drawPath(p, color)
+        }
+    }
+
+    /** 合并图标（描边风格）：前后两张照片叠放 = RAW+JPG 合成一格。
+     *  后框只画不被前框遮挡的 L 形（左边+顶边+右边），前框完整圆角矩形。 */
+    @Composable
+internal fun MainActivity.MergeIcon(color: Color, modifier: Modifier = Modifier) {
+        Canvas(modifier.size(20.dp)) {
+            val w = size.width
+            val h = size.height
+            val stroke = Stroke(width = w * 0.075f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            val r = 0.12f * w
+            // 后框（右上）：L 形可见边，左/顶/右三边带圆角
+            val back = Path().apply {
+                moveTo(0.34f * w, 0.30f * h)
+                lineTo(0.34f * w, 0.08f * h + r)
+                quadraticBezierTo(0.34f * w, 0.08f * h, 0.34f * w + r, 0.08f * h)
+                lineTo(0.92f * w - r, 0.08f * h)
+                quadraticBezierTo(0.92f * w, 0.08f * h, 0.92f * w, 0.08f * h + r)
+                lineTo(0.92f * w, 0.64f * h)
+            }
+            drawPath(back, color, style = stroke)
+            // 前框（左下）：完整圆角矩形
+            drawRoundRect(
+                color,
+                topLeft = Offset(0.08f * w, 0.34f * h),
+                size = Size(0.58f * w, 0.58f * h),
+                cornerRadius = CornerRadius(r, r),
+                style = stroke
+            )
         }
     }
 
