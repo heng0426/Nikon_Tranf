@@ -1230,15 +1230,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 假下载回调粒度（KB）：64 = 复刻 USB 整包模式的高频回调（50MB≈800 次）；1024 = 分段模式 */
     val demoStepKb = mutableStateOf(64)
     val demoDownloadRunning = mutableStateOf(false)
-    /* 进度条补间时长（ms），0 = snap（不插值）。
-     * 实测（同一轮内对照，120Hz / 8.33ms 预算）：
-     *   500ms → p50 16.5ms（中位帧直接掉到 60Hz）
-     *   250ms → p50 16.5ms   120ms → p50 16.5ms
-     *   0(snap) → p50 8.5ms
-     * 只要补间在跑，就意味着"每帧重组一行"，而一次队列行重组的成本就超过 8.33ms。
-     * 补间时长小于更新间隔也没用 —— 250ms 的更新间隔配任何时长的补间都是持续动画。
-     * 所以默认关掉插值，靠节流频率（250ms ≈ 4 次/秒）保证进度推进的观感。 */
-    val progressTweenMs = mutableStateOf(0)
+    /* 进度条补间时长（ms），0 = snap（不插值）。默认 250 —— 与 got 的 250ms 节流严格
+     * 匹配，每段补间恰好走完，进度条匀速线性推进。
+     * 历史教训：曾默认 0(snap)。旧实现把动画值读在组合期（`by` 委托），补间期间
+     * 每帧重组整行（实测 120Hz / 8.33ms 预算下 p50 16.5ms，任何时长都超支），
+     * 只好关掉插值靠节流频率撑观感。进度读取下沉到绘制阶段后（drawBehind 内读
+     * State.value，见 RowFillLayer / OverallFill / PreviewRunningButton），动画帧
+     * 只剩一次 drawRect，零重组零布局 —— 补间成本近零，线性插值默认打开。
+     * 测具仍可运行时调（广播 cmd=tween；0 回退 snap 做对照）。 */
+    val progressTweenMs = mutableStateOf(250)
     /** 测量用：运行时摘掉总进度条（定位 M3 LinearProgressIndicator 自带补间的开销） */
     val perfHideOverallBar = mutableStateOf(false)
     /** 测量用：运行时摘掉队列行的进度填充层 */

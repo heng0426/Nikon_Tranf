@@ -314,11 +314,13 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
                 }
             }
         }
-        val anim by animateFloatAsState(frac, animationSpec = vm.progressSpec(), label = "queueOverall")
+        // 动画值不 `by` 读在组合期：drawBehind 内读 .value 把读取推迟到绘制阶段，
+        // 补间期间每帧只重绘这一个矩形，零重组（与 RowFillLayer 同款模式）
+        val animState = animateFloatAsState(frac, animationSpec = vm.progressSpec(), label = "queueOverall")
         val green = UiSpec.accent(vm.darkModeOn)
         Box(
             modifier.drawBehind {
-                drawRect(color = green, alpha = 0.20f, size = Size(size.width * anim, size.height))
+                drawRect(color = green, alpha = 0.20f, size = Size(size.width * animState.value, size.height))
             }
         )
     }
@@ -438,55 +440,18 @@ internal fun MainActivity.QueueThumb(handle: Int) {
 
     @Composable
  internal fun MainActivity.QueueRow(item: QueueItem) {
+        // 整行只读 status（低频：每张状态切换一次才重组）—— got/total/speed（250ms 高频）
+        // 的读取全部下沉到 RowFillLayer / RunningPill 两个窄作用域，进度更新不再碰整行
         val st = item.status.value
-        // 进度填充直接铺在卡片背景上：下载中按比例推进（浅绿），完成后整卡铺满（绿加深），
-        // 与未下载行一眼区分；排队/失败/取消不铺色。
-        // fillFrac 经 animateFloatAsState 线性插值（500ms）——分块更新（USB bulk 轮/Wi-Fi 1MB 块）
-        // 之间平滑推进，进度条不再一顿一顿；首次组合直接取目标值，滑回屏幕不重播动画
-        val fillFracTarget: Float
-        val fillAlpha: Float
-        when {
-            st == QStatus.RUNNING && item.total.value > 0 -> {
-                fillFracTarget = (item.got.value.toFloat() / item.total.value).coerceIn(0f, 1f)
-                fillAlpha = 0.20f
-            }
-            st == QStatus.DONE -> {
-                fillFracTarget = 1f
-                fillAlpha = 0.30f
-            }
-            else -> {
-                fillFracTarget = 0f
-                fillAlpha = 0f
-            }
-        }
-        val fillFrac by animateFloatAsState(
-            targetValue = fillFracTarget,
-            animationSpec = vm.progressSpec(),
-            label = "queueRowFill"
-        )
         Surface(
             shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
         ) {
             Box(Modifier.fillMaxWidth()) {
-                if (fillAlpha > 0f && !vm.perfHideRowFill.value) {
-                    val green = UiSpec.accent(vm.darkModeOn)
-                    /* 填充层用 drawBehind 画，不再用一个"宽度随进度变化"的 Box。
-                     * 原因（实测）：宽度参与布局 → 正在下载的那一行每帧重新测量，
-                     * 中位帧从 8.6ms 涨到 15.1ms。drawBehind 只走绘制阶段，
-                     * 不改变任何测量/布局，动画再密也只是一次重绘。
-                     * 之前还踩过 BoxWithConstraints —— 那个会额外发起一次子合成。 */
-                    Box(
-                        Modifier
-                            .matchParentSize()
-                            .drawBehind {
-                                drawRect(
-                                    color = green,
-                                    alpha = fillAlpha,
-                                    size = Size(size.width * fillFrac, size.height)
-                                )
-                            }
-                    )
+                // 进度填充铺在卡片背景上：下载中按比例推进（浅绿），完成后整卡铺满（绿加深）；
+                // 排队/失败/取消不铺色
+                if ((st == QStatus.RUNNING || st == QStatus.DONE) && !vm.perfHideRowFill.value) {
+                    RowFillLayer(item, Modifier.matchParentSize())
                 }
                 Row(
                     // 高度锁定 60dp（原实际高度）：下载中（有取消按钮）与已完成（无按钮）
@@ -523,23 +488,7 @@ internal fun MainActivity.QueueThumb(handle: Int) {
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     style = MaterialTheme.typography.labelSmall
                                 )
-                                QStatus.RUNNING -> {
-                                    // 胶囊显示进度/速度；tnum 等宽数字——数值每帧变化时文字不抖动
-                                    val green = UiSpec.accent(vm.darkModeOn)
-                                    Surface(
-                                        shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
-                                        color = green.copy(alpha = 0.14f)
-                                    ) {
-                                        Text(
-                                            "${humanSize(item.got.value)} / ${humanSize(item.total.value)} · ${item.speed.value}",
-                                            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                            color = MaterialTheme.colorScheme.primary,
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontFeatureSettings = "tnum"
-                                            )
-                                        )
-                                    }
-                                }
+                                QStatus.RUNNING -> RunningPill(item)
                                 QStatus.DONE -> {
                                     // 已完成胶囊 + 下载耗时胶囊（精确到 0.1s，tnum 等宽不抖动）
                                     val green = UiSpec.accent(vm.darkModeOn)
@@ -605,6 +554,72 @@ internal fun MainActivity.QueueThumb(handle: Int) {
                     }
                 }
             }
+        }
+    }
+
+    /** 行进度填充层（窄作用域）：got/total 的读取、目标计算与补间动画全部关在这里。
+     *  两个关键点：
+     *  1. drawBehind 画矩形而非"宽度随进度"的 Box —— 填充不参与测量/布局
+     *     （实测宽度参与布局会让正在下载的行每帧 re-measure，p50 8.6→15.1ms）；
+     *  2. animateFloatAsState 的返回值【不用 `by` 在组合期读】，而是在 drawBehind 内
+     *     读 .value —— 状态读取被推迟到绘制阶段，动画引擎每帧只调度一次重绘，
+     *     零重组零布局。旧实现读在组合期 → 补间期间每帧重组整行（p50 16.5ms），
+     *     这就是当年默认 snap 的根因；读取下沉后，线性补间的成本 ≈ 每帧一次 drawRect。
+     *  modifier 由调用处传 matchParentSize（BoxScope 接收者扩展，跨不出父 Box 作用域）。 */
+    @Composable
+    private fun MainActivity.RowFillLayer(item: QueueItem, modifier: Modifier) {
+        val st = item.status.value
+        // frac 目标：只在 got/total/status 变化时重算（250ms 一次或状态切换），
+        // 重算也只重组这个小 Box，不碰 QueueRow 的其余部分
+        val fracTarget by remember(item) {
+            derivedStateOf {
+                when (item.status.value) {
+                    QStatus.DONE -> 1f
+                    QStatus.RUNNING -> {
+                        val t = item.total.value
+                        if (t > 0) (item.got.value.toFloat() / t).coerceIn(0f, 1f) else 0f
+                    }
+                    else -> 0f
+                }
+            }
+        }
+        // 返回 State 而非 `by` 委托：动画运行期间组合不参与，只有 drawBehind 在读
+        val fillAnim = animateFloatAsState(
+            targetValue = fracTarget,
+            animationSpec = vm.progressSpec(),
+            label = "rowFill"
+        )
+        val green = UiSpec.accent(vm.darkModeOn)
+        val fillAlpha = if (st == QStatus.DONE) 0.30f else 0.20f
+        Box(
+            modifier.drawBehind {
+                drawRect(
+                    color = green,
+                    alpha = fillAlpha,
+                    size = Size(size.width * fillAnim.value, size.height)
+                )
+            }
+        )
+    }
+
+    /** 下载中状态胶囊（窄作用域）：got/total/speed（250ms 高频）只在这里读，
+     *  进度更新每 250ms 只重组这一个胶囊，行内其余元素完全不动；
+     *  tnum 等宽数字 —— 数值刷新时文字宽度稳定不抖动。 */
+    @Composable
+    private fun MainActivity.RunningPill(item: QueueItem) {
+        val green = UiSpec.accent(vm.darkModeOn)
+        Surface(
+            shape = RoundedCornerShape(UiSpec.ROUND_SMALL),
+            color = green.copy(alpha = 0.14f)
+        ) {
+            Text(
+                "${humanSize(item.got.value)} / ${humanSize(item.total.value)} · ${item.speed.value}",
+                Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFeatureSettings = "tnum"
+                )
+            )
         }
     }
 
@@ -717,51 +732,7 @@ internal fun MainActivity.DownloadStateSlot(
                     )
                 }
             }
-            qItem != null && st == QStatus.RUNNING -> {
-                // 进度条直接长在按钮上：胶囊外形不变，浅绿填充随进度推进（与下载队列同款配色），点按取消。
-                // 填充 500ms 线性插值 + 实时速度（与队列行同款节流）：分块更新间平滑推进不顿挫
-                val fracTarget = if (qItem.total.value > 0)
-                    (qItem.got.value.toFloat() / qItem.total.value).coerceIn(0f, 1f) else 0f
-                val frac by animateFloatAsState(
-                    targetValue = fracTarget,
-                    animationSpec = tween(500, easing = LinearEasing),
-                    label = "previewFill"
-                )
-                val green = UiSpec.accent(vm.darkModeOn)
-                Box(
-                    modifier
-                        .height(40.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .clickable { vm.cancelDownload(qItem) }
-                ) {
-                    Box(
-                        Modifier.fillMaxHeight().fillMaxWidth(frac)
-                            .background(green.copy(alpha = 0.20f))
-                    )
-                    Row(
-                        Modifier.matchParentSize().padding(horizontal = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            // tnum 等宽数字：数值刷新时文字宽度稳定不抖动；速度与队列行同源
-                            "${humanSize(qItem.got.value)} / ${humanSize(qItem.total.value)}" +
-                                (qItem.speed.value.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: ""),
-                            color = green,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontFeatureSettings = "tnum"
-                            ),
-                            maxLines = 1
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Icon(
-                            Icons.Filled.Close, contentDescription = "取消下载",
-                            tint = green, modifier = Modifier.size(14.dp)
-                        )
-                    }
-                }
-            }
+            qItem != null && st == QStatus.RUNNING -> PreviewRunningButton(qItem, modifier)
             qItem != null && st == QStatus.QUEUED -> {
                 // 排队中：与下载中同款 40dp 胶囊（旧实现是无高度的文字盒，Row 顶对齐下视觉偏上）
                 Box(
@@ -781,5 +752,59 @@ internal fun MainActivity.DownloadStateSlot(
                 onClick = { vm.retryDownload(qItem) }, modifier = modifier
             ) { Text("重新下载") }
             else -> Button(onClick = onDownload, enabled = enabled, modifier = modifier) { Text(label) }
+        }
+    }
+
+    /** 预览页"下载中"按钮（窄作用域）：got/total/speed（250ms 高频）与补间动画关在这里。
+     *  与队列行 RowFillLayer 同款双优化：填充用 drawBehind 画（不参与测量/布局）+
+     *  绘制阶段读动画值（零重组）。旧实现 fillMaxWidth(frac) 宽度参与布局、组合期
+     *  读动画值 → 补间期间每帧重组 + 重测量；写死 500ms 补间也统一为 vm.progressSpec()。 */
+    @Composable
+    private fun MainActivity.PreviewRunningButton(qItem: QueueItem, modifier: Modifier) {
+        val fracTarget by remember(qItem) {
+            derivedStateOf {
+                val t = qItem.total.value
+                if (t > 0) (qItem.got.value.toFloat() / t).coerceIn(0f, 1f) else 0f
+            }
+        }
+        val fillAnim = animateFloatAsState(
+            targetValue = fracTarget,
+            animationSpec = vm.progressSpec(),
+            label = "previewFill"
+        )
+        val green = UiSpec.accent(vm.darkModeOn)
+        Box(
+            modifier
+                .height(40.dp)
+                .clip(RoundedCornerShape(50))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable { vm.cancelDownload(qItem) }
+        ) {
+            Box(
+                Modifier.matchParentSize().drawBehind {
+                    drawRect(color = green, alpha = 0.20f, size = Size(size.width * fillAnim.value, size.height))
+                }
+            )
+            Row(
+                Modifier.matchParentSize().padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    // tnum 等宽数字：数值刷新时文字宽度稳定不抖动；速度与队列行同源
+                    "${humanSize(qItem.got.value)} / ${humanSize(qItem.total.value)}" +
+                        (qItem.speed.value.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: ""),
+                    color = green,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFeatureSettings = "tnum"
+                    ),
+                    maxLines = 1
+                )
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.Filled.Close, contentDescription = "取消下载",
+                    tint = green, modifier = Modifier.size(14.dp)
+                )
+            }
         }
     }
