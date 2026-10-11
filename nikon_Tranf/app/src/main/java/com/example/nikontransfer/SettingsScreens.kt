@@ -230,7 +230,7 @@ internal fun MainActivity.SettingsScreen(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(UiSpec.TOPBAR_BTN_GAP))
                 Text("设置", style = MaterialTheme.typography.titleLarge)
             }
             Spacer(Modifier.height(12.dp))

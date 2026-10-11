@@ -523,7 +523,7 @@ class MainActivity : ComponentActivity() {
                         // 筛选按钮（logo 右侧，同款圆角外框）：有筛选生效时漏斗变色
                         Box(
                             Modifier
-                                .padding(start = 10.dp)
+                                .padding(start = UiSpec.TOPBAR_BTN_GAP)
                                 .size(UiSpec.TOPBAR_BTN)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
@@ -540,7 +540,7 @@ class MainActivity : ComponentActivity() {
                         val isUsbConn = vm.lastConnChannel.value == "usb"
                         Box(
                             Modifier
-                                .padding(start = 10.dp)
+                                .padding(start = UiSpec.TOPBAR_BTN_GAP)
                                 .graphicsLayer { translationX = connShake.value * 6.dp.toPx() }
                                 .size(UiSpec.TOPBAR_BTN)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
@@ -580,7 +580,7 @@ class MainActivity : ComponentActivity() {
                         )
                         Box(
                             Modifier
-                                .padding(start = 10.dp)
+                                .padding(start = UiSpec.TOPBAR_BTN_GAP)
                                 .size(UiSpec.TOPBAR_BTN)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
@@ -611,7 +611,7 @@ class MainActivity : ComponentActivity() {
                         )
                         Box(
                             Modifier
-                                .padding(start = 10.dp)
+                                .padding(start = UiSpec.TOPBAR_BTN_GAP)
                                 .size(UiSpec.TOPBAR_BTN)
                                 .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
@@ -621,7 +621,7 @@ class MainActivity : ComponentActivity() {
                             TypeBadge("NEF", badgeColor("NEF"), Modifier.offset(x = offX, y = -offY))
                             TypeBadge("JPG", badgeColor("JPG"), Modifier.offset(x = -offX, y = offY))
                         }
-                        Spacer(Modifier.width(10.dp))
+                        Spacer(Modifier.width(UiSpec.TOPBAR_BTN_GAP))
                         // 下载队列按钮：无任务=下载图标；有任务=数字直接替换图标（青绿底白字，99+ 封顶）
                         TopBarDownloadButton(onClick = { showDownloads = true })
                     }

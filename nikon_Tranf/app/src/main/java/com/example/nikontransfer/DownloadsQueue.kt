@@ -214,12 +214,12 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(UiSpec.TOPBAR_BTN_GAP))
                 Text("下载队列", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 // 顶栏动作区：与设置页动作胶囊同风格（描边 ROUND_SMALL 胶囊），
                 // 替换原 M3 默认 TextButton（与整体卡片风格不搭）
                 Row(verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    horizontalArrangement = Arrangement.spacedBy(UiSpec.TOPBAR_BTN_GAP)) {
                     if (st.hasActive) {
                         // 全部取消：两段式确认 —— 首点进入待确认态（转 error 红描边 +
                         // errorContainer 填充），再点执行；3 秒未再点自动还原。
