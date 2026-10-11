@@ -323,7 +323,7 @@ internal fun MainActivity.SettingsScreen(
                     }
                 }
             }
-            SettingsSection(title = "传输", icon = { SectionIcon("传输") }) {
+            SettingsSection(title = "传输", icon = { SwapPressIcon(MaterialTheme.colorScheme.primary, Modifier.size(16.dp)) }) {
                 SettingSwitch(
                     title = "合并 RAW+JPG 展示",
                     subtitle = "同一时间拍摄的 JPG 与 NEF 合并为一格，预览页/批量下载可分别选格式",
@@ -654,27 +654,6 @@ internal fun MainActivity.SectionIcon(kind: String) {
                         )
                     }
                     drawCircle(color, radius = w * 0.10f, center = Offset(cx, cy))
-                }
-                "传输" -> {
-                    val style = Stroke(width = w * 0.13f, cap = StrokeCap.Round)
-                    // 右向箭头（上）
-                    drawLine(color, Offset(w * 0.08f, h * 0.28f), Offset(w * 0.9f, h * 0.28f), style.width, cap = StrokeCap.Round)
-                    val right = Path().apply {
-                        moveTo(w * 0.6f, h * 0.1f)
-                        lineTo(w * 0.92f, h * 0.28f)
-                        lineTo(w * 0.6f, h * 0.46f)
-                        close()
-                    }
-                    drawPath(right, color)
-                    // 左向箭头（下）
-                    drawLine(color, Offset(w * 0.92f, h * 0.72f), Offset(w * 0.08f, h * 0.72f), style.width, cap = StrokeCap.Round)
-                    val left = Path().apply {
-                        moveTo(w * 0.4f, h * 0.54f)
-                        lineTo(w * 0.08f, h * 0.72f)
-                        lineTo(w * 0.4f, h * 0.9f)
-                        close()
-                    }
-                    drawPath(left, color)
                 }
                 "外观" -> {
                     // 月牙：主圆 + 表面色圆裁出月牙

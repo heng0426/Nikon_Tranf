@@ -191,16 +191,16 @@ internal fun MainActivity.FunnelIcon(color: Color, modifier: Modifier = Modifier
         }
     }
 
-    /** 短/长按反转图标（描边风格，方案 A）：纯交换箭头 ⇄ —— 两支对向水平
-     *  箭头（上→右、下→左），无点无圈、元素最少，20dp 下留白充足不拥挤；
-     *  "互换"语义一眼可辨，短/长的具体含义由按钮态颜色（开=accent 绿）提示。
-     *  颜色由调用方传入。 */
+    /** 交换箭头图标（描边风格，方案 A）：纯交换箭头 ⇄ —— 两支对向水平
+     *  箭头（上→右、下→左），无点无圈、元素最少，小尺寸下留白充足不拥挤。
+     *  两处使用：设置页"传输"分组小图标（16dp）；顶栏短/长按反转按钮
+     *  （现改用文字徽章，此图标留作传输语义）。颜色由调用方传入。 */
     @Composable
 internal fun MainActivity.SwapPressIcon(color: Color, modifier: Modifier = Modifier) {
         Canvas(modifier.size(20.dp)) {
             val w = size.width
             val h = size.height
-            val sw = w * 0.09f
+            val sw = w * 0.10f
             val x0 = w * 0.18f
             val x1 = w * 0.82f
             val ah = w * 0.13f
