@@ -829,7 +829,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val s = java.net.Socket()
                     try {
                         try { bindAddr?.let { s.bind(java.net.InetSocketAddress(it, 0)) } } catch (_: Throwable) {}
-                        s.connect(java.net.InetSocketAddress(ip, 15740), 300)
+                        // 热点 Wi-Fi 高 RTT（实测 ping 52~235ms，SoftAp 排队/省电唤醒更慢），
+                        // 300ms 会把唯一在线的相机漏成"无设备"；1200ms 下 16 并发扫 /24
+                        // 最坏 ~19s，仍在 40s latch 内
+                        s.connect(java.net.InetSocketAddress(ip, 15740), 1200)
                         found.add(ip)
                     } finally { s.close() }
                 } catch (_: Throwable) {
