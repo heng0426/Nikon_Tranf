@@ -243,10 +243,11 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
         }
     }
 
-    /** 总进度条：独立 composable，自己订阅当前任务的 got。
-     *  抽出来的原因：got 是高频状态（节流后 250ms 一次，节流前整包模式 64KB 一次）。
-     *  留在页面顶层读它，会让标题栏、统计胶囊、整个 LazyColumn 跟着一起重组。
-     *  抽成独立作用域后，进度更新只重组这一行。 */
+    /** 总进度卡片：与队列行同款卡片（ROUND_LARGE + 半透明 surfaceVariant 底），
+     *  绿色填充按总进度比例铺在卡片背景上，与队列行的填充语言一致。
+     *  独立 composable 的原因不变：got 是高频状态（节流后 250ms 一次，
+     *  节流前整包模式 64KB 一次），留在页面顶层读它会让标题栏、统计胶囊、
+     *  整个 LazyColumn 跟着一起重组；抽成独立作用域后，更新只作用这一张卡。 */
     @Composable
 internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
         val frac by remember {
@@ -258,7 +259,7 @@ internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
             }
         }
         val overall = ((done + frac) / denom).coerceIn(0f, 1f)
-        // 与队列行同款线性插值：总进度条随分块更新平滑推进。
+        // 与队列行同款线性插值：总进度随分块更新平滑推进。
         // got 节流到 250ms 后，500ms 补间能完整跑完（此前每 64KB 就被打断重启 → 拖影）。
         val overallAnim by animateFloatAsState(
             targetValue = overall,
@@ -266,28 +267,44 @@ internal fun MainActivity.OverallProgressBar(done: Int, denom: Int) {
             label = "queueOverall"
         )
         val green = UiSpec.accent(vm.darkModeOn)
-        val track = MaterialTheme.colorScheme.surfaceVariant
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            /* 自绘进度条，不用 M3 的 LinearProgressIndicator：
-             * M3 内部对 progress 还有一层 spring 补间，跟外层补间叠加后动画永远
-             * 收敛不了 —— 每帧重组 + 重绘。这里改成 drawBehind 直接画两段矩形，
-             * 只走绘制阶段。 */
-            Box(
-                Modifier
-                    .weight(1f)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .drawBehind {
-                        drawRect(track)
-                        drawRect(green, size = Size(size.width * overallAnim, size.height))
-                    }
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "$done/$denom",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Surface(
+            shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        ) {
+            Box(Modifier.fillMaxWidth()) {
+                /* 填充层 drawBehind（与队列行同款）：进度变化只触发重绘，不参与
+                 * 测量/布局。M3 LinearProgressIndicator 内部还有一层 spring，与外层
+                 * 补间叠加永不收敛，所以进度可视化全部自绘（之前实测 16.5ms 教训）。 */
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .drawBehind {
+                            drawRect(
+                                color = green,
+                                alpha = 0.20f,
+                                size = Size(size.width * overallAnim, size.height)
+                            )
+                        }
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "总进度",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "$done/$denom · ${(overall * 100).roundToInt()}%",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontFeatureSettings = "tnum"
+                        ),
+                        color = green
+                    )
+                }
+            }
         }
     }
 
