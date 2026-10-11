@@ -191,41 +191,29 @@ internal fun MainActivity.FunnelIcon(color: Color, modifier: Modifier = Modifier
         }
     }
 
-    /** 短/长按反转图标（描边风格）：`● ⇆ ○` 一行三元素 —— 实心点=短按(tap)、
-     *  空心圈=长按(hold)、中间双向箭头=两者互换；相比旧版（点/圈/双弧箭头
-     *  斜向散布满画布）元素集中在中轴一行，20dp 小尺寸下更易读。
-     *  颜色由调用方传入（开=accent 绿，关=灰）。 */
+    /** 短/长按反转图标（描边风格，方案 A）：纯交换箭头 ⇄ —— 两支对向水平
+     *  箭头（上→右、下→左），无点无圈、元素最少，20dp 下留白充足不拥挤；
+     *  "互换"语义一眼可辨，短/长的具体含义由按钮态颜色（开=accent 绿）提示。
+     *  颜色由调用方传入。 */
     @Composable
 internal fun MainActivity.SwapPressIcon(color: Color, modifier: Modifier = Modifier) {
         Canvas(modifier.size(20.dp)) {
             val w = size.width
-            val cy = size.height / 2f
-            val stroke = Stroke(width = w * 0.08f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-            // 左：实心点（短按轻点）
-            drawCircle(color, radius = w * 0.10f, center = Offset(w * 0.14f, cy))
-            // 中：双向箭头（互换），两端箭头分别指向点与圈
-            val x0 = w * 0.33f
-            val x1 = w * 0.64f
-            val ah = w * 0.11f
-            drawLine(color, Offset(x0, cy), Offset(x1, cy), stroke.width, stroke.cap)
-            drawPath(
-                Path().apply {
-                    moveTo(x1 - ah, cy - ah)
-                    lineTo(x1, cy)
-                    lineTo(x1 - ah, cy + ah)
-                    close()
-                }, color, style = stroke
-            )
-            drawPath(
-                Path().apply {
-                    moveTo(x0 + ah, cy - ah)
-                    lineTo(x0, cy)
-                    lineTo(x0 + ah, cy + ah)
-                    close()
-                }, color, style = stroke
-            )
-            // 右：空心圈（长按按住），比实心点略大（按住的"停留目标"更大）
-            drawCircle(color, radius = w * 0.12f, center = Offset(w * 0.84f, cy), style = stroke)
+            val h = size.height
+            val sw = w * 0.09f
+            val x0 = w * 0.18f
+            val x1 = w * 0.82f
+            val ah = w * 0.13f
+            val yT = h * 0.34f
+            val yB = h * 0.66f
+            // 上箭头 →（指向长按位）
+            drawLine(color, Offset(x0, yT), Offset(x1, yT), sw, StrokeCap.Round)
+            drawLine(color, Offset(x1, yT), Offset(x1 - ah, yT - ah), sw, StrokeCap.Round)
+            drawLine(color, Offset(x1, yT), Offset(x1 - ah, yT + ah), sw, StrokeCap.Round)
+            // 下箭头 ←（指回短按位）
+            drawLine(color, Offset(x1, yB), Offset(x0, yB), sw, StrokeCap.Round)
+            drawLine(color, Offset(x0, yB), Offset(x0 + ah, yB - ah), sw, StrokeCap.Round)
+            drawLine(color, Offset(x0, yB), Offset(x0 + ah, yB + ah), sw, StrokeCap.Round)
         }
     }
 
