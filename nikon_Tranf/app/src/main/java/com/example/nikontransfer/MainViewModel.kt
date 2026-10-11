@@ -806,6 +806,117 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return out.map { it.key to it.value }
     }
 
+    /** 热点网段 = 本机 Wi-Fi 侧接口网段中「不在受管网络列表」的部分。
+     *  MIUI 等机型开热点时只挂接口（wlan1/swlan0）不建 NetworkAgent，热点不是
+     *  受管网络——cm.allNetworks 拿不到 Network 对象、无法 bindProcessToNetwork；
+     *  App socket 的 fwmark 永远指向默认网络，其路由表又没有热点直连路由，且
+     *  这类机型的规则链没有主表兜底 → 发往热点网段的连接立即 ENETUNREACH
+     *  （小米 11 实测，run-as nc 复现）。返回 (网段前缀, 本机热点地址)，
+     *  null = 无热点或热点即受管网络（手机连相机热点场景）。 */
+    private fun hotspotSubnet(): Pair<String, java.net.InetAddress>? {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val managed = HashSet<String>()
+        for (net in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(net) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            val lp = cm.getLinkProperties(net) ?: continue
+            for (la in lp.linkAddresses) {
+                val a = la.address.address
+                if (a is Array<*> || a.size != 4) continue
+                managed.add("${a[0].toInt() and 0xFF}.${a[1].toInt() and 0xFF}.${a[2].toInt() and 0xFF}")
+            }
+        }
+        return interfaceWifiAddrs().firstOrNull { it.first !in managed }
+    }
+
+    /** netId → 可达热点网段 的探测结果缓存（同一热点会话内网段不变，复用免重探） */
+    private val hotspotNetIdCache = HashMap<String, Int>()
+
+    /** 进程绑定前的默认 netId（还原用；null = 未做过手工绑定） */
+    private var prevProcessNetId: Int? = null
+
+    /** netId 探测：热点没有 Network 对象，但 netd 规则链为 local/legacy netId
+     *  保留了兜底表且恰好覆盖热点直连路由（小米 11 实测 fwmark 0x10062/0x10063
+     *  → 表 97 = 热点直连 192.168.18.0/24 dev wlan1）。逐个 netId 把进程默认
+     *  网络绑过去（反射 bindProcessToNetworkHandle，同步改写 Java 与 native
+     *  socket 的 fwmark 来源），用普通 Socket 连探针地址验证可达性，
+     *  哪个 netId 能路由到热点网段就停在哪个上。
+     *  判定（探测目标是网段内几乎无设备的 .254）：
+     *  - ENETUNREACH（立即失败）= 该 netId 的表里没有热点路由 → 跳过；
+     *  - ECONNREFUSED / 超时 / EHOSTUNREACH = 路由已通（ARP 无应答属正常）。
+     *  优先试已知的 local/legacy netId（98/99，规则链可见），再全扫 1..128；
+     *  错的立即失败、对的 ~350ms，整体 <1s。 */
+    private fun probeHotspotNetId(prefix: String): Int? {
+        hotspotNetIdCache[prefix]?.let { n ->
+            if (bindProcessToNetId(n)) return n
+        }
+        val probe = java.net.InetSocketAddress("$prefix.254", 48080)
+        val candidates = (listOf(98, 99) + (1..128).toList()).distinct()
+        for (n in candidates) {
+            if (!bindProcessToNetId(n)) continue
+            try {
+                val s = java.net.Socket()
+                try { s.connect(probe, 350) } finally { runCatching { s.close() } }
+                hotspotNetIdCache[prefix] = n
+                Log.i("GPhoto2", "网络策略: netId=$n 可达热点网段 $prefix.x（直连成功）")
+                return n
+            } catch (e: java.net.SocketTimeoutException) {
+                hotspotNetIdCache[prefix] = n
+                Log.i("GPhoto2", "网络策略: netId=$n 可达热点网段 $prefix.x（ARP 超时=路由通）")
+                return n
+            } catch (e: java.net.ConnectException) {
+                val m = e.message?.lowercase() ?: ""
+                if (!m.contains("unreach")) {   // ENETUNREACH=无路由；refused/EHOSTUNREACH=路由通
+                    hotspotNetIdCache[prefix] = n
+                    Log.i("GPhoto2", "网络策略: netId=$n 可达热点网段 $prefix.x（${e.message}）")
+                    return n
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        restoreProcessNetId()   // 全部候选失败：还原，别把进程停在坏 netId 上
+        Log.i("GPhoto2", "网络策略: 热点网段 $prefix.x 无可达 netId")
+        return null
+    }
+
+    /** 进程默认网络绑到任意 netId（含非受管）：反射
+     *  NetworkUtils.bindProcessToNetworkHandle —— 与 bindProcessToNetwork 同一
+     *  底层（libnetd_client setNetworkForProcess），但【不经 ConnectivityService
+     *  校验 netId 归属】，Java 与 native（gphoto2）socket 的 fwmark 一并生效。
+     *  返回绑定前的 netId（还原用），失败返回 null。 */
+    private fun bindProcessToNetId(netId: Int): Boolean {
+        try {
+            val cls = Class.forName("android.net.NetworkUtils")
+            if (prevProcessNetId == null) {
+                prevProcessNetId = try {
+                    cls.getMethod("getBoundNetworkForProcess").invoke(null) as? Int
+                } catch (_: Throwable) { 0 }
+            }
+            cls.getMethod("bindProcessToNetworkHandle", Int::class.javaPrimitiveType)
+                .invoke(null, netId)
+            Log.i("GPhoto2", "网络策略: 进程绑定 netId=$netId（热点专用通道）")
+            return true
+        } catch (t: Throwable) {
+            Log.w("GPhoto2", "netId=$netId 进程绑定失败: ${t.message}")
+            return false
+        }
+    }
+
+    /** 还原进程默认网络：netId 绑定是手工的、系统不会自动还原；热点关闭后该
+     *  netId 路由失效会拖垮 App 全部网络功能，连接失败/取消/断开时必须还原。 */
+    private fun restoreProcessNetId() {
+        val prev = prevProcessNetId ?: return
+        prevProcessNetId = null
+        try {
+            Class.forName("android.net.NetworkUtils")
+                .getMethod("bindProcessToNetworkHandle", Int::class.javaPrimitiveType)
+                .invoke(null, prev)
+            Log.i("GPhoto2", "网络策略: 进程默认网络还原 netId=$prev")
+        } catch (t: Throwable) {
+            Log.w("GPhoto2", "进程默认网络还原失败: ${t.message}")
+        }
+    }
+
     /** 并发扫描网段的 15740 端口（PTP/IP），返回开放的 IP 列表。
      *  abort 非空时逐任务检查，命中即跳过剩余目标提前收尾（Wi-Fi 取消用）。 */
     private fun scanSubnet(
@@ -847,13 +958,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return found
     }
 
-    /** 扫描/探测阶段的网络绑定：把进程绑到当前受管 Wi-Fi 网络（相机必经之路）。
+    /** 扫描/探测阶段的网络绑定：热点优先，受管次之。
+     *  ① 手机开热点（相机连进来）：热点不是受管网络（MIUI 不建 NetworkAgent），
+     *     bindProcessToNetwork 无对象可绑 → netId 探测 + 手工进程绑定；
+     *  ② 手机连相机热点（手机是客户端）：相机网段是受管 Wi-Fi 网络之一 → 正规绑定。
      *  移动数据在线时默认网络是数据通道，未绑定的 socket（含 JNI 原生侧）全部
      *  走数据接口，发往相机热点网段(192.168.x.x)的探测包到不了相机
      *  → "扫描不到相机"。连接阶段由 bindToWifiNetwork(cameraIp) 按相机 IP
-     *  精确绑定；此函数用于还不知道相机 IP 的扫描/探测阶段（旧手机默认网络
-     *  恰好是 Wi-Fi 所以从未暴露）。绑定在 Wi-Fi 断开时由系统自动还原。 */
+     *  精确绑定；此函数用于还不知道相机 IP 的扫描/探测阶段。 */
     private fun bindProcessToWifiForScan() {
+        val hs = hotspotSubnet()
+        if (hs != null) {
+            val netId = probeHotspotNetId(hs.first)
+            if (netId != null && bindProcessToNetId(netId)) return
+            Log.i("GPhoto2", "网络策略: 热点 netId 探测/绑定失败，回退受管 Wi-Fi 绑定")
+        }
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         for (net in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(net) ?: continue
@@ -864,7 +983,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        Log.i("GPhoto2", "网络策略: 无受管 Wi-Fi（热点-only 时网段来自网卡枚举，扫描 socket 按源地址出包）")
+        Log.i("GPhoto2", "网络策略: 无受管 Wi-Fi，扫描走默认网络")
     }
 
     /** 设置页「扫描相机」：扫全部网段 + 读取相机名 */
@@ -891,6 +1010,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 scanText.value = "未发现相机，请确认相机已进入 Wi-Fi 连接等待状态"
         } finally {
             scanning.value = false
+            restoreProcessNetId()   // 扫描结束还原进程默认网络
         }
     }
 
@@ -1089,6 +1209,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } finally {
             connecting = false
             wifiCancelRequested = false
+            // 连接失败/取消：还原进程默认网络（netId 绑定不还原会拖垮 App 全部网络）
+            if (!connected) restoreProcessNetId()
         }
     }
 
@@ -1173,11 +1295,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * 关键：把进程网络绑定到「相机所在」的网络。
+     * - 相机连手机热点：热点不是受管网络（MIUI 不建 NetworkAgent）→ netId 探测
+     *   + bindProcessToNetworkHandle 手工绑定（bindProcessToNetwork 无对象可绑）。
      * - 手机连相机热点（AP 模式）：相机网段是受管 Wi-Fi 网络之一，按子网匹配并绑定。
-     * - 相机连手机热点：热点网段不在受管网络列表里，此时【不绑定】——
-     *   未绑定套接字经主路由表的直连路由即可到达热点客户端（实测验证）。
+     * - 匹配不上时不绑定——未绑定套接字经主路由表的直连路由即可到达热点客户端
+     *   （规则链有主表兜底的机型；无兜底机型已在上方 netId 分支解决）。
      */
     private fun bindToWifiNetwork(cameraIp: String): String {
+        // 相机在热点网段（热点非受管网络）→ netId 探测绑定
+        val hs = hotspotSubnet()
+        if (hs != null) {
+            try {
+                val b = java.net.InetAddress.getByName(cameraIp).address
+                val p = "${b[0].toInt() and 0xFF}.${b[1].toInt() and 0xFF}.${b[2].toInt() and 0xFF}"
+                if (p == hs.first) {
+                    val netId = probeHotspotNetId(hs.first)
+                    if (netId != null && bindProcessToNetId(netId))
+                        return "绑定到热点专用 netId=$netId（$p.x）"
+                    Log.i("GPhoto2", "网络策略: 热点 netId 绑定失败，回退受管匹配")
+                }
+            } catch (_: Exception) {
+            }
+        }
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val camBytes = try {
             java.net.InetAddress.getByName(cameraIp).address
@@ -1200,7 +1339,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        // 相机在手机热点网段（不受管网络）：不绑定，走主路由直连
+        // 相机在热点网段（不受管网络）：不绑定，走主路由直连
         Log.i("GPhoto2", "网络策略: $desc，相机 IP=$cameraIp 直连模式")
         return desc
     }
@@ -2977,6 +3116,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connText.value = "已断开 · 选择连接方式"
         showConnDetail.value = false
         pendingChannel.value = null
+        restoreProcessNetId()   // Wi-Fi 断开：还原热点专用 netId 绑定
         Log.i("GPhoto2", "手动断开连接")
     }
 
