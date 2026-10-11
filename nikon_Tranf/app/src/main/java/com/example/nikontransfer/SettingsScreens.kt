@@ -132,12 +132,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.text.TextStyle
@@ -635,7 +637,6 @@ internal fun MainActivity.SettingsDivider() {
     @Composable
 internal fun MainActivity.SectionIcon(kind: String) {
         val color = MaterialTheme.colorScheme.primary
-        val surface = MaterialTheme.colorScheme.surface
         Canvas(Modifier.size(16.dp)) {
             val w = size.width
             val h = size.height
@@ -656,9 +657,16 @@ internal fun MainActivity.SectionIcon(kind: String) {
                     drawCircle(color, radius = w * 0.10f, center = Offset(cx, cy))
                 }
                 "外观" -> {
-                    // 月牙：主圆 + 表面色圆裁出月牙
-                    drawCircle(color, radius = w * 0.42f, center = Offset(w * 0.45f, h * 0.52f))
-                    drawCircle(surface, radius = w * 0.36f, center = Offset(w * 0.66f, h * 0.38f))
+                    // 月牙：外圆减去右上偏移圆（Path 布尔差集，真轮廓填充）。
+                    // 旧实现用一枚表面色圆盖在主圆上"裁"月牙——卡片底色与
+                    // surface 有出入时遮挡圆轮廓会露馅；差集结果与背景无关。
+                    val outer = Path().apply {
+                        addOval(Rect(w * 0.03f, h * 0.10f, w * 0.87f, h * 0.94f))
+                    }
+                    val inner = Path().apply {
+                        addOval(Rect(w * 0.30f, h * 0.02f, w * 1.02f, h * 0.74f))
+                    }
+                    drawPath(Path.combine(PathOperation.Difference, outer, inner), color)
                 }
                 "存储" -> {
                     val folder = Path().apply {
