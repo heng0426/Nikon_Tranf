@@ -129,10 +129,23 @@ class DownloadManager(
         }
     }
 
-    /** 一键取消所有未完成任务：排队中直接移除，下载中置取消标志 */
+    /** 一键取消所有活动任务：排队中直接移除；下载中置取消标志（当前分块写完即停）
+     *  并立刻移出列表 —— 语义与单条滑动删除（dismiss）一致，取消即清场，列表只剩
+     *  已完成/失败，无需再点「清空已完成」。worker 收尾对已移除条目写终态无副作用
+     *  （对象不再被任何 UI 引用，queueStats/总览卡只遍历列表）。 */
     fun cancelAll() {
-        synchronized(lock) { queue.removeAll { it.status.value == QStatus.QUEUED } }
-        queue.forEach { if (it.status.value == QStatus.RUNNING) it.cancelRequested = true }
+        synchronized(lock) {
+            queue.removeAll { item ->
+                when (item.status.value) {
+                    QStatus.QUEUED -> true
+                    QStatus.RUNNING -> {
+                        item.cancelRequested = true
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
     }
 
     /** 串行 worker：逐条取 QUEUED 交给 runItem；队列清空后回调收尾并复位 */

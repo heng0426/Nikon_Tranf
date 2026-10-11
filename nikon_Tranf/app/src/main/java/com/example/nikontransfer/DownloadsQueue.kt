@@ -221,11 +221,56 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                 }
                 Spacer(Modifier.width(10.dp))
                 Text("下载队列", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                if (st.hasActive) {
-                    TextButton(onClick = { vm.cancelAllDownloads() }) { Text("全部取消") }
-                }
-                if (st.hasFinished) {
-                    TextButton(onClick = { vm.clearFinished() }) { Text("清空已完成") }
+                // 顶栏动作区：与设置页动作胶囊同风格（描边 ROUND_SMALL 胶囊），
+                // 替换原 M3 默认 TextButton（与整体卡片风格不搭）
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (st.hasActive) {
+                        // 全部取消：两段式确认 —— 首点进入待确认态（转 error 红描边 +
+                        // errorContainer 填充），再点执行；3 秒未再点自动还原。
+                        // 不弹对话框打断流程，只拦手滑（几百张重建队列代价高）。
+                        var confirmCancelAll by remember { mutableStateOf(false) }
+                        LaunchedEffect(confirmCancelAll) {
+                            if (confirmCancelAll) {
+                                delay(3000)
+                                confirmCancelAll = false
+                            }
+                        }
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                                .background(
+                                    if (confirmCancelAll) MaterialTheme.colorScheme.errorContainer
+                                    else Color.Transparent
+                                )
+                                .border(
+                                    1.dp,
+                                    if (confirmCancelAll) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                                    RoundedCornerShape(UiSpec.ROUND_SMALL)
+                                )
+                                .clickable {
+                                    if (confirmCancelAll) {
+                                        vm.cancelAllDownloads()
+                                        confirmCancelAll = false
+                                    } else {
+                                        confirmCancelAll = true
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                if (confirmCancelAll) "确认取消？" else "全部取消",
+                                color = if (confirmCancelAll) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                    if (st.hasFinished) {
+                        ActionPill("清空已完成") { vm.clearFinished() }
+                    }
                 }
             }
             // 总览卡片（总计卡）：恒显示（空队列 = 0/0/0），与有任务时统一风格。
