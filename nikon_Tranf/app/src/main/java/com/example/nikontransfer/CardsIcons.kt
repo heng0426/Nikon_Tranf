@@ -191,24 +191,41 @@ internal fun MainActivity.FunnelIcon(color: Color, modifier: Modifier = Modifier
         }
     }
 
-    /** 短/长按反转图标（描边风格）：实心点=短按(tap)、空心圈=长按(hold)，
-     *  两段反向箭头表示两者功能互换；颜色由调用方传入（开=accent 绿，关=灰）。 */
+    /** 短/长按反转图标（描边风格）：`● ⇆ ○` 一行三元素 —— 实心点=短按(tap)、
+     *  空心圈=长按(hold)、中间双向箭头=两者互换；相比旧版（点/圈/双弧箭头
+     *  斜向散布满画布）元素集中在中轴一行，20dp 小尺寸下更易读。
+     *  颜色由调用方传入（开=accent 绿，关=灰）。 */
     @Composable
 internal fun MainActivity.SwapPressIcon(color: Color, modifier: Modifier = Modifier) {
         Canvas(modifier.size(20.dp)) {
             val w = size.width
-            val h = size.height
-            val stroke = Stroke(width = w * 0.075f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-            // 短按：实心点（左上）+ 出箭头 → 右（交给长按位）
-            drawCircle(color, radius = 0.10f * w, center = Offset(0.18f * w, 0.24f * h))
-            drawLine(color, Offset(0.34f * w, 0.24f * h), Offset(0.86f * w, 0.24f * h), stroke.width, stroke.cap)
-            drawLine(color, Offset(0.86f * w, 0.24f * h), Offset(0.74f * w, 0.15f * h), stroke.width, stroke.cap)
-            drawLine(color, Offset(0.86f * w, 0.24f * h), Offset(0.74f * w, 0.33f * h), stroke.width, stroke.cap)
-            // 长按：空心圈（右下）+ 回箭头 → 左（换回短按位）
-            drawCircle(color, radius = 0.13f * w, center = Offset(0.80f * w, 0.74f * h), style = stroke)
-            drawLine(color, Offset(0.62f * w, 0.74f * h), Offset(0.14f * w, 0.74f * h), stroke.width, stroke.cap)
-            drawLine(color, Offset(0.14f * w, 0.74f * h), Offset(0.26f * w, 0.65f * h), stroke.width, stroke.cap)
-            drawLine(color, Offset(0.14f * w, 0.74f * h), Offset(0.26f * w, 0.83f * h), stroke.width, stroke.cap)
+            val cy = size.height / 2f
+            val stroke = Stroke(width = w * 0.08f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            // 左：实心点（短按轻点）
+            drawCircle(color, radius = w * 0.10f, center = Offset(w * 0.14f, cy))
+            // 中：双向箭头（互换），两端箭头分别指向点与圈
+            val x0 = w * 0.33f
+            val x1 = w * 0.64f
+            val ah = w * 0.11f
+            drawLine(color, Offset(x0, cy), Offset(x1, cy), stroke.width, stroke.cap)
+            drawPath(
+                Path().apply {
+                    moveTo(x1 - ah, cy - ah)
+                    lineTo(x1, cy)
+                    lineTo(x1 - ah, cy + ah)
+                    close()
+                }, color, style = stroke
+            )
+            drawPath(
+                Path().apply {
+                    moveTo(x0 + ah, cy - ah)
+                    lineTo(x0, cy)
+                    lineTo(x0 + ah, cy + ah)
+                    close()
+                }, color, style = stroke
+            )
+            // 右：空心圈（长按按住），比实心点略大（按住的"停留目标"更大）
+            drawCircle(color, radius = w * 0.12f, center = Offset(w * 0.84f, cy), style = stroke)
         }
     }
 
