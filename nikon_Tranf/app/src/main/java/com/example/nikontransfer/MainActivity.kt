@@ -875,7 +875,9 @@ class MainActivity : ComponentActivity() {
                     PinnedPillSlot(
                         dateText = sec?.let { vm.dateLabel(it.dateKey, it.rows.size) },
                         countText = if (vm.chunkedLoad.value) "已加载 ${pairs.size}/${vm.fullVisibleCount()} 张"
-                        else "共 ${pairs.size} 张"
+                        else "共 ${pairs.size} 张",
+                        collapsed = sec != null && sec.dateKey in vm.collapsedDates.value,
+                        onToggle = if (sec != null) ({ vm.toggleDateCollapsed(sec.dateKey) }) else null
                     )
                     // 免疫无障碍扫描：GKD/记账类服务监听 CONTENT_CHANGED 且全树遍历坐标，
                     // 网格几百节点 × 每帧滚动 = 主线程每帧 6-17ms 语义计算（实测 trace 热点）。
@@ -950,7 +952,9 @@ class MainActivity : ComponentActivity() {
                     PinnedPillSlot(
                         dateText = sec?.let { vm.dateLabel(it.dateKey, it.rows.size) },
                         countText = if (vm.chunkedLoad.value) "已加载 ${visible.size}/${vm.fullVisibleCount()} 张"
-                        else "共 ${visible.size} 张"
+                        else "共 ${visible.size} 张",
+                        collapsed = sec != null && sec.dateKey in vm.collapsedDates.value,
+                        onToggle = if (sec != null) ({ vm.toggleDateCollapsed(sec.dateKey) }) else null
                     )
                     // 免疫无障碍扫描（同合并模式）：语义子树清空，服务扫描成本归零
                     Box(Modifier.fillMaxWidth().weight(1f).clearAndSetSemantics { }) {

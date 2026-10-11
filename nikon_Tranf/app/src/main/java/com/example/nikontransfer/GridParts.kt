@@ -425,22 +425,54 @@ internal fun DateBubble(text: String) {
     /** 日期胶囊槽位高度：只改这个数字——数字越小，胶囊下方留白越小（建议 24~30） */
 
     /** 置顶信息胶囊槽（合并/文件共用）：左=当前分节日期，右=张数（分块开启时为已加载/总量）。
-     *  固定槽位随滚动更新，不与照片重叠。 */
+     *  固定槽位随滚动更新，不与照片重叠。
+     *  onToggle 非空时日期胶囊可点击 → 折叠/展开当前日期（与节头胶囊同视觉语言：
+     *  折叠态箭头转 -90° + 胶囊变淡）。 */
     @Composable
-internal fun MainActivity.PinnedPillSlot(dateText: String?, countText: String) {
+internal fun MainActivity.PinnedPillSlot(
+        dateText: String?,
+        countText: String,
+        collapsed: Boolean = false,
+        onToggle: (() -> Unit)? = null
+    ) {
         Box(Modifier.fillMaxWidth().height(UiSpec.PILL_SLOT), contentAlignment = Alignment.CenterStart) {
             if (dateText != null) {
+                val arrow by animateFloatAsState(
+                    if (collapsed) -90f else 0f,
+                    animationSpec = tween(UiSpec.STANDARD),
+                    label = "pinFoldArrow"
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Surface(
                         shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
+                        color = if (collapsed) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
+                        modifier = if (onToggle != null)
+                            Modifier.clip(RoundedCornerShape(UiSpec.ROUND_LARGE)).clickable(onClick = onToggle)
+                        else Modifier
                     ) {
-                        Text(
-                            dateText,
-                            Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        Row(
+                            Modifier.padding(
+                                start = 10.dp,
+                                end = if (onToggle != null) 5.dp else 10.dp,
+                                top = 4.dp, bottom = 4.dp
+                            ),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                dateText,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            if (onToggle != null) {
+                                Icon(
+                                    Icons.Filled.ArrowDropDown,
+                                    contentDescription = if (collapsed) "展开当前日期照片" else "收起当前日期照片",
+                                    modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = arrow },
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
                     }
                     Surface(
                         shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
@@ -580,7 +612,7 @@ internal fun MainActivity.DateHeaderPill(
         }
     }
 
-    /** 筛选卡片：文件类型(单选) / 状态(未传+已传独立chip) / 拍摄日期(起止)。
+    /** 筛选卡片：文件类型(单选) / 下载状态(单选：全部/未下载/已下载) / 拍摄日期(起止)。
      *  实时生效，右上角重置；样式对照用户提供的参考图（去掉连拍与保护）。 */
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -623,12 +655,16 @@ internal fun MainActivity.FilterSheet(onDismiss: () -> Unit) {
                 }
                 Text("下载状态", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(10.dp))
+                // 与文件类型同款单选三按钮：全部 / 未下载 / 已下载
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StateChip("未下载", vm.filterUntransferred.value, Modifier.weight(1f)) {
-                        vm.filterUntransferred.value = it
+                    FilterBigButton("全部", vm.filterDl.value == "全部", Modifier.weight(1f)) {
+                        vm.filterDl.value = "全部"
                     }
-                    StateChip("已下载", vm.filterDownloaded.value, Modifier.weight(1f)) {
-                        vm.filterDownloaded.value = it
+                    FilterBigButton("未下载", vm.filterDl.value == "未下载", Modifier.weight(1f)) {
+                        vm.filterDl.value = "未下载"
+                    }
+                    FilterBigButton("已下载", vm.filterDl.value == "已下载", Modifier.weight(1f)) {
+                        vm.filterDl.value = "已下载"
                     }
                 }
                 HorizontalDivider(
@@ -689,30 +725,6 @@ internal fun MainActivity.FilterBigButton(
             Text(
                 text,
                 color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.bodyLarge
-            )
-        }
-    }
-
-    /** 状态 chip（未下载/已下载）：独立点亮，与文件类型按钮同宽（一排两个） */
-    @Composable
-internal fun MainActivity.StateChip(
-        text: String,
-        on: Boolean,
-        modifier: Modifier = Modifier,
-        onToggle: (Boolean) -> Unit
-    ) {
-        Box(
-            modifier
-                .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
-                .background(if (on) Color(0xFF00695C) else MaterialTheme.colorScheme.surfaceVariant)
-                .clickable { onToggle(!on) }
-                .padding(vertical = 14.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text,
-                color = if (on) Color.White else MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.bodyLarge
             )
         }

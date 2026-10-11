@@ -276,8 +276,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /* ---------- 照片筛选（会话内有效，不跨启动记忆）---------- */
     val filterFormat = mutableStateOf("全部")          // 全部 / JPG / NEF（单选）
-    val filterUntransferred = mutableStateOf(false)   // 状态 chip：只看未传
-    val filterDownloaded = mutableStateOf(false)      // 状态 chip：只看已传
+    val filterDl = mutableStateOf("全部")              // 全部 / 未下载 / 已下载（单选，与文件类型同款交互）
     val filterStart = mutableStateOf<String?>(null)   // "YYYYMMDD"，null = 不限
     val filterEnd = mutableStateOf<String?>(todayKey())  // 默认今天（含）
 
@@ -288,14 +287,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 是否有偏离默认的筛选条件（决定筛选按钮高亮） */
     val filterActive: Boolean
-        get() = filterFormat.value != "全部" || filterUntransferred.value ||
-            filterDownloaded.value || filterStart.value != null ||
-            filterEnd.value != todayKey()
+        get() = filterFormat.value != "全部" || filterDl.value != "全部" ||
+            filterStart.value != null || filterEnd.value != todayKey()
 
     fun resetFilter() {
         filterFormat.value = "全部"
-        filterUntransferred.value = false
-        filterDownloaded.value = false
+        filterDl.value = "全部"
         filterStart.value = null
         filterEnd.value = todayKey()
     }
@@ -350,15 +347,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun computeFilteredPhotos(): List<PhotoRow> {
         PerfTrace.tick("filterPhotos#重算")
         val fmt = filterFormat.value
-        val onlyUn = filterUntransferred.value
-        val onlyDl = filterDownloaded.value
+        val dl = filterDl.value
         val st = filterStart.value
         val en = filterEnd.value
         return photoRows.filter { r ->
             if (fmt != "全部" && !r.type.equals(fmt, true)) return@filter false
-            val dl = r.downloaded.value
-            if (onlyUn && !onlyDl && dl) return@filter false
-            if (onlyDl && !onlyUn && !dl) return@filter false
+            val isDl = r.downloaded.value
+            if (dl == "未下载" && isDl) return@filter false
+            if (dl == "已下载" && !isDl) return@filter false
             val d = if (r.stamp.length >= 8) r.stamp.substring(0, 8) else ""
             if (st != null && (d.isEmpty() || d < st)) return@filter false
             if (en != null && (d.isEmpty() || d > en)) return@filter false
@@ -511,13 +507,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun computeFilteredPairs(): List<PairRow> {
         PerfTrace.tick("filterPairs#重算")
-        val onlyUn = filterUntransferred.value
-        val onlyDl = filterDownloaded.value
+        val dl = filterDl.value
         val st = filterStart.value
         val en = filterEnd.value
         return pairRowsAll.filter { p ->
-            if (onlyUn && !onlyDl && p.allDownloaded) return@filter false
-            if (onlyDl && !onlyUn && !p.allDownloaded) return@filter false
+            if (dl == "未下载" && p.allDownloaded) return@filter false
+            if (dl == "已下载" && !p.allDownloaded) return@filter false
             val d = p.stamp.take(8)
             if (st != null && d < st) return@filter false
             if (en != null && d > en) return@filter false
