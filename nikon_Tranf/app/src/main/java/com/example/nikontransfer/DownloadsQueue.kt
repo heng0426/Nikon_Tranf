@@ -265,7 +265,7 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
                     // 第二排（按阶段切换）
                     when {
                         st.runningItem != null -> BatchPaceRow(st)
-                        !st.hasActive && st.hasFinished && vm.batchAvgBps.value > 0L -> BatchDoneRow()
+                        !st.hasActive && st.hasFinished && st.msDone > 0L -> BatchDoneRow(st)
                     }
                 }
             }
@@ -315,13 +315,15 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
         }
     }
 
-    /** 第二排（批次完成后）：平均速度 + 总下载时长（冻结值，下一批开始前不变） */
+    /** 第二排（完成后）：队列口径 —— 队列内全部已完成照片一起算：
+     *  平均 = Σ已完成字节 / Σ纯下载用时（Σ DONE.elapsedMs，批次间空闲与排队等待不计）；
+     *  总时长 = Σ纯下载用时。清空已完成后自然归零，下一批重新累计。 */
     @Composable
-    private fun MainActivity.BatchDoneRow() {
+    private fun MainActivity.BatchDoneRow(st: MainViewModel.QueueStats) {
         val green = UiSpec.accent(vm.darkModeOn)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Pill("平均 ${humanSize(vm.batchAvgBps.value)}/s", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
-            Pill("总时长 ${fmtDur(vm.batchTotalMs.value)}", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+            Pill("平均 ${humanSize(st.queueAvgBps)}/s", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
+            Pill("总时长 ${fmtDur(st.msDone)}", bg = green.copy(alpha = 0.14f), fg = green, mono = true)
         }
     }
 

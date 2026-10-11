@@ -1356,6 +1356,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             for (it in items) {
                 if (demoStop) { it.status.value = QStatus.CANCELED; continue }
                 it.status.value = QStatus.RUNNING
+                val fStart = System.currentTimeMillis()   // 队列口径统计要累加每张纯下载用时
                 var got = 0L
                 val total = it.total.value
                 var idx = 0
@@ -1367,7 +1368,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (idx++ % every == 0) paceOnce()   // 见下：按步数均摊，两档总时长一致
                 }
                 if (demoStop) { it.status.value = QStatus.CANCELED; break }
-                it.elapsedMs = 1
+                it.elapsedMs = System.currentTimeMillis() - fStart
                 it.flushProgress(total)
                 it.status.value = QStatus.DONE
                 Thread.sleep(40)
@@ -1461,6 +1462,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val step = demoStepKb.value * 1024L
         var got = 0L
         var idx = 0
+        val fStart = System.currentTimeMillis()   // 队列口径统计要累加每张纯下载用时
         val every = paceEvery(total, step)
         while (got < total) {
             if (demoStop || item.cancelRequested) {
@@ -1471,7 +1473,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             item.publishProgress(got, total)
             if (idx++ % every == 0) paceOnce()
         }
-        item.elapsedMs = 1
+        item.elapsedMs = System.currentTimeMillis() - fStart
         item.flushProgress(total)
         item.status.value = QStatus.DONE
     }
@@ -1637,7 +1639,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val byteDone: Long,              // Σ DONE.total：已完成字节
         val byteQueuedKnown: Long,       // Σ QUEUED 已知大小（预取 expected / 演示预置 total）
         val queuedUnknown: Int,          // 大小未知的排队条目数（分母按均值估计）
-        val byteRunningTotal: Long       // RUNNING 条目 total 之和（开始下载时才写入）
+        val byteRunningTotal: Long,      // RUNNING 条目 total 之和（开始下载时才写入）
+        val msDone: Long                 // Σ DONE.elapsedMs：队列内已完成照片的纯下载用时
     ) {
         val hasActive get() = running + queued > 0
         val hasFinished get() = done + canceled > 0
@@ -1651,12 +1654,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         /** 字节权重分母：已完成 + 下载中 + 排队（已知/均值估计）。全未知时 0 → UI 退回按张数 */
         val byteDenom: Long
             get() = byteDone + byteRunningTotal + byteQueuedKnown + queuedUnknown * avgKnownBytes
+        /** 队列口径平均速度：全部已完成照片一起算 —— Σ字节 / Σ纯下载用时。
+         *  批次间空闲与排队等待不计入用时，跨批次自然累计；清空已完成即归零重来。 */
+        val queueAvgBps: Long get() = if (msDone > 0) byteDone * 1000 / msDone else 0L
     }
 
     private fun scanQueueStats(): QueueStats {
         var r = 0; var q = 0; var d = 0; var f = 0; var c = 0
         var run: QueueItem? = null
-        var bDone = 0L; var bQueued = 0L; var qUnknown = 0; var bRun = 0L
+        var bDone = 0L; var bQueued = 0L; var qUnknown = 0; var bRun = 0L; var ms = 0L
         for (it in downloadQueue) when (it.status.value) {
             QStatus.RUNNING -> { r++; if (run == null) run = it; bRun += it.total.value }
             QStatus.QUEUED -> {
@@ -1664,46 +1670,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val sz = if (it.expectedBytes.value > 0) it.expectedBytes.value else it.total.value
                 if (sz > 0) bQueued += sz else qUnknown++
             }
-            QStatus.DONE -> { d++; bDone += it.total.value }
+            QStatus.DONE -> { d++; bDone += it.total.value; ms += it.elapsedMs }
             QStatus.FAILED -> f++
             QStatus.CANCELED -> c++
         }
-        return QueueStats(r, q, d, f, c, run, bDone, bQueued, qUnknown, bRun)
+        return QueueStats(r, q, d, f, c, run, bDone, bQueued, qUnknown, bRun, ms)
     }
 
     val queueStats: QueueStats by derivedStateOf { scanQueueStats() }
 
-    /* ---------- 批次速度 / 剩余时间 / 完成统计（总览卡第二排）---------- */
+    /* ---------- 批次速度 / 剩余时间（总览卡第二排·下载中）---------- */
     val batchSpeedBps = mutableStateOf(0L)   // 滑窗瞬时速度（字节/秒）
     val batchEtaMs = mutableStateOf(0L)      // 按滑窗速度推算的剩余毫秒
-    val batchAvgBps = mutableStateOf(0L)     // 批次完成后冻结：平均速度 = 已完成字节/总时长
-    val batchTotalMs = mutableStateOf(0L)    // 批次完成后冻结：首张 RUNNING → 全部终态的墙钟时长
+    // 平均速度/总用时不在这里维护 —— 它们是队列口径的纯派生值（QueueStats.queueAvgBps / msDone）
     private var speedTicker: Thread? = null
-    @Volatile private var batchActive = false
-    @Volatile private var batchStartMs = 0L
-    @Volatile private var batchStartBytes = 0L
 
-    /** 500ms 采样线程：累计字节 = 本批已完成(ΣDONE.total - 批次起点快照) + 当前条目 got，
-     *  8s 滑窗求速度与 ETA；全部终态后写入平均速度/总时长并冻结。
-     *  线程常驻不退出 —— 旧版"批次结束即退出"有竞态：收尾窗口（≤500ms）内再次入队，
-     *  ensureSpeedTicker 误判线程存活而不再启动，此后批次速度/统计全部冻结成旧值。
-     *  分子扣掉 batchStartBytes：队列里留着的上一批 DONE 条目不许算进本批平均速度。 */
+    /** 500ms 采样线程（常驻）：下载中时以 8s 滑窗算瞬时速度与 ETA，空闲时清零。
+     *  常驻不退出 —— 旧版"批次结束即退出"有竞态：收尾窗口（≤500ms）内再次入队，
+     *  ensureSpeedTicker 误判线程存活而不再启动，速度从此冻结成旧值。 */
     private fun ensureSpeedTicker() {
         if (speedTicker?.isAlive == true) return
         speedTicker = Thread {
-            val window = ArrayDeque<Pair<Long, Long>>()   // (tMs, 本批累计字节)
+            val window = ArrayDeque<Pair<Long, Long>>()   // (tMs, 队列累计字节)
             while (true) {
                 val st = scanQueueStats()
                 val now = System.currentTimeMillis()
                 val cur = st.runningItem
                 if (cur != null) {
-                    if (!batchActive) {
-                        batchActive = true
-                        batchStartMs = now
-                        batchStartBytes = st.byteDone
-                        window.clear()
-                    }
-                    val cum = st.byteDone - batchStartBytes + cur.got.value
+                    val cum = st.byteDone + cur.got.value
                     window.addLast(now to cum)
                     while (window.size > 2 && now - window.first().first > 8000) window.removeFirst()
                     val (t0, b0) = window.first()
@@ -1714,15 +1708,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         val remain = st.byteDenom - st.byteDone - cur.got.value
                         batchEtaMs.value = if (bps > 0 && remain > 0) remain * 1000 / bps else 0L
                     }
-                } else if (batchActive && !st.hasActive) {
-                    val dur = (now - batchStartMs).coerceAtLeast(0L)
-                    val bytes = st.byteDone - batchStartBytes
-                    batchTotalMs.value = dur
-                    batchAvgBps.value = if (dur > 1000 && bytes > 0) bytes * 1000 / dur else 0L
-                    batchActive = false
-                    batchStartMs = 0L
-                    batchSpeedBps.value = 0L
-                    batchEtaMs.value = 0L
+                } else {
+                    if (batchSpeedBps.value != 0L) batchSpeedBps.value = 0L
+                    if (batchEtaMs.value != 0L) batchEtaMs.value = 0L
                 }
                 try { Thread.sleep(500) } catch (_: InterruptedException) { break }
             }
