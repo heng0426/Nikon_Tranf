@@ -142,6 +142,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Path
@@ -737,7 +738,8 @@ internal fun MainActivity.DownloadStateSlot(
                     modifier = modifier,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = green,
-                        contentColor = Color.White
+                        // 深档主色在深色模式下偏亮（如橘猫橙 #E8873A），白字对比不足 → 按亮度取前景
+                        contentColor = if (green.luminance() > 0.35f) Color(0xFF1B1B1B) else Color.White
                     )
                 ) {
                     Icon(
