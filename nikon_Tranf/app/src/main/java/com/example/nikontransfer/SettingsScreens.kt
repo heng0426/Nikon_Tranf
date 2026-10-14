@@ -208,10 +208,10 @@ internal fun MainActivity.SettingsScreen(
         // 顶部固定 40dp —— 原 safeDrawingPadding+16dp 会比主页顶栏低状态栏差值几个 dp
         Column(
             Modifier.fillMaxSize()
-                // 与主页/下载队列同款顶栏公式：safeDrawing.Top 自适应状态栏 + TOPBAR_GAP 余量
+                // 与主页/下载队列同款顶栏公式：safeDrawing.Top 自适应状态栏 + topBarGapDp 余量（设置·外观可调）
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(start = UiSpec.PAGE_PAD, end = UiSpec.PAGE_PAD, bottom = UiSpec.PAGE_PAD)
-                .padding(top = UiSpec.TOPBAR_GAP)
+                .padding(top = vm.topBarGapDp.value.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 返回按钮：34dp 圆角色块容器，与顶栏按钮同款
@@ -424,6 +424,30 @@ internal fun MainActivity.SettingsScreen(
                     checked = vm.darkModeOn,
                     onChange = { vm.setDarkMode(it) }
                 )
+                SettingsDivider()
+                // 顶栏到状态栏余量：三页共用，按机型自由调整（本页即实时预览）
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("顶栏上边距", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                        Text(
+                            "顶栏到状态栏的距离（0 = 紧贴状态栏，三页生效）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    ActionPill("−") { vm.setTopBarGap(vm.topBarGapDp.value - 2) }
+                    Text(
+                        "${vm.topBarGapDp.value}dp",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    )
+                    ActionPill("+") { vm.setTopBarGap(vm.topBarGapDp.value + 2) }
+                }
             }
             SettingsSection(title = "存储", icon = { SectionIcon("存储") }) {
                 SettingSwitch(

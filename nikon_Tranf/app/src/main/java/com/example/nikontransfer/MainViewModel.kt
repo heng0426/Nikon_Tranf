@@ -788,6 +788,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("set_dark_mode", v).apply()
     }
 
+    /* ---------- 外观：顶栏到状态栏余量（dp）：主页/下载队列/设置三页共用，
+       0 = 紧贴状态栏，按机型显示状态自由调整（默认取 UiSpec.TOPBAR_GAP）---------- */
+    val topBarGapDp = mutableStateOf(prefs.getInt("set_topbar_gap", UiSpec.TOPBAR_GAP.value.toInt()))
+
+    fun setTopBarGap(v: Int) {
+        topBarGapDp.value = v.coerceIn(0, 32)
+        prefs.edit().putInt("set_topbar_gap", topBarGapDp.value).apply()
+    }
+
     init {
         loadDownloaded()
         mergePairs.value = prefs.getBoolean("set_merge_pairs", false)

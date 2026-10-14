@@ -102,7 +102,7 @@ object UiSpec {
     val PLACEHOLDER_TEXT = Color(0xFF777777)
 
     /* ---------- 布局尺寸 ---------- */
-    val TOPBAR_GAP = 12.dp       // 状态栏到顶栏的余量：主页/下载队列/设置三页顶栏共用（状态栏高度由 safeDrawing 自动吃掉，调位置只改这里）
+    val TOPBAR_GAP = 8.dp       // 状态栏到顶栏余量的默认值：实际值 = 设置·外观「顶栏上边距」（vm.topBarGapDp，0~32 可调，三页共用；状态栏高度由 safeDrawing 自动吃掉）
     val PAGE_PAD = 16.dp         // 页面水平/底部边距：主页/下载队列/设置三页根容器共用
     val PILL_SLOT = 24.dp        // 置顶日期胶囊槽位高（数字越小胶囊下方留白越小）
     val TOPBAR_BTN = 34.dp       // 顶栏圆角按钮容器（返回/筛选/齿轮/反转/合并/下载按钮）

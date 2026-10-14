@@ -189,11 +189,11 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
         val listState = rememberLazyListState()
         Column(
             // 顶部与主页顶栏同款公式（见主页"顶栏垂直位置"注释）：safeDrawing.Top
-            // 自适应状态栏实际高度 + TOPBAR_GAP 余量，返回按钮行与主页顶栏按钮同一水平线
+            // 自适应状态栏实际高度 + topBarGapDp 余量（设置·外观可调），返回按钮行与主页顶栏按钮同一水平线
             Modifier.fillMaxSize()
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
-                .padding(top = UiSpec.TOPBAR_GAP),
+                .padding(top = vm.topBarGapDp.value.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
