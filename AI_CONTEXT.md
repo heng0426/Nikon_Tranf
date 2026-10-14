@@ -37,6 +37,7 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 
 - 编译期只看 `^e: |FAILED|BUILD` 三种行即可。
 - **daemon JVM 已固定 JDK21**（`gradle/gradle-daemon-jvm.properties` `toolchainVersion=21`）：JDK25.0.4 编译时 MainScreen 超大方法会产生 d8/ART VerifyError 运行时闪退；JDK 下载源不可达时把该文件 `toolchainUrl` 切清华镜像（文件内 URL 是 `https\://` 转义格式）。
+- **应用图标自动生成**：构建时 `buildSrc` 的 `GenerateAppIconTask` 读取仓库根 `img/logo.png`（居中裁方→5 密度 ic_launcher.png + 圆形蒙版 round 变体）写入 `app/src/main/res/mipmap-*`；换图标只需替换 `img/logo.png` 重新编译。注意 Gradle Kotlin DSL 脚本内引用不到 `java.awt`，逻辑必须放 buildSrc；任务字段存 String 路径（transient 字段会被配置缓存反序列化成 null），执行期禁止访问 `Task.project`。
 - **部署约定**：改完代码 → `assembleDebug` → 手机 adb 连着就 `install -r` → 回报。⚠️ 编译失败时 adb install 会装上**上一次的旧 APK**——"Success" ≠ 最新代码上机，务必确认 BUILD SUCCESSFUL 再装。
 - 实测设备 adb 序列号 `4e465073`；**注意手机只有一个 USB-C 口**——接电脑（adb）和接相机（OTG）互斥，调试 USB 通道时 adb 会断开。
 - `screen_off_timeout` 曾被改为 10 分钟（`settings put system screen_off_timeout 600000`），`svc power stayon usb` 已开启。

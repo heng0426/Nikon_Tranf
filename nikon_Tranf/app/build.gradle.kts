@@ -1,3 +1,5 @@
+import icons.GenerateAppIconTask
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -50,6 +52,11 @@ kotlin {
     }
 }
 
+
+// ===== 应用图标：构建时自动读取仓库根 img/logo.png 生成 mipmap =====
+// 逻辑在 buildSrc（Gradle Kotlin DSL 脚本里引用不到 java.awt）；换图标只需替换 logo.png 重新编译
+val generateAppIcon = tasks.register("generateAppIcon", GenerateAppIconTask::class.java)
+tasks.named("preBuild") { dependsOn(generateAppIcon) }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
