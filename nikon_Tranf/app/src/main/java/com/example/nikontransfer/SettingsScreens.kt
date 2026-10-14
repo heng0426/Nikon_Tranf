@@ -175,6 +175,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 
+    @OptIn(ExperimentalLayoutApi::class)
     @Composable
 internal fun MainActivity.SettingsScreen(
         prefs: android.content.SharedPreferences,
@@ -447,6 +448,28 @@ internal fun MainActivity.SettingsScreen(
                         modifier = Modifier.padding(horizontal = 2.dp)
                     )
                     ActionPill("+") { vm.setTopBarGap(vm.topBarGapDp.value + 2) }
+                }
+                SettingsDivider()
+                // 配色主题：切即写 UiSpec.currentTheme，取色处自动重组 → 全 App 实时生效。
+                // 色卡内三枚色点 = 该主题的主色 / USB 通道色 / JPG 徽章色（按当前深浅模式取）。
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("配色主题", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                    Text(
+                        "切换后立即生效，返回主页即可看到照片页/连接卡的实际配色",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        for (k in ThemeKey.entries) {
+                            ThemeChip(k, selected = vm.themeKey.value == k) { vm.setTheme(k) }
+                        }
+                    }
                 }
             }
             SettingsSection(title = "存储", icon = { SectionIcon("存储") }) {
@@ -936,6 +959,54 @@ internal fun MainActivity.ActionPill(text: String, onClick: () -> Unit) {
         ) {
             Text(text, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
         }
+    }
+
+    /** 配色主题色卡：三枚色点（主色 / USB 通道 / JPG 徽章）+ 主题名；
+     *  选中态 = 主色描边 + 主色淡底，未选中 = 中性描边。 */
+    @OptIn(ExperimentalLayoutApi::class)
+    @Composable
+    internal fun MainActivity.ThemeChip(key: ThemeKey, selected: Boolean, onClick: () -> Unit) {
+        val t = UI_THEMES[key] ?: return
+        val dark = vm.darkModeOn
+        val main = if (dark) t.accentD else t.accentL
+        val usb = if (dark) t.usbD else t.usbL
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                .background(if (selected) main.copy(alpha = 0.14f) else Color.Transparent)
+                .border(
+                    if (selected) 2.dp else 1.dp,
+                    if (selected) main else MaterialTheme.colorScheme.outlineVariant,
+                    RoundedCornerShape(UiSpec.ROUND_SMALL)
+                )
+                .clickable(onClick = onClick)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ThemeColorDot(main)
+                    ThemeColorDot(usb)
+                    ThemeColorDot(t.jpg)
+                }
+                Text(
+                    key.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) main else MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun ThemeColorDot(color: Color) {
+        Box(Modifier.size(9.dp).clip(CircleShape).background(color))
     }
 
     @Composable

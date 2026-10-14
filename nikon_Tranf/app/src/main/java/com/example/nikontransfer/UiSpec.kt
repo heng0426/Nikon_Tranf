@@ -1,8 +1,113 @@
 package com.example.nikontransfer
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+/* =====================================================================
+ *  配色主题：设置·外观可实时切换，切换后所有取色处立即重组生效
+ *  （UiSpec 各取色函数/属性内部读 currentTheme，本身是 Compose 状态）
+ * ===================================================================== */
+
+/** 主题标识；DEFAULT = 原版青绿（初始值，保证升级后外观不变） */
+enum class ThemeKey(val label: String) {
+    DEFAULT("青绿（默认）"),
+    CAT_ORANGE("橘猫橙"),
+    NIKON_YELLOW("尼康黄"),
+    GLACIER_BLUE("冰川蓝"),
+    LAVENDER("薰衣草紫")
+}
+
+/** 一套主题的全部品牌色（浅/深两套；L=浅色模式，D=深色模式） */
+data class UiTheme(
+    val accentL: Color, val accentD: Color,     // 主色：文字/图标/进度/描边/下载按钮
+    val deepL: Color, val deepD: Color,         // 深一档主色：实底徽章/选中 chip/下载完成底
+    val thumbL: Color, val thumbD: Color,       // 滚动条拖块选中色
+    val errorL: Color, val errorD: Color,       // 断开/失败
+    val amberL: Color, val amberD: Color,       // 连接中/警示
+    val usbL: Color, val usbD: Color,           // USB 通道色（与主色并置区分双通道）
+    val wifiSurfL: Color, val wifiSurfD: Color, // Wi-Fi 卡底（浅/深）
+    val wifiOnL: Color, val wifiOnD: Color,     // Wi-Fi 卡文字
+    val usbSurfL: Color, val usbSurfD: Color,   // USB 卡底
+    val usbOnL: Color, val usbOnD: Color,       // USB 卡文字
+    val jpg: Color, val nef: Color              // 格式徽章 JPG / NEF
+)
+
+/** 主题注册表：新增主题只需在此加一项，设置页自动出现 */
+val UI_THEMES: Map<ThemeKey, UiTheme> = mapOf(
+    ThemeKey.DEFAULT to UiTheme(
+        accentL = Color(0xFF00695C), accentD = Color(0xFF4DB6AC),
+        deepL = Color(0xFF00695C), deepD = Color(0xFF00796B),
+        thumbL = Color(0xFF00897B), thumbD = Color(0xFF80CBC4),
+        errorL = Color(0xFFB71C1C), errorD = Color(0xFFEF9A9A),
+        amberL = Color(0xFF8D6E00), amberD = Color(0xFFFFD54F),
+        usbL = Color(0xFF1565C0), usbD = Color(0xFF64B5F6),
+        wifiSurfL = Color(0xFFE0F2F1), wifiSurfD = Color(0xFF10312D),
+        wifiOnL = Color(0xFF004D40), wifiOnD = Color(0xFF80CBC4),
+        usbSurfL = Color(0xFFE3F2FD), usbSurfD = Color(0xFF101838),
+        usbOnL = Color(0xFF0D47A1), usbOnD = Color(0xFFB3D6F7),
+        jpg = Color(0xFF00695C), nef = Color(0xFF6A1B9A)
+    ),
+    // 与 logo 橘猫同源：蓝橙互补区分双通道，JPG 徽章转橙
+    ThemeKey.CAT_ORANGE to UiTheme(
+        accentL = Color(0xFFBF5F17), accentD = Color(0xFFFFA85C),
+        deepL = Color(0xFF9A4A0F), deepD = Color(0xFFE8873A),
+        thumbL = Color(0xFFD2691E), thumbD = Color(0xFFFFB77A),
+        errorL = Color(0xFFB71C1C), errorD = Color(0xFFEF9A9A),
+        amberL = Color(0xFF8D6E00), amberD = Color(0xFFFFD54F),
+        usbL = Color(0xFF1565C0), usbD = Color(0xFF64B5F6),
+        wifiSurfL = Color(0xFFFDEDDC), wifiSurfD = Color(0xFF2E1B0D),
+        wifiOnL = Color(0xFF7A3E0A), wifiOnD = Color(0xFFFFC08A),
+        usbSurfL = Color(0xFFE3F2FD), usbSurfD = Color(0xFF101838),
+        usbOnL = Color(0xFF0D47A1), usbOnD = Color(0xFFB3D6F7),
+        jpg = Color(0xFFC96A1B), nef = Color(0xFF6A1B9A)
+    ),
+    // 尼康黄黑铭牌；「连接中」改橙避让主黄；浅色模式主色压暗保可读
+    ThemeKey.NIKON_YELLOW to UiTheme(
+        accentL = Color(0xFF8F7100), accentD = Color(0xFFFFE100),
+        deepL = Color(0xFF6E5700), deepD = Color(0xFFF0C400),
+        thumbL = Color(0xFFB28900), thumbD = Color(0xFFFFE95C),
+        errorL = Color(0xFFB71C1C), errorD = Color(0xFFEF9A9A),
+        amberL = Color(0xFFC43E00), amberD = Color(0xFFFF8A50),
+        usbL = Color(0xFF1565C0), usbD = Color(0xFF64B5F6),
+        wifiSurfL = Color(0xFFFAF3CD), wifiSurfD = Color(0xFF26200A),
+        wifiOnL = Color(0xFF5C4800), wifiOnD = Color(0xFFFFE95C),
+        usbSurfL = Color(0xFFE3F2FD), usbSurfD = Color(0xFF101838),
+        usbOnL = Color(0xFF0D47A1), usbOnD = Color(0xFFB3D6F7),
+        jpg = Color(0xFFA88500), nef = Color(0xFF6A1B9A)
+    ),
+    // 冷调清透；USB 改青绿与主蓝互换，双通道区分度不变
+    ThemeKey.GLACIER_BLUE to UiTheme(
+        accentL = Color(0xFF0277BD), accentD = Color(0xFF4FC3F7),
+        deepL = Color(0xFF01579B), deepD = Color(0xFF29B6F6),
+        thumbL = Color(0xFF0288D1), thumbD = Color(0xFF81D4FA),
+        errorL = Color(0xFFB71C1C), errorD = Color(0xFFEF9A9A),
+        amberL = Color(0xFF8D6E00), amberD = Color(0xFFFFD54F),
+        usbL = Color(0xFF00695C), usbD = Color(0xFF4DB6AC),
+        wifiSurfL = Color(0xFFE1F0FA), wifiSurfD = Color(0xFF0D1E2E),
+        wifiOnL = Color(0xFF01426B), wifiOnD = Color(0xFF81D4FA),
+        usbSurfL = Color(0xFFE0F2F1), usbSurfD = Color(0xFF10312D),
+        usbOnL = Color(0xFF004D40), usbOnD = Color(0xFF80CBC4),
+        jpg = Color(0xFF0277BD), nef = Color(0xFF6A1B9A)
+    ),
+    // 尼康 Z 系宣传色；USB 改青区分，JPG 徽章转青
+    ThemeKey.LAVENDER to UiTheme(
+        accentL = Color(0xFF5E35B1), accentD = Color(0xFFB39DDB),
+        deepL = Color(0xFF4527A0), deepD = Color(0xFF9575CD),
+        thumbL = Color(0xFF6A4FB6), thumbD = Color(0xFFC7B3E8),
+        errorL = Color(0xFFB71C1C), errorD = Color(0xFFEF9A9A),
+        amberL = Color(0xFF8D6E00), amberD = Color(0xFFFFD54F),
+        usbL = Color(0xFF00695C), usbD = Color(0xFF4DB6AC),
+        wifiSurfL = Color(0xFFEDE7F8), wifiSurfD = Color(0xFF221A38),
+        wifiOnL = Color(0xFF3E2A72), wifiOnD = Color(0xFFC7B3E8),
+        usbSurfL = Color(0xFFE0F2F1), usbSurfD = Color(0xFF10312D),
+        usbOnL = Color(0xFF004D40), usbOnD = Color(0xFF80CBC4),
+        jpg = Color(0xFF00897B), nef = Color(0xFF6A1B9A)
+    )
+)
 
 /* =====================================================================
  *  UiSpec — 全局可调参数中心
@@ -24,6 +129,13 @@ import androidx.compose.ui.unit.sp
 
 object UiSpec {
 
+    /** 当前主题（Compose 状态）：设置·外观切换后，所有读取取色函数/属性的
+     *  组合作用域自动重组 → 实时生效，无需重启。持久化见 vm.setTheme()。 */
+    var currentTheme: ThemeKey by mutableStateOf(ThemeKey.DEFAULT)
+
+    /** 当前主题色表（读状态 → 组合内读取自动订阅） */
+    private val T: UiTheme get() = UI_THEMES[currentTheme] ?: UI_THEMES.getValue(ThemeKey.DEFAULT)
+
     /* ---------- 动画三档（ms） ---------- */
     const val QUICK = 160   // 快速动画：消失/收起/退出/跟手回弹
     const val STANDARD = 220 // 标准动画：出现/展开/状态切换/颜色过渡
@@ -35,60 +147,50 @@ object UiSpec {
 
     /* ---------- 主色（浅/深） ---------- */
     /** 主青绿：文字/图标/进度/描边/下载按钮 */
-    fun accent(dark: Boolean) = if (dark) Color(0xFF4DB6AC) else Color(0xFF00695C)  
+    fun accent(dark: Boolean) = if (dark) T.accentD else T.accentL
 
-    /** 深一档青绿：实底徽章/选中 chip/下载完成底 */
-    fun accentDeep(dark: Boolean) = if (dark) Color(0xFF00796B) else Color(0xFF00695C)
+    /** 深一档主色：实底徽章/选中 chip/下载完成底 */
+    fun accentDeep(dark: Boolean) = if (dark) T.deepD else T.deepL
 
     /** 滚动条拖块选中色 */
-    fun thumbSel(dark: Boolean) = if (dark) Color(0xFF80CBC4) else Color(0xFF00897B)
+    fun thumbSel(dark: Boolean) = if (dark) T.thumbD else T.thumbL
 
     /* ---------- 状态色（浅/深） ---------- */
     /** 断开/失败 */
-    fun error(dark: Boolean) = if (dark) Color(0xFFEF9A9A) else Color(0xFFB71C1C)
+    fun error(dark: Boolean) = if (dark) T.errorD else T.errorL
 
     /** 连接中/警示 */
-    fun amber(dark: Boolean) = if (dark) Color(0xFFFFD54F) else Color(0xFF8D6E00)
+    fun amber(dark: Boolean) = if (dark) T.amberD else T.amberL
 
-    /** USB 通道蓝 */
-    fun usbBlue(dark: Boolean) = if (dark) Color(0xFF64B5F6) else Color(0xFF1565C0)
+    /** USB 通道色（与主色并置，区分 USB / Wi-Fi 双通道） */
+    fun usbBlue(dark: Boolean) = if (dark) T.usbD else T.usbL
 
     /* ---------- 顶部连接状态胶囊（已连接：型号/断开按钮那条） ---------- */
-    /** 胶囊底色：深色=暗蓝/暗青，浅色=淡蓝/淡青 */
-    fun connChipBg(dark: Boolean, usb: Boolean) = when {
-        dark && usb -> Color(0xFF101838)    // 深色模式 USB 卡（蓝）
-        dark -> Color(0xFF10312D)   // 深色模式 Wi-Fi 卡（青）
-        usb -> Color(0xFFE3F2FD)    // USB 卡（蓝）
-        else -> Color(0xFFE0F2F1)    // Wi-Fi 卡（青）
-    }
+    /** 胶囊底色 = 对应通道卡底（深色=暗蓝/暗青，浅色=淡蓝/淡青） */
+    fun connChipBg(dark: Boolean, usb: Boolean) = if (usb) usbSurface(dark) else wifiSurface(dark)
 
-    /** 胶囊文字色（同上四态） */
-    fun connChipText(dark: Boolean, usb: Boolean) = when {
-        dark && usb -> Color(0xFF64B5F6)    // 深色模式 USB 卡（蓝）
-        dark -> Color(0xFF4DB6AC)   // 深色模式 Wi-Fi 卡（青）
-        usb -> Color(0xFF1565C0)    // USB 卡（蓝）
-        else -> Color(0xFF00695C)    // Wi-Fi 卡（青）
-    }
+    /** 胶囊文字色 = 对应通道色（USB=通道色，Wi-Fi=主色） */
+    fun connChipText(dark: Boolean, usb: Boolean) = if (usb) usbBlue(dark) else accent(dark)
 
     /* ---------- 连接卡片（双卡/重连卡）底与文字 ---------- */
-    /** USB 卡（蓝） */
-    fun usbSurface(dark: Boolean) = if (dark) Color(0xFF101838) else Color(0xFFE3F2FD)
-    fun usbOnSurface(dark: Boolean) = if (dark) Color(0xFFB3D6F7) else Color(0xFF0D47A1)
+    /** USB 卡 */
+    fun usbSurface(dark: Boolean) = if (dark) T.usbSurfD else T.usbSurfL
+    fun usbOnSurface(dark: Boolean) = if (dark) T.usbOnD else T.usbOnL
 
-    /** Wi-Fi 卡（青） */
-    fun wifiSurface(dark: Boolean) = if (dark) Color(0xFF10312D) else Color(0xFFE0F2F1)
-    fun wifiOnSurface(dark: Boolean) = if (dark) Color(0xFF80CBC4) else Color(0xFF004D40)
+    /** Wi-Fi 卡 */
+    fun wifiSurface(dark: Boolean) = if (dark) T.wifiSurfD else T.wifiSurfL
+    fun wifiOnSurface(dark: Boolean) = if (dark) T.wifiOnD else T.wifiOnL
 
-    /* ---------- 网格/预览固定色 ---------- */
-    /** 多选选中遮罩（叠加在缩略图上） */
-    fun selOverlay(dark: Boolean) = if (dark) Color(0x334DB6AC) else Color(0x3300695C)
+    /* ---------- 网格/预览固定色（由主色派生，随主题变化）---------- */
+    /** 多选选中遮罩（叠加在缩略图上，主色 20% 透明） */
+    fun selOverlay(dark: Boolean) = (if (dark) T.accentD else T.accentL).copy(alpha = 0.20f)
 
-    /** 已下载圆标底（右下角 ✓ / ✓J / ✓N） */
-    fun dlMark(dark: Boolean) = if (dark) Color(0xCC4DB6AC) else Color(0xCC00695C)
+    /** 已下载圆标底（右下角 ✓ / ✓J / ✓N，主色 80% 不透明） */
+    fun dlMark(dark: Boolean) = (if (dark) T.accentD else T.accentL).copy(alpha = 0.80f)
 
-    /** 格式徽章：JPG 青 / NEF 紫 */
-    val JPG_TEAL = Color(0xFF00695C)
-    val NEF_PURPLE = Color(0xFF6A1B9A)
+    /** 格式徽章色（属性形式保留旧调用点；内部读当前主题 → 切换即生效） */
+    val JPG_TEAL: Color get() = T.jpg
+    val NEF_PURPLE: Color get() = T.nef
 
     /* ---------- 中性固定色 ---------- */
     /** 侧板/设置抽屉蒙层 */

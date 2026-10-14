@@ -797,6 +797,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putInt("set_topbar_gap", topBarGapDp.value).apply()
     }
 
+    /* ---------- 外观：配色主题（设置·外观切换 → 写 UiSpec.currentTheme，
+       取色处自动重组，实时生效；持久化到 set_ui_theme）---------- */
+    val themeKey = mutableStateOf(
+        runCatching {
+            ThemeKey.valueOf(prefs.getString("set_ui_theme", ThemeKey.DEFAULT.name) ?: ThemeKey.DEFAULT.name)
+        }.getOrDefault(ThemeKey.DEFAULT)
+    )
+
+    fun setTheme(k: ThemeKey) {
+        themeKey.value = k
+        UiSpec.currentTheme = k
+        prefs.edit().putString("set_ui_theme", k.name).apply()
+        Log.i("GPhoto2", "外观: 配色主题切换为 ${k.label}")
+    }
+
+    // 放在 themeKey 声明之后：init 块按源码顺序执行，启动时恢复上次选择的配色主题
+    init { UiSpec.currentTheme = themeKey.value }
+
     init {
         loadDownloaded()
         mergePairs.value = prefs.getBoolean("set_merge_pairs", false)
