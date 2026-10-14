@@ -52,7 +52,7 @@ object GPhoto2Bridge {
     external fun nativeListFolders(folder: String): String? // 子文件夹 "DCIM|xxx|"
     external fun nativeDownloadFile(folder: String, name: String): ByteArray?
     external fun nativeWaitEvent(timeoutMs: Int): Int   // 应答相机 Probe / 消费事件
-    external fun nativePairingProbe(ip: String): Int    // Nikon 配对探针（复刻 Z传 握手）
+    external fun nativePairingProbe(ip: String): Int    // Nikon 配对探针（抓包逆向握手序列）
     external fun nativeExit()
 
     // ---- 原生传输路径（配对模式，nativePairingProbe 成功后自动建立常驻会话）----

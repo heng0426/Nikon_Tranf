@@ -98,7 +98,7 @@ LOGI("CAMLIBS=%s IOLIBS=%s", camlibs, iolibs);
         snprintf(s_guidpath, sizeof(s_guidpath), "%s/gphoto2.guid", homebuf);
         /* 主会话与配对探针（nativePairingProbe）必须同身份：相机配对状态机
          * 按 INIT 包 GUID 识别主机，探针配对后主会话换 GUID 会被拒（-1）。
-         * 这里固定为 Z传 实测身份（见探针函数），并落盘保持一致。 */
+         * 这里固定为实测身份（见探针函数），并落盘保持一致。 */
         strcpy(s_guid, "33:62:34:62:36:63:62:66:30:65:61:30:34:61:32:64");
         s_guid_loaded = 1;
         FILE *gf = fopen(s_guidpath, "w");
@@ -297,8 +297,8 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeWaitEvent(
     return ret;
 }
 
-/* ---------- 6. Nikon 配对探针（复刻 Z 传的握手序列） ----------
- * 相机向导只对以下厂商指令序列作出反应（从 Z传 的抓包逐字节逆向）：
+/* ---------- 6. Nikon 配对探针（逆向握手序列） ----------
+ * 相机向导只对以下厂商指令序列作出反应（抓包逐字节逆向）：
  *   独立短连接：INIT → OpenSession(1)
  *   → 0x941c（返回 u32 状态）→ GetStorageIDs → GetDeviceInfo
  *   → 0x952b（返回 8B 能力）→ 0x935a(0x2001)
@@ -411,7 +411,7 @@ static int pp_expect(int fd, int want_type, unsigned char **payload_out, int *pl
 }
 
 /* data-in 事务：请求 → StartData → Data/EndData → OpResponse；数据拼接返回。
- * 帧布局（对照 Z传 抓包逐字节确认）：
+ * 帧布局（抓包逐字节确认）：
  *   [0..3]=len [4..7]=type(6) [8..11]=DataPhaseInfo(u32=1)
  *   [12..13]=opcode(u16) [14..17]=tid(u32) [18..]=params(u32×n)
  * 内存纪律：每次 free 后立即置 NULL；失败路径绝不泄漏也绝不二次释放。 */
@@ -524,7 +524,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativePairingProbe(
     const char *ip = (*env)->GetStringUTFChars(env, jIp, 0);
     int result = -100;
 
-    /* 身份复刻 Z传（抓包逐字节确认）：GUID 字段 = 16 字节 ASCII 十六进制串，
+    /* 身份（抓包逐字节确认）：GUID 字段 = 16 字节 ASCII 十六进制串，
      * 名字 = "ZTransfer"。相机向导按该身份推进配对状态机；固定值保证跨会话一致。 */
     unsigned char guid[16];
     memcpy(guid, "3b4b6cbf0ea04a2d", 16);
@@ -532,7 +532,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativePairingProbe(
     int cmdfd = pp_socket(ip, 4000);
     if (cmdfd < 0) { (*env)->ReleaseStringUTFChars(env, jIp, ip); return -101; }
 
-    /* INIT_COMMAND_REQUEST（Z传 实测 48 字节）：
+    /* INIT_COMMAND_REQUEST（实测 48 字节）：
      * [0..3]=len [4..7]=type(1) [8..23]=GUID(16B ASCII) [24..]=名字 UTF-16LE+NUL
      * 末尾 [44..47]=协议版本 u32 0x00010000 (1.0) */
     const char *name = "ZTransfer";
@@ -917,7 +917,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeEventPollNative(JNIEnv *env, 
 
 /* 预览：取对象 [offset, offset+maxLen) 的原始数据（内含 EXIF/TIFF 嵌入的缩略图
  * JPEG），Kotlin 侧扫描完整 JPEG 段（FFD8..FFD9）解码。配对模式下没有专门的
- * 缩略图指令，Z传 的预览网格也是这样从首块数据里抠出来的。 */
+ * 缩略图指令——预览网格就是从首块数据里抠出完整 JPEG 段。 */
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_nikontransfer_GPhoto2Bridge_nativePreviewNative(
         JNIEnv *env, jclass clz, jint jHandle, jint jOffset, jint jMaxLen) {

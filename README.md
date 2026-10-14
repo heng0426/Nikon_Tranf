@@ -1,6 +1,6 @@
 # NikonTransfer
 
-尼康相机 → 安卓手机的照片传输 App（对标"Z传"）：通过 **Wi-Fi（PTP/IP）** 或 **USB 数据线（PTP over bulk）** 直连尼康 Z 系相机，浏览照片网格（JPG + NEF）、全屏预览（高清大图 + EXIF 参数）、单张/批量下载到系统相册。
+尼康相机 → 安卓手机的照片传输 App：通过 **Wi-Fi（PTP/IP）** 或 **USB 数据线（PTP over bulk）** 直连尼康 Z 系相机，浏览照片网格（JPG + NEF）、全屏预览（高清大图 + EXIF 参数）、单张/批量下载到系统相册。
 
 实测机型：Nikon Z 6_2；Android 12+（minSdk 28，targetSdk 37），仅 arm64-v8a。
 

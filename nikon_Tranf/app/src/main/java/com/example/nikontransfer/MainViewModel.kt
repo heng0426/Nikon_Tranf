@@ -125,7 +125,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Wi-Fi 连接取消请求（探测/扫描阶段检查；进入配对后不可打断） */
     @Volatile private var wifiCancelRequested = false
 
-    /* ---------- USB 直连通道（PTP over bulk，照搬 Z传 路线）---------- */
+    /* ---------- USB 直连通道（PTP over bulk）---------- */
     @Volatile var usbSession: UsbPtpSession? = null  // 非空 = 当前走 USB
     private val usbPermissionPending = mutableStateOf(false)
     private val usbManager get() = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -861,7 +861,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  ① 受管 Wi-Fi 网络（手机连 Wi-Fi/相机热点）：带 Network 对象，扫描 socket
      *     由 network.socketFactory 创建（逐 socket 精确绑定，不污染进程默认网络）；
      *  ② 本机热点接口（MIUI 开热点不建 NetworkAgent，热点不是受管网络）：带本机
-     *     热点地址，socket 绑定该源地址即可从热点接口出包（z传 同款）。
+     *     热点地址，socket 绑定该源地址即可从热点接口出包。
      *  小米 11 实测：热点网段的目标命中规则链 fwmark 0x0/0x10000 → 热点直连
      *  路由表（表 97 = 192.168.18.0/24 dev wlan1），无需任何进程级绑定。 */
     private data class WifiRoute(val prefix: String, val network: Network?, val localAddr: java.net.InetAddress?)
@@ -917,7 +917,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  MIUI 等机型开热点时只挂接口（wlan1/swlan0）不建 NetworkAgent，热点不是
      *  受管网络——cm.allNetworks 拿不到 Network 对象。发往热点网段的连接
      *  【无需绑定】：未标记 socket 命中规则链 fwmark 0x0/0x10000 → 热点直连
-     *  路由表（小米 11 实测表 97），z传 即用此直连路径。
+     *  路由表（小米 11 实测表 97）。
      *  返回 (网段前缀, 本机热点地址)，null = 无热点或热点即受管网络（手机连相机热点场景）。 */
     private fun hotspotSubnet(): Pair<String, java.net.InetAddress>? {
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -935,7 +935,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return interfaceWifiAddrs().firstOrNull { it.first !in managed }
     }
 
-    /** mDNS 服务发现找相机（z传 同款主路径）：相机在 Wi-Fi 上广播
+    /** mDNS 服务发现找相机（主路径）：相机在 Wi-Fi 上广播
      *  _ptp._tcp / _nikon._tcp 服务，系统 NsdManager（netd mdnsd）在【所有】
      *  接口上做多播收听，不受 App 进程默认网络/路由绑定影响——一次发现直接
      *  拿到相机 IP，免去 /24 全网段扫描（16~20s）。返回 PTP/IP 端口(15740)
@@ -1004,7 +1004,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *  - 受管 Wi-Fi 网段（手机连相机热点 AP 模式）：bindProcessToNetwork 该网络，
      *    默认网络是移动数据时 native socket 不绑定到不了相机；
      *  - 本机热点网段（相机连手机热点）：【不绑定】——未标记 socket 命中规则链
-     *    fwmark 0x0/0x10000 → 热点直连路由表（小米 11 实测表 97），z传 同款直连；
+     *    fwmark 0x0/0x10000 → 热点直连路由表（小米 11 实测表 97）；
      *    此前的热点 netId 手工绑定（反射/Parcel 伪造）全属多余且有害（会打上
      *    explicit 标记反而错过直连规则）。 */
     private fun bindProcessForCameraSubnet(cameraIp: String) {
@@ -1027,7 +1027,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 并发扫描网段的 15740 端口（PTP/IP），返回开放的 IP 列表。
      *  abort 非空时逐任务检查，命中即跳过剩余目标提前收尾（Wi-Fi 取消用）。
-     *  出接口选择（z传 同款，不做进程级绑定）：
+     *  出接口选择（不做进程级绑定）：
      *  - 受管网络网段：socket 由该 Network 的 socketFactory 创建（逐 socket 绑定）；
      *  - 热点网段：socket 绑定本机热点接口源地址，内核按源地址匹配直连路由出包。 */
     private fun scanSubnet(
@@ -1231,7 +1231,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Wi-Fi 连接（IO 线程）：上次 IP → mDNS 发现 → 网段扫描（兜底）→ 命中即连。
      *  preferScan=true 时跳过上次 IP 直接发现（Wi-Fi 卡内「扫描相机」按钮）。
      *  探测/发现阶段可被取消（点 Wi-Fi 卡 / 点 USB 卡切换）；进入配对后跑完。
-     *  网络 出接口（z传 实证方案，全程不做进程级绑定）：受管网段 socket 走
+     *  网络 出接口（实证方案，全程不做进程级绑定）：受管网段 socket 走
      *  Network.socketFactory，热点网段绑本机源地址——小米 11 实测热点直连路由
      *  在规则链兜底表里，未标记 socket 天然可达；此前把进程绑到受管 Wi-Fi
      *  反而给 socket 打上 explicit 标记、错过热点直连规则（黑洞根因）。 */
@@ -1254,7 +1254,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     Log.i("GPhoto2", "上次 IP $lastIp 不可达，转为 mDNS/网段发现")
                 }
             }
-            // ② mDNS 服务发现（z传 同款主路径，秒级，免 /24 扫描）
+            // ② mDNS 服务发现（主路径，秒级，免 /24 扫描）
             connText.value = "正在通过 mDNS 发现相机…"
             var candidates = mdnsDiscoverCameras()
             if (wifiCancelled()) return false
@@ -1394,7 +1394,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 连接/传输阶段（native 会话建立前）的网络绑定：
      * - 相机在本机热点网段（相机连手机热点，热点非受管网络）：【不绑定】——
      *   未标记 socket 命中规则链 fwmark 0x0/0x10000 → 热点直连路由表
-     *   （小米 11 实测：表 97 = 192.168.18.0/24 dev wlan1），z传 直连同款。
+     *   （小米 11 实测：表 97 = 192.168.18.0/24 dev wlan1）。
      *   此前对热点 netId 的手工绑定（反射/Parcel 伪造）全属多余且有害——
      *   explicit 标记反而错过直连规则、走进默认网络黑洞。
      * - 相机在受管 Wi-Fi 网段（手机连相机热点 AP 模式）：bindProcessToNetwork
@@ -2184,7 +2184,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (!connected) { item.status.value = QStatus.FAILED; return }
             // 末块请求长度须精确到文件尾：尼康对 offset+len 超界的 GetPartialObject 直接报错
             // （gphoto2 native 会自动截断，USB 侧必须自己做）
-            // 1MB 块（原 128KB）：0x9431 单次上限 1MB（C 层校验），Z传 高清预览 0.7~0.9MB
+            // 1MB 块（原 128KB）：0x9431 单次上限 1MB（C 层校验），高清预览 0.7~0.9MB
             // 单次成功实证 —— 块越大 PTP-IP 往返越少，下载吞吐显著提升
             val want = minOf(0x100000L, total - got).toInt()
             val chunk = readOff(item.handle, got, want)
@@ -2659,7 +2659,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val myGen = ++previewGen
         val CH = 0x10000
         Thread {
-            // 照搬 Z传：BACKGROUND 优先级把线程放进 background cgroup → 调度到小核，
+            // BACKGROUND 优先级把线程放进 background cgroup → 调度到小核，
             // 解码/写盘不与 UI 线程争抢大核（Thread.priority 只调 nice 不换核）
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             for (row in rows) {
@@ -2762,14 +2762,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
     }
 
-    /* ---------- 高清预览（复刻 Z传：结构解析 + 0x9431 定向读嵌入大图） ----------
+    /* ---------- 高清预览（结构解析 + 0x9431 定向读嵌入大图） ----------
      *  抓包实证（capture-hires.pcap，2026-10-02）：
      *  JPG：头 128KB 内 APP2 MPF 元数据列出各内嵌图（size+offset），取最大条目
      *       一次读出即完整 JPEG（实测 0.7~0.9MB，offset+len 恰为文件尾）。
      *  NEF：补读 0x20000..0x80000（TIFF IFD0 的 SubIFD 链所在），解析压缩=7
      *       （JPEG）SubIFD 的 StripOffsets/ByteCounts，定向读出全尺寸嵌入预览
      *       （实测 0.67~0.83MB），RAW 数据一个字节不传。
-     *  Z传 自身无缓存、翻页重拉 —— 这里加 LRU 缓存与 ±1 页预取，翻回秒显。 */
+     *  这里加 LRU 缓存与 ±1 页预取，翻回秒显。 */
 
     /** 内存 LRU：高清位图（解码采样至最长边 ≤2048px，单张 ~4~6MB）。
      *  按字节计（预算 = 堆上限/16，≤32MB）：旧实现没覆写 sizeOf，LruCache 退化为
@@ -3127,7 +3127,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** NEF：head[0,0x20000)+mid[0x20000,0x80000) 拼接 → TIFF IFD 链（IFD0 + 0x014a SubIFD），
      *  收集所有带 0x0201(JPEGInterchangeFormat)/0x0202(长度) 的 IFD（内嵌 JPEG 预览；
      *  实测压缩值=6 而非 7，RAW IFD(34713) 不带 0x0201 天然排除），
-     *  取长度最小者 = Z传 实际行为（669KB 小预览而非 1.34MB 大预览）。 */
+     *  取长度最小者（669KB 小预览而非 1.34MB 大预览）。 */
     private fun nefPreviewRange(head: ByteArray, mid: ByteArray, fileSize: Long): LongArray? {
         if (head.size < 16 || mid.isEmpty()) return null
         val full = ByteArray(head.size + mid.size)

@@ -8,7 +8,7 @@
 
 ## 1. 项目一句话
 
-**尼康相机 → 安卓手机的照片传输 App**（对标市面"Z传"App）：
+**尼康相机 → 安卓手机的照片传输 App**：
 通过 **Wi-Fi（PTP/IP）** 或 **USB 线（PTP over bulk）** 连接尼康 Z 系相机，浏览照片网格（JPG+NEF）、
 全屏预览（高清大图 + EXIF 参数胶囊）、单张/批量下载到系统相册。
 
@@ -56,7 +56,7 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 | `CardsIcons.kt` | ~628 | USB/Wi-Fi 连接卡（双卡与紧凑条共用）+ 全部 Canvas 自绘图标 + 连接指示详情浮层 |
 | `MainViewModel.kt` | ~3336 | **业务核心**：连接状态机（Wi-Fi 取消+USB 接力）、Wi-Fi 发现与分层网络策略（§5）、缩略图管线、高清预览管线、配对缓存 pairRowsCache、分块加载、筛选/折叠/多选状态；下载队列已抽到 DownloadManager（本类保留传输 IO runQueueItem：USB 偏移读分块/整包、Wi-Fi 0x9431 分块） |
 | `DownloadManager.kt` | ~179 | 下载队列状态与串行调度（QueueItem/QStatus/入队去重/取消/worker）；传输 IO 由 VM 注入 `runItem` 回调，收尾 `onWorkerExit` 回调做批量提醒 |
-| `UsbPtpSession.kt` | ~619 | **USB 通道**：自研 PTP over USB bulk（照搬 Z传 架构，0x9434 快路径枚举），见 §6 |
+| `UsbPtpSession.kt` | ~619 | **USB 通道**：自研 PTP over USB bulk（0x9434 快路径枚举），见 §6 |
 | `GPhoto2Bridge.kt` | 66 | Wi-Fi 通道的 JNI 声明（native 实现在 `cpp/gphoto2_jni.c`） |
 | `CameraKeepAliveService.kt` | 101 | 前台服务 + WifiLock（仅 Wi-Fi 连接用，USB 不需要） |
 | `PerfTrace.kt` | ~167 | **App 内帧率采样**（Choreographer 环形窗口 1000 帧 + 关键路径埋点）：相机连着时无 adb 通道（USB 占口/热点断外网），只能把尺子做进 App，读数在设置·性能/诊断分区看；注意 tag 用 "PerfTrace" 别用 "Perf" |
@@ -94,12 +94,12 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 ## 5. Wi-Fi 通道要点（gphoto2 PTP/IP）
 
 - 预编译库的 IO 后端**只有 ptpip.so 和 disk.so**——没有 USB 端口，所以 Wi-Fi 走 gphoto2、USB 走自研，别想着给 gphoto2 补 libusb（Android fd 注入是硬骨头，已评估放弃）。
-- **发现（已按 z传 实证方案重写）**：① 上次 IP（`camera_ip`）直探 → ② **mDNS 服务发现**（NsdManager，订阅 `_ptp._tcp` / `_nikon._tcp`，8 秒窗口，秒级命中，主路径）→ ③ 网段扫描（兜底，受管网段走 `Network.socketFactory`、热点网段绑本机源地址出包）。设置页「扫描相机」同款（mDNS 优先 → 扫描+读相机名）。
+- **发现（已按抓包实证方案重写）**：① 上次 IP（`camera_ip`）直探 → ② **mDNS 服务发现**（NsdManager，订阅 `_ptp._tcp` / `_nikon._tcp`，8 秒窗口，秒级命中，主路径）→ ③ 网段扫描（兜底，受管网段走 `Network.socketFactory`、热点网段绑本机源地址出包）。设置页「扫描相机」同款（mDNS 优先 → 扫描+读相机名）。
 - **分层网络策略（`bindToWifiNetwork(ip)`，连接/传输前）**：
-  - 相机连**手机热点**（相机在本机热点网段，热点=非受管网络）：**【不绑定】**——未标记 socket 命中规则链 fwmark 0x0/0x10000 → 热点直连路由表（小米 11 实测表 97 = 192.168.18.0/24 dev wlan1），z传 直连同款。⚠️ 此前对热点 netId 的手工绑定（反射 `bindProcessToNetworkHandle` 被 hidden API 拦 → Parcel 伪造 Network）**全属多余且有害**——explicit 标记反而错过直连规则、走进默认网络黑洞（已删除）。
+  - 相机连**手机热点**（相机在本机热点网段，热点=非受管网络）：**【不绑定】**——未标记 socket 命中规则链 fwmark 0x0/0x10000 → 热点直连路由表（小米 11 实测表 97 = 192.168.18.0/24 dev wlan1）。⚠️ 此前对热点 netId 的手工绑定（反射 `bindProcessToNetworkHandle` 被 hidden API 拦 → Parcel 伪造 Network）**全属多余且有害**——explicit 标记反而错过直连规则、走进默认网络黑洞（已删除）。
   - 手机连**相机热点**（受管 Wi-Fi 网段）：`bindProcessToNetwork` 该网络——默认网络是移动数据时 native socket 不绑定到不了相机。
   - netId 探针分层判定：先判网段归属（热点=直连免绑 / 受管=绑定），不再把"绑定失败"一律当黑洞超时。
-- 连接：`nativePairingProbe(ip)` 复刻 Z传 的尼康配对握手 → 成功后常驻传输会话；连接后 `startEventPolling()`（0x941c 心跳）+ `startKeepAlive()`（前台服务防冻结）。
+- 连接：`nativePairingProbe(ip)` 尼康配对握手（抓包逆向，出处记录见 doc/ 专项整理文档）→ 成功后常驻传输会话；连接后 `startEventPolling()`（0x941c 心跳）+ `startKeepAlive()`（前台服务防冻结）。
 - **Wi-Fi 下载管线（runQueueItem Wi-Fi 分支）**：0x9421 取大小 → **0x9431 偏移读 1MB 块**（C 层校验单次上限 1MB；原 128KB 块 PTP-IP 往返多吞吐低，加大到 1MB 显著提速；末块长度必须精确到文件尾——尼康对超界 GetPartialObject 直接报错，gphoto2 例外）→ 失败回退整对象。250ms 节流刷 UI 速度，通知栏 1s 节流。
 - 数据原语（JNI）：`nativeListNative()` / `nativeObjectSizeNative(handle)` / `nativePreviewNative(handle, offset, len)`（**偏移读**，gphoto2 自动截断越界块）/ `nativeDownloadNative(handle)`。
 - **枚举（nativeListNative 已重写）**：不能假设 GetObjectHandles(根层) 一次返回全部（实测只回当前文件夹 82/886 张）。现方案 = 递归文件夹 BFS（≤3 层，非 JPG/NEF 位段句柄视为文件夹下钻）**∪ 0x9434 尼康专有全量表**（每条 16 字节小端：句柄+保留+时间+日期，时间戳表 4096 项）排序去重；输出格式不变 `"句柄:YYYYMMDD-HHMMSS:类型|..."`。诊断日志：`list: 时间戳表 %d 项`、`list: 最终文件 %d 个（根层 %d…）`。
@@ -113,7 +113,7 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 |---|---|---|
 | 0x1014 GetPartialObject（标准） | ❌ 0x2006 | 尼康 USB 把 0x1014 解释为 GetDevicePropDesc 类操作，参数对不上 |
 | 0x95C1 GetPartialObject64 (MTP) | ❌ 0x2005 | 不在能力表（83 操作）中 |
-| **0x101B GetPartialObject（尼康专有）** | ✅ | **部分读取唯一通道**（Z传 操作码字典实证），参数 [handle, offset, len]，单次上限自适应（32KB 起步升档至 1MB，0x2006 减半） |
+| **0x101B GetPartialObject（尼康专有）** | ✅ | **部分读取唯一通道**（实测实证），参数 [handle, offset, len]，单次上限自适应（32KB 起步升档至 1MB，0x2006 减半） |
 | 0x1009 GetObject 整对象 | ✅ | 偏移读失败时的兜底 |
 | 0x100A GetThumb | ✅ | 网格缩略图（~160×120，网格上略糊属预期） |
 | 0x1008 GetObjectInfo | ✅ | 文件名/时间/大小/格式 |

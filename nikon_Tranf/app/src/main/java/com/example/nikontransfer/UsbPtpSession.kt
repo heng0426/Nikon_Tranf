@@ -12,7 +12,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * USB 直连相机（PTP over USB bulk）——照搬 Z传 路线的自研实现：
+ * USB 直连相机（PTP over USB bulk）——自研实现（实现路线经同类 App 抓包实证）：
  * UsbManager 发现尼康 → claimInterface → bulkTransfer 读写 PTP 容器。
  * 与 Wi-Fi 侧（GPhoto2 native）互不相干；object id 语义与 gphoto2 的 handle 一致。
  *
@@ -62,7 +62,7 @@ class UsbPtpSession(
         private const val OP_GET_THUMB = 0x100A
         private const val OP_GET_PARTIAL_OBJECT = 0x1014
         private const val OP_GET_PARTIAL_OBJECT64 = 0x95C1
-        // 尼康 USB 的部分读取是专有 0x101B（Z传 字典实证）；标准 0x1014 在尼康 USB 上
+        // 尼康 USB 的部分读取是专有 0x101B（操作码字典实证）；标准 0x1014 在尼康 USB 上
         // 被解释为 GetDevicePropDesc 之类，参数对不上必返 0x2006
         private const val OP_NIKON_GET_PARTIAL = 0x101B
         // 尼康专有：对象清单表（句柄+时间戳一次拿全，免逐对象 0x1008；PTP-IP/USB 均可用）
@@ -349,7 +349,7 @@ class UsbPtpSession(
     private fun partialReadInner(handle: Int, offset: Long, maxLen: Int): ByteArray? {
         // ① 已锁定 0x95C1（MTP 64 位）
         if (partialMode == 2) return partialRead64(handle, offset, maxLen)
-        // ② 尼康专有 0x101B GetPartialObject（Z传 字典实证；标准 0x1014 在尼康 USB 上
+        // ② 尼康专有 0x101B GetPartialObject（操作码字典实证；标准 0x1014 在尼康 USB 上
         //    被 0x2006 拒绝——它被固件解释为别的操作）。
         //    单次块大小自适应：满块成功翻倍升档（1MB 封顶）减少事务次数；0x2006 降档。
         var n = minOf(maxLen, partialLimit)
