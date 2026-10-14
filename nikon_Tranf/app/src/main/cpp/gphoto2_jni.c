@@ -525,7 +525,8 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativePairingProbe(
     int result = -100;
 
     /* 身份（抓包逐字节确认）：GUID 字段 = 16 字节 ASCII 十六进制串，
-     * 名字 = "ZTransfer"。相机向导按该身份推进配对状态机；固定值保证跨会话一致。 */
+     * 名字 = "NikonXfer"（协议字面量，9 字节）。
+     * 相机向导按该身份推进配对状态机；固定值保证跨会话一致。 */
     unsigned char guid[16];
     memcpy(guid, "3b4b6cbf0ea04a2d", 16);
 
@@ -535,7 +536,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativePairingProbe(
     /* INIT_COMMAND_REQUEST（实测 48 字节）：
      * [0..3]=len [4..7]=type(1) [8..23]=GUID(16B ASCII) [24..]=名字 UTF-16LE+NUL
      * 末尾 [44..47]=协议版本 u32 0x00010000 (1.0) */
-    const char *name = "ZTransfer";
+    const char *name = "NikonXfer";
     int namelen = (int) strlen(name);            /* 9 */
     int ilen = 8 + 16 + 2 * (namelen + 1) + 4;   /* = 48 */
     unsigned char init[64];
@@ -972,7 +973,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeProbeCameraInfo(
     if (fd < 0) { (*env)->ReleaseStringUTFChars(env, jIp, ip); return NULL; }
 
     /* INIT 帧（与配对探针同构） */
-    const char *name = "ZTransfer";
+    const char *name = "NikonXfer";
     int namelen = (int) strlen(name);
     int ilen = 8 + 16 + 2 * (namelen + 1) + 4;
     unsigned char init[64];

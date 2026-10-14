@@ -40,8 +40,9 @@
 - **主机身份（逐字节复刻，代码中保留为协议常量）**：
   - GUID 字段 = 16 字节 ASCII 十六进制串 `"3b4b6cbf0ea04a2d"`
     （s_guid 形式 `"33:62:34:62:36:63:62:66:30:65:61:30:34:61:32:64"`，主会话与探针必须同身份并落盘）。
-  - INIT 包主机名字符串 = **`"ZTransfer"`**（协议字面量，仍在 gphoto2_jni.c 中——
-    它是发往相机的 INIT_COMMAND_REQUEST 内容，非注释；如需更换须实测配对）。
+  - INIT 包主机名字符串：原为 **`"ZTransfer"`**（Z传 英文名），**2026-10-14 已改为
+    `"NikonXfer"`**——同为 9 字节，INIT 包仍为 48 字节，GUID 未变（配对状态机按 GUID 识别主机）；
+    更名后需连相机实测一次配对确认。
 - **INIT_COMMAND_REQUEST 帧布局（实测 48 字节）**：
   `[0..3]=len [4..7]=type(1) [8..23]=GUID(16B ASCII) [24..]=名字 UTF-16LE+NUL [44..47]=协议版本 u32 0x00010000`
 - **data-in 事务帧布局（对照 Z传 抓包逐字节确认）**：
@@ -77,3 +78,4 @@
 | MainViewModel.kt | USB 通道注释/Wi-Fi 网络注释×8/下载块/线程优先级/高清预览头/NEF 挑选 | 照搬 Z传、z传 同款（直连/主路径/实证方案）、复刻 Z传、Z传 实际行为 |
 | GPhoto2Bridge.kt | nativePairingProbe | 复刻 Z传 握手 |
 | gphoto2_jni.c | GUID 常量/配对探针头/data-in 帧布局/身份与 INIT 包/预览注释 | Z传 实测身份、复刻 Z 传握手序列、抓包逐字节逆向/确认、预览网格 |
+| doc/nikon-z-transfer-android-dev-plan.md | 参考资料·同类开源实现 | RealCaCl2/ZTransfer 条目（2026-10-14 移除，记录于此：Flutter + Kotlin 实现 PTP/IP / PTP-USB 自动传图，尼康 Z 专用） |

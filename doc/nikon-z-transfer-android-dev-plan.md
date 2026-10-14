@@ -293,7 +293,6 @@ USB 在非 root Android 上不能直接访问 `/dev/bus/usb`，做法：
 - libgphoto2 官方源码与文档：https://github.com/gphoto/libgphoto2 （`examples/` 里有 sample-autodetect.c、sample-capture.c，JNI 层基本照抄改）
 - PTP/IP 协议：ISO 15740 + PTP/IP 白皮书（port 15740）
 - 可参考的同类开源实现（调研所得）：
-  - RealCaCl2/ZTransfer — Flutter + Kotlin 实现 PTP/IP / PTP-USB 自动传图（尼康 Z 专用，协议层可对照）
   - Tauber01/ZENCHE — macOS 端用 libgphoto2 + libgphoto2_port 的真实工程案例
   - HuiLiYiImpl/Camera_Bridge — 纯 Kotlin 的尼康 PTP/IP + MTP 实现（不想碰 C 的话可以参考它绕开 libgphoto2）
 - 尼康官方：SnapBridge 是闭源私有协议（BLE+Wi-Fi），不要试图仿它；走标准 PTP/IP（连 PC 模式）才有公开协议可依。
