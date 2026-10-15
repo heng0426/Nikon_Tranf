@@ -2491,6 +2491,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putInt("set_thumb_cache_mb", v).apply()
     }
 
+    /* [SCROLLBAR-SEALED] 快速滚动条封存：阈值状态与持久化一并停用（set_scrollbar_threshold 键保留，重启不丢旧值）
     /** 快速滚动条显示阈值：照片数达到该值才显示右侧滚动条；-1 = 不显示。
      *  计数口径 = 未折叠的照片数（折叠天不参与，UI 侧按 collapsedDates 计算）。 */
     val scrollbarThreshold = mutableStateOf(prefs.getInt("set_scrollbar_threshold", 50))
@@ -2498,6 +2499,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         scrollbarThreshold.value = v
         prefs.edit().putInt("set_scrollbar_threshold", v).apply()
     }
+    [/SCROLLBAR-SEALED] */
 
     var thumbCacheBytes: Long by mutableStateOf(0L)
     // lazy 一次性创建：原 getter 每次访问都 mkdirs()，主线程反复系统调用造成滑动 IO 风暴

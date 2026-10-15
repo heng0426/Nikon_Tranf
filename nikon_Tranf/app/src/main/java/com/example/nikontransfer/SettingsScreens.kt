@@ -167,10 +167,12 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+/* [SCROLLBAR-SEALED] 快速滚动条封存：重启时随标记恢复
 import my.nanihadesuka.compose.InternalLazyVerticalGridScrollbar
 import my.nanihadesuka.compose.LazyVerticalGridScrollbar
 import my.nanihadesuka.compose.ScrollbarSelectionMode
 import my.nanihadesuka.compose.ScrollbarSettings
+[/SCROLLBAR-SEALED] */
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -375,6 +377,7 @@ internal fun MainActivity.SettingsScreen(
                     }
                 )
                 SettingsDivider()
+                /* [SCROLLBAR-SEALED] 快速滚动条封存：设置入口与阈值选择器一并停用，重启时随标记恢复
                 // 快速滚动条：开关承担"不显示"，展开后只选显示阈值（样式与分块加载一致）
                 SettingSwitch(
                     title = "快速滚动条",
@@ -392,6 +395,7 @@ internal fun MainActivity.SettingsScreen(
                         ScrollbarThresholdPicker()
                     }
                 }
+                [/SCROLLBAR-SEALED] */
                 SettingsDivider()
                 SettingSwitch(
                     title = "分块加载照片",
@@ -832,6 +836,7 @@ internal fun MainActivity.SettingSwitch(title: String, subtitle: String, checked
         }
     }
 
+    /* [SCROLLBAR-SEALED] 快速滚动条封存：阈值选择器一并停用，重启时随标记恢复
     /** 快速滚动条显示阈值选择器（30/50/100/200；"不显示"由上方开关承担，写入 set_scrollbar_threshold） */
     @Composable
 internal fun MainActivity.ScrollbarThresholdPicker() {
@@ -852,6 +857,7 @@ internal fun MainActivity.ScrollbarThresholdPicker() {
             }
         }
     }
+    [/SCROLLBAR-SEALED] */
 
     /** 分块大小选择器（50/100/200/500，写入 set_chunk_size；仅分块加载开启时显示） */
     @Composable

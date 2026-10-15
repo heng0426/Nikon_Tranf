@@ -65,7 +65,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
-    // 注意：3.0.0 用 Kotlin 2.4 编译（元数据 2.4.0），本工程 Kotlin 2.2.0 读不了；
-    // 2.2.0 与 3.0.0 API 完全一致（LazyVerticalGridScrollbar/ScrollbarSettings 同签名），用旧坐标
-    implementation("com.github.nanihadesuka:LazyColumnScrollbar:2.2.0")
+    // [SCROLLBAR-SEALED] 快速滚动条库已封存：依赖不参与编译，相关 UI 代码以 SCROLLBAR-SEALED
+    // 标记注释封存（build.gradle.kts / UiSpec / MainViewModel / MainActivity / GridParts /
+    // SettingsScreens / CardsIcons / DownloadsQueue / PreviewPagers）。重新启用步骤：
+    //   1. 取消下面这行依赖注释（恢复后仍必须用 2.2.0：3.0.0 是 Kotlin 2.4 元数据，本工程读不了）
+    //   2. 全局搜索 "SCROLLBAR-SEALED"，逐处取消注释后重新编译
+    // implementation("com.github.nanihadesuka:LazyColumnScrollbar:2.2.0")
 }

@@ -24,7 +24,7 @@
 | AGP / Gradle | 9.4.1 / Gradle 9.7.1（wrapper） |
 | SDK | minSdk 28 · targetSdk/compileSdk 37 |
 | NDK | 有（`gphoto2_jni.c` + CMake），链接**预编译** libgphoto2/libgphoto2_port（`lib/gp-android/gp-arm64/`） |
-| 关键三方 | `androidx.exifinterface`（EXIF）、`com.github.nanihadesuka:LazyColumnScrollbar:2.2.0`（JitPack，网格滚动条） |
+| 关键三方 | `androidx.exifinterface`（EXIF）；~~LazyColumnScrollbar~~ **已封存不参与编译**（见 §10 明确不做） |
 | 版本目录 | `gradle/libs.versions.toml` |
 
 **构建命令**（Windows Git Bash 实测可用）：
@@ -50,7 +50,7 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 |---|---|---|
 | `MainActivity.kt` | ~1554 | Activity 本体 + `MainScreen`（全屏双卡连接/紧凑重连条/双模式网格骨架/筛选/多选+选当天/日期折叠）+ 顶栏（齿轮/筛选/合并快捷开关/反转徽章/下载按钮/连接状态，TOPBAR_GAP 自适应状态栏）+ TopBarDownloadButton/ConnInfoCard/RollingText；PerfTrace.attach 与强制 120Hz 在 onCreate |
 | `UiSpec.kt` | ~144 | **设计令牌中心**：动画三档（QUICK/STANDARD/EMPHASIS）、圆角双档（ROUND_SMALL/LARGE）、浅深成对主题色（accent/accentDeep/error/amber/usbBlue/connChip/卡片面/选中遮罩/已下载标/徽章/蒙层/占位灰）、布局尺寸（TOPBAR_GAP/PAGE_PAD/TOPBAR_BTN/TOPBAR_BTN_GAP/ICON_STD·SM/PILL_*/ACTION_*/PILL_SLOT/CONN_INFO_H/QUEUE_ROW_H/PREVIEW_SLOT_H/CHECK_ICON/QUEUE_THUMB/DRAG_STRIP_W/SEL_BORDER_W/SCROLLBAR_THICKNESS）、透明度/字号令牌、行为参数（CHUNK_TRIGGER）。**新代码一律取令牌，不写散值**（已两轮收敛，替换 ~110 处散值） |
-| `GridParts.kt` | ~856 | 双格 PairCell/单格 GridCell/格式徽章/已下载标、置顶日期胶囊与槽位、快速滚动条覆盖层（GridScrollbarOverlay，合并/文件共用）、日期节头胶囊、筛选面板 FilterSheet（下载状态单选三按钮） |
+| `GridParts.kt` | ~860 | 双格 PairCell/单格 GridCell/格式徽章/已下载标、置顶日期胶囊与槽位、日期节头胶囊、筛选面板 FilterSheet（下载状态单选三按钮）；滚动条覆盖层 GridScrollbarOverlay 已封存（SCROLLBAR-SEALED 注释） |
 | `PreviewPagers.kt` | ~787 | 合并/单格式全屏预览 Pager、PreviewZoomState 缩放状态与手势、EXIF/下载槽位 |
 | `SettingsScreens.kt` | ~943 | 设置页 + 全部设置组件（SettingsSection/SettingSwitch/ChannelChip/ActionPill/两个选择器）；分组含**存储**（存储目录+已下载照片统计 JPG/RAW 计数与占用）与**性能/诊断**（PerfTrace 读数） |
 | `DownloadsQueue.kt` | ~850 | 下载队列侧板 + 队列行（支持左右滑动移出）/缩略图/下载槽位、**总览卡**（恒定计数胶囊+阶段化速率排+字节权重进度）、两段式全部取消 |
@@ -174,7 +174,7 @@ adb logcat -d | grep -E "UsbPtp|GPhoto2"
 2. **Android 13+ registerReceiver** 混合系统+自定义广播必须指定 `RECEIVER_EXPORTED/NOT_EXPORTED`，否则 SecurityException。
 3. `0xFFFFFFFF` 字面量是 **Long**，进 `intArrayOf` 要写 `-1` 或 `.toInt()`。
 4. `Collections.newSetFromMap` 返回 **Set**（没有 `[]=` 下标操作符）。
-5. **LazyColumnScrollbar 陷阱**：全系列（2.2.0/3.0.0）的拖动映射和拖块位置都是"行号等高假设"——日期头+大图混排行高列表会交界跳动，且 internal 无注入点。当前用法：库只做显示+滚动条（禁其手势 `selectionMode=Disabled`），拖动自管（右缘窄条+像素级 scrollBy）。3.0.0 是 Kotlin 2.4 编译的，本工程 Kotlin 2.2.10 读不了，必须用 2.2.0。
+5. **LazyColumnScrollbar 陷阱**：全系列（2.2.0/3.0.0）的拖动映射和拖块位置都是"行号等高假设"——日期头+大图混排行高列表会交界跳动，且 internal 无注入点。当前用法：库只做显示+滚动条（禁其手势 `selectionMode=Disabled`），拖动自管（右缘窄条+像素级 scrollBy）。3.0.0 是 Kotlin 2.4 编译的，本工程 Kotlin 2.2.10 读不了，必须用 2.2.0。**（2026-10-14 起该库已封存，此条仅重启时参考）**
 6. **无障碍服务（GKD/小米钱包AI记账）会全树扫描语义节点**，坐标计算发生在 App 主线程——重内容网格必须 `clearAndSetSemantics{}` 免疫（已在两个网格容器上实施），否则每帧 6-17ms 语义计算 = 滑动必卡。
 7. Z6 II USB PTP **GetObjectInfo 的 ObjectInfo 头部与 PTP 标准 ±字节差异**——文件名解析已做自适应搜索，动这块前先看 `infoFailDetail` 诊断。
 8. **手机单 USB-C 口**：接电脑 vs 接相机互斥；USB 通道测试时 adb 断开，诊断靠 UI 上的 `lastDiag` 或来回换线。
@@ -191,10 +191,10 @@ adb logcat -d | grep -E "UsbPtp|GPhoto2"
 
 **已知取舍**：USB 缩略图用 GetThumb（~160px，网格上略糊）；USB 高清预览优先 0x101B 偏移读管线（仅失败回退整文件下载+内存切片）；下载耗时统计功能代码存在但入口已按用户要求移除；强制 120Hz 仅前台生效（后台系统自动回落）。
 
-**明确不做/已否决**：gphoto2 补 libusb USB 端口（fd 注入硬骨头）；MtpDevice API（黑盒、厂商差异）；手机↔电脑方向；OTG 读卡器；相机热点网关探测（用户明确留待以后）；多选时点节头日期胶囊当全选用（否决——会废掉折叠功能，改为多选操作条「选当天」）；网格整体淡入/已下载标记弹入/多选勾选弹跳（用户逐一否决——"闪一下"或多余，微交互仅保留队列/角标数字滚动）。
+**明确不做/已否决**：gphoto2 补 libusb USB 端口（fd 注入硬骨头）；MtpDevice API（黑盒、厂商差异）；手机↔电脑方向；OTG 读卡器；相机热点网关探测（用户明确留待以后）；多选时点节头日期胶囊当全选用（否决——会废掉折叠功能，改为多选操作条「选当天」）；网格整体淡入/已下载标记弹入/多选勾选弹跳（用户逐一否决——"闪一下"或多余，微交互仅保留队列/角标数字滚动）；**快速滚动条整体封存**（2026-10-14 用户要求：LazyColumnScrollbar 依赖已从编译移除，全部相关代码以 `SCROLLBAR-SEALED` 标记注释封存于 build.gradle.kts/UiSpec/MainViewModel/MainActivity/GridParts/SettingsScreens/CardsIcons/DownloadsQueue/PreviewPagers；重启步骤记录在 app/build.gradle.kts 依赖注释处，`set_scrollbar_threshold` 键保留不丢旧值）。
 
 **返回键优先级**（BackHandler）：多选退出（预览未开时）→ 合并预览 → 单格式预览 → 下载侧板 → 设置页。
 
 ## 11. 设置项（SharedPreferences "cfg"）
 
-`set_auto_preview` · `set_auto_connect`（启动自动连接总开关，默认关）· `set_auto_conn_channel`（启动自动连接优先通道 usb/wifi，**仅影响启动顺序**，手动点卡和插线自动连接不受影响；非可观察状态，设置页选择器须读 `vm.autoConnChannel.value` 触发重组）· `set_keep_on`（传输时保持屏幕常亮，默认关）· `set_topbar_gap`（顶栏到状态栏余量 dp，0~32 步进 2，默认 = `UiSpec.TOPBAR_GAP` 8；主页/下载队列/设置三页共用 `vm.topBarGapDp`，设置页即实时预览）· `set_swap_press`（短/长按反转：开=短按选中、长按进预览，默认关；顶栏有快捷徽章）· `set_hotspot_hint`（热点连接提示，默认开）· `set_usb_whole`（USB 下载单事务整包 0x1009，默认开；关=偏移读分块 0x101B 带进度，首块失败仍回退整包）· `set_chunked_load`（分块加载开关，默认关）· `set_chunk_size`（每块加载量 50/100/200/500，默认 100；合并模式按合并格计）· `set_dark_mode` · `set_date_folder`（按拍摄日期建夹）· `set_hires_preview` · `set_merge_pairs`（JPG+NEF 合并格）· `set_notify_done` · `set_scrollbar_threshold`（快速滚动条：-1=关（开关承担）/30/50/100/200，默认 50；计数口径=未折叠照片数）· `set_skip_downloaded` · `set_thumb_cache_mb` · `save_dir_uri`（自定义保存目录）· `camera_ip`（上次 Wi-Fi 相机 IP）。
+`set_auto_preview` · `set_auto_connect`（启动自动连接总开关，默认关）· `set_auto_conn_channel`（启动自动连接优先通道 usb/wifi，**仅影响启动顺序**，手动点卡和插线自动连接不受影响；非可观察状态，设置页选择器须读 `vm.autoConnChannel.value` 触发重组）· `set_keep_on`（传输时保持屏幕常亮，默认关）· `set_topbar_gap`（顶栏到状态栏余量 dp，0~32 步进 2，默认 = `UiSpec.TOPBAR_GAP` 8；主页/下载队列/设置三页共用 `vm.topBarGapDp`，设置页即实时预览）· `set_swap_press`（短/长按反转：开=短按选中、长按进预览，默认关；顶栏有快捷徽章）· `set_hotspot_hint`（热点连接提示，默认开）· `set_usb_whole`（USB 下载单事务整包 0x1009，默认开；关=偏移读分块 0x101B 带进度，首块失败仍回退整包）· `set_chunked_load`（分块加载开关，默认关）· `set_chunk_size`（每块加载量 50/100/200/500，默认 100；合并模式按合并格计）· `set_dark_mode` · `set_date_folder`（按拍摄日期建夹）· `set_hires_preview` · `set_merge_pairs`（JPG+NEF 合并格）· `set_notify_done` · ~~`set_scrollbar_threshold`~~（**滚动条封存后键保留、读取已停用**）· `set_skip_downloaded` · `set_thumb_cache_mb` · `save_dir_uri`（自定义保存目录）· `camera_ip`（上次 Wi-Fi 相机 IP）。

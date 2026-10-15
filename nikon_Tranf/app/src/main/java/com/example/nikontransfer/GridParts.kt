@@ -163,10 +163,12 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+/* [SCROLLBAR-SEALED] 快速滚动条封存：重启时随标记恢复
 import my.nanihadesuka.compose.InternalLazyVerticalGridScrollbar
 import my.nanihadesuka.compose.LazyVerticalGridScrollbar
 import my.nanihadesuka.compose.ScrollbarSelectionMode
 import my.nanihadesuka.compose.ScrollbarSettings
+[/SCROLLBAR-SEALED] */
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -533,6 +535,7 @@ internal fun MainActivity.PinnedPillSlot(
         }
     }
 
+    /* [SCROLLBAR-SEALED] 快速滚动条封存：覆盖层（显示+拖动）整体停用，重启时随标记恢复
     /** 快速滚动条覆盖层（合并/文件共用）：阈值判断 + 库显示层（拖块/日期气泡）+ 右缘像素级拖动层。
      *  sections = (dateKey, 行数) 按显示顺序；折叠节只渲染节头 1 个 item，气泡映射需同步。
      *  拖动：onDragStart 算一次缩放比，事件用 dispatchRawDelta 同步滚动（无协程排队，快拖不卡）。 */
@@ -591,6 +594,7 @@ internal fun BoxScope.GridScrollbarOverlay(
                 }
         )
     }
+    [/SCROLLBAR-SEALED] */
 
     /** 节头日期胶囊：点击折叠/展开当天照片（合并/文件模式共用）。
      *  折叠态：箭头旋转 -90° + 胶囊变淡；

@@ -163,10 +163,12 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+/* [SCROLLBAR-SEALED] 快速滚动条封存：重启时随标记恢复
 import my.nanihadesuka.compose.InternalLazyVerticalGridScrollbar
 import my.nanihadesuka.compose.LazyVerticalGridScrollbar
 import my.nanihadesuka.compose.ScrollbarSelectionMode
 import my.nanihadesuka.compose.ScrollbarSettings
+[/SCROLLBAR-SEALED] */
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 

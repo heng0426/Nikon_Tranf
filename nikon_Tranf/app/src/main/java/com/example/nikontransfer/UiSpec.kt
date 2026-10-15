@@ -221,8 +221,10 @@ object UiSpec {
     val PREVIEW_SLOT_H = 40.dp   // 预览页下载槽行高（锁高，四态垂直居中）
     val CHECK_ICON = 40.dp       // 多选选中态中央勾尺寸
     val QUEUE_THUMB = 44.dp      // 下载队列行左侧缩略图尺寸
+    /* [SCROLLBAR-SEALED] 快速滚动条封存：两枚尺寸令牌一并停用，重启时随标记恢复
     val DRAG_STRIP_W = 24.dp     // 滚动条拖动层宽度（右缘热区）
     val SCROLLBAR_THICKNESS = 9.dp // 滚动条拖块厚度
+    [/SCROLLBAR-SEALED] */
     val SEL_BORDER_W = 3.dp      // 多选选中态/高亮描边宽
 
     /* ---------- 透明度 ---------- */

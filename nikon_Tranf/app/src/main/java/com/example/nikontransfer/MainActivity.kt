@@ -169,10 +169,12 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+/* [SCROLLBAR-SEALED] 快速滚动条封存：重启时随标记恢复
 import my.nanihadesuka.compose.InternalLazyVerticalGridScrollbar
 import my.nanihadesuka.compose.LazyVerticalGridScrollbar
 import my.nanihadesuka.compose.ScrollbarSelectionMode
 import my.nanihadesuka.compose.ScrollbarSettings
+[/SCROLLBAR-SEALED] */
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -879,6 +881,7 @@ class MainActivity : ComponentActivity() {
                         TextButton(onClick = { vm.resetFilter() }) { Text("清除筛选") }
                     }
                 }
+                /* [SCROLLBAR-SEALED] 快速滚动条封存：设置与拖动状态一并停用，重启时随标记恢复
                 // 快速滚动条（LazyColumnScrollbar 库）：>50 张启用；滚动时自动显现。
                 // 拖动映射自管：库的映射假设每行等高，日期头/照片行高悬殊导致交界跳动——
                 // 这里禁用库手势（Disabled），另叠像素级 scrollBy 拖动层，增量滚动无跳变。
@@ -894,6 +897,7 @@ class MainActivity : ComponentActivity() {
                 // 拖动滚动条期间强制常显：scrollBy 事件间隙 isScrollInProgress 抖动会导致渐隐
                 var sbDragging by remember { mutableStateOf(false) }
                 val sbActiveSettings = if (sbDragging) sbSettings.copy(alwaysShowScrollbar = true) else sbSettings
+                [/SCROLLBAR-SEALED] */
                 // 分块加载：滚动接近已加载区域末尾（24 项 ≈ 8 行）时自动追加下一块；
                 // 设置里关闭分块时 loadMoreChunks 内部直接忽略。仅活动网格的状态被读取。
                 LaunchedEffect(mergeOn) {
@@ -983,6 +987,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                    /* [SCROLLBAR-SEALED] 快速滚动条封存：合并模式挂载点，重启时随标记恢复
                     // 快速滚动条覆盖层（合并/文件共用）：阈值判断 + 显示层 + 拖动层
                     GridScrollbarOverlay(
                         vm = vm,
@@ -992,6 +997,7 @@ class MainActivity : ComponentActivity() {
                         settings = sbActiveSettings,
                         onDragging = { sbDragging = it }
                     )
+                    [/SCROLLBAR-SEALED] */
                     }
                 } else {
                     // 置顶日期胶囊：固定槽位显示当前分组（随滚动更新，不与照片重叠）+ 总张数胶囊
@@ -1066,6 +1072,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                    /* [SCROLLBAR-SEALED] 快速滚动条封存：文件模式挂载点，重启时随标记恢复
                     // 快速滚动条覆盖层（合并/文件共用）：阈值判断 + 显示层 + 拖动层
                     GridScrollbarOverlay(
                         vm = vm,
@@ -1075,6 +1082,7 @@ class MainActivity : ComponentActivity() {
                         settings = sbActiveSettings,
                         onDragging = { sbDragging = it }
                     )
+                    [/SCROLLBAR-SEALED] */
                     }
                 } // else: 文件模式网格结束
                 // 多选操作条：有选中才从底部弹出（全选 + 格式勾选(合并) + 下载所选）

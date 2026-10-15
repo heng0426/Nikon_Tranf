@@ -17,7 +17,7 @@
 - **分块加载**：照片很多时先显示一部分，滚动接近末尾自动追加下一块（可关，每块 50/100/200/500 可选）
 - 全屏预览：高清大图（JPG 读 MPF 内嵌大图 / NEF 解析嵌入 JPEG）、EXIF 胶囊（光圈 · 快门 · ISO · 焦距 · 快门次数 · 镜头）、格式徽章
 - 多选：**全选 / 选当天**（跟随当前滚动日期）、按格式筛选、跳过已下载
-- 日期区间筛选、快速滚动条（显示阈值可设置）
+- 日期区间筛选
 
 ### 下载
 - 单张 / 多选批量下载，写入系统相册（JPG → `MediaStore.Images`，NEF → `MediaStore.Files`，支持按拍摄日期建夹）
@@ -31,7 +31,7 @@
 - **USB 通道 — 自研 PTP over USB bulk**（`UsbPtpSession.kt`）：UsbManager → bulk 端点 → PTP 容器，支持 0x101B 尼康专有部分读取、ZLP 吸收、会话级管道自愈
 - **Wi-Fi 发现与路由**：mDNS（NsdManager `_ptp._tcp`/`_nikon._tcp`）为主路径；网络策略分层——相机连手机热点（非受管网络）走内核热点直连路由**不绑定**，手机连相机热点才 `bindProcessToNetwork`
 - **枚举**：双通道统一采用 **递归文件夹（BFS ≤3 层）∪ 尼康 0x9434 全量表**（句柄+时间戳，16 字节/条）排序去重；文件类型按尼康句柄位段判断（hi16 高 8 位 `0x2a`=JPG / `0x0a`=NEF）
-- **性能**：合并配对结果缓存、滚动条快拖 `dispatchRawDelta` 同步滚动、下载进度读取下沉绘制阶段（线性补间零重组）、网格语义子树清空（无障碍免疫）、启动时请求设备最高刷新率（规避 HyperOS 类别限频 60Hz）、内置 `PerfTrace` 帧率采样（相机连着无 adb 时的性能尺子，读数在设置·性能/诊断）
+- **性能**：合并配对结果缓存、下载进度读取下沉绘制阶段（线性补间零重组）、网格语义子树清空（无障碍免疫）、启动时请求设备最高刷新率（规避 HyperOS 类别限频 60Hz）、内置 `PerfTrace` 帧率采样（相机连着无 adb 时的性能尺子，读数在设置·性能/诊断）
 - **设计令牌**：`UiSpec.kt` 集中管理动画三档节奏、圆角双档、浅/深成对主题色与布局尺寸——改风格只动这一个文件
 - **缩略图三层缓存**：内存 LRU + 无锁读路径 + 磁盘缓存（容量可设），串行 IO 队列杜绝线程风暴
 - **Android 13+ 本地网络权限**：`ACCESS_LOCAL_NETWORK` 运行时动态申请
@@ -44,7 +44,7 @@ nikon_Tranf/                          # Android Studio 工程
 ├── app/src/main/java/com/example/nikontransfer/
 │   ├── MainActivity.kt               # Activity 本体 + MainScreen（连接双卡/网格骨架/多选）
 │   ├── UiSpec.kt                     # 设计令牌中心（动画/圆角/主题色/尺寸/行为参数）
-│   ├── GridParts.kt                  # 网格部件（格子/日期胶囊/滚动条覆盖层/筛选面板）
+│   ├── GridParts.kt                  # 网格部件（格子/日期胶囊/筛选面板）
 │   ├── PreviewPagers.kt              # 全屏预览（缩放/翻页/EXIF/下载槽位）
 │   ├── SettingsScreens.kt            # 设置页与全部设置组件
 │   ├── DownloadsQueue.kt             # 下载队列侧板与队列行
