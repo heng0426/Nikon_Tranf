@@ -63,4 +63,9 @@ object GPhoto2Bridge {
     external fun nativeEventPollNative(): Int           // 消费 0x941c 事件，维持会话健康
     external fun nativeTransferClose()
     external fun nativeProbeCameraInfo(ip: String): String?   // INIT 握手探测相机信息 "型号|序列号"
+
+    // ---- 机内删除 + 存储容量（0x100B / 0x1008 / 0x1005；ZENCHE 未实现的增量功能）----
+    external fun nativeDeleteNative(handle: Int): Int          // 0x100B：0x2001=已删除，0x200D=受保护/只读（Z6 II 实测），-1=未连接，-2=传输失败
+    external fun nativeObjectProtectedNative(handle: Int): Int // 0x1008 预检：1=受保护，0=未保护，-1=未连接，-2=查询失败
+    external fun nativeStorageInfoNative(): String?            // 0x1005："capacity|free|freeImages|label"，失败 NULL
 }

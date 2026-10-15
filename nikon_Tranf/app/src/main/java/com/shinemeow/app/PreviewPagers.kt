@@ -280,9 +280,17 @@ internal fun MainActivity.PairPager(
         rows: List<PairRow>,
         onClose: (Int) -> Unit,
         onDownloadJpg: (PairRow) -> Unit,
-        onDownloadNef: (PairRow) -> Unit
+        onDownloadNef: (PairRow) -> Unit,
+        onDelete: (PairRow) -> Unit
     ) {
         val pagerState = rememberPagerState(initialPage = initialIndex) { rows.size }
+        // 删除后列表缩短：当前页越界（删的是最后一张）→ 关闭预览；
+        // 未越界时 currentPage 不变，Pager 自然落到下一张（删除后不停留空页）
+        LaunchedEffect(rows.size) {
+            if (pagerState.currentPage >= rows.size) {
+                onClose(rows.lastIndex.coerceAtLeast(0))
+            }
+        }
         // 高清预览：开关开启时，当前页 ±1 自动预取（合并模式取显示中的那张：JPG 优先）
         LaunchedEffect(pagerState.currentPage, vm.hiresOn) {
             if (vm.hiresOn) {
@@ -330,12 +338,23 @@ internal fun MainActivity.PairPager(
                         }
                     }
                 }
+                // 三栏等宽顶栏：左右各 weight(1f) 占位 → 中间计数文字绝对居中。
+                // （左栏两个 IconButton 96dp vs 右栏选择框 32dp，不等宽会把文字挤歪）
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { onClose(pagerState.currentPage) }) {
-                        Icon(Icons.Filled.Close, contentDescription = "关闭", tint = Color.White)
+                    // 左栏：关闭 + 垃圾桶（左对齐）
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { onClose(pagerState.currentPage) }) {
+                            Icon(Icons.Filled.Close, contentDescription = "关闭", tint = Color.White)
+                        }
+                        // 机内删除当前对（JPG+NEF 一并删；VM 预检后弹确认框）
+                        IconButton(onClick = {
+                            rows.getOrNull(pagerState.currentPage)?.let { onDelete(it) }
+                        }) {
+                            TrashIcon(UiSpec.error(vm.darkModeOn))
+                        }
                     }
                     Text(
                         "${pagerState.currentPage + 1} / ${rows.size}",
@@ -344,30 +363,36 @@ internal fun MainActivity.PairPager(
                         modifier = Modifier.weight(1f),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
-                    // 右上角选择框：加入/移出多选（选中打勾）
+                    // 右栏：选择框（等宽占位 + 右对齐）
                     val curPair = rows.getOrNull(pagerState.currentPage)
                     val selNow = curPair != null && curPair.key in vm.pairSelection.value
                     Box(
                         Modifier
-                            .padding(end = 8.dp)
-                            .size(24.dp)
-                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                            .background(if (selNow) UiSpec.accent(vm.darkModeOn) else Color.Transparent)
-                            .border(
-                                2.dp,
-                                if (selNow) UiSpec.accent(vm.darkModeOn) else Color.White,
-                                RoundedCornerShape(UiSpec.ROUND_SMALL)
-                            )
-                            .clickable { curPair?.let { vm.togglePair(it.key) } },
-                        contentAlignment = Alignment.Center
+                            .weight(1f)
+                            .padding(end = 8.dp),
+                        contentAlignment = Alignment.CenterEnd
                     ) {
-                        if (selNow) {
-                            Icon(
-                                Icons.Filled.Check,
-                                contentDescription = "已选择",
-                                tint = Color.White,
-                                modifier = Modifier.size(UiSpec.ICON_SM)
-                            )
+                        Box(
+                            Modifier
+                                .size(24.dp)
+                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                                .background(if (selNow) UiSpec.accent(vm.darkModeOn) else Color.Transparent)
+                                .border(
+                                    2.dp,
+                                    if (selNow) UiSpec.accent(vm.darkModeOn) else Color.White,
+                                    RoundedCornerShape(UiSpec.ROUND_SMALL)
+                                )
+                                .clickable { curPair?.let { vm.togglePair(it.key) } },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (selNow) {
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = "已选择",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(UiSpec.ICON_SM)
+                                )
+                            }
                         }
                     }
                 }
@@ -377,7 +402,8 @@ internal fun MainActivity.PairPager(
                     state = pagerState,
                     modifier = Modifier.fillMaxSize()
                 ) { page ->
-                    val pair = rows[page]
+                    // 删除收缩 pageCount 的瞬时窗口内 page 可能越界 → 空渲染一帧等外层关闭
+                    val pair = rows.getOrNull(page) ?: return@HorizontalPager
                     val zoom = remember { PreviewZoomState() }
                     Box(
                         Modifier
@@ -431,7 +457,8 @@ internal fun MainActivity.PairPager(
                     Modifier.fillMaxWidth().padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val pair = rows[pagerState.currentPage]
+                    // 删除收缩 pageCount 的瞬时窗口内 currentPage 可能越界 → 跳过底栏一帧
+                    val pair = rows.getOrNull(pagerState.currentPage) ?: return@Column
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (pair.hasJpg) MiniBadge("JPG", badgeColor("JPG"))
                         if (pair.hasNef) {
@@ -448,6 +475,15 @@ internal fun MainActivity.PairPager(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
+                        // 受保护标记（合并格任一格式受保护即亮）：机内删除会被相机拒绝
+                        if (pair.jpg?.isProtected?.value == true || pair.nef?.isProtected?.value == true) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "受保护",
+                                color = UiSpec.error(vm.darkModeOn),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
                         if (pair.jpgDownloaded || pair.nefDownloaded) {
                             val marks = buildString {
                                 if (pair.jpgDownloaded) append("✓J ")
@@ -547,9 +583,17 @@ internal fun MainActivity.PreviewPager(
         initialIndex: Int,
         rows: List<PhotoRow>,
         onClose: (Int) -> Unit,
-        onDownload: (PhotoRow) -> Unit
+        onDownload: (PhotoRow) -> Unit,
+        onDelete: (PhotoRow) -> Unit
     ) {
         val pagerState = rememberPagerState(initialPage = initialIndex) { rows.size }
+        // 删除后列表缩短：当前页越界（删的是最后一张）→ 关闭预览；
+        // 未越界时 currentPage 不变，Pager 自然落到下一张（删除后不停留空页）
+        LaunchedEffect(rows.size) {
+            if (pagerState.currentPage >= rows.size) {
+                onClose(rows.lastIndex.coerceAtLeast(0))
+            }
+        }
         // 高清预览：开关开启时，当前页 ±1 自动预取
         LaunchedEffect(pagerState.currentPage, vm.hiresOn) {
             if (vm.hiresOn) {
@@ -594,12 +638,23 @@ internal fun MainActivity.PreviewPager(
                         }
                     }
                 }
+                // 三栏等宽顶栏：左右各 weight(1f) 占位 → 中间计数文字绝对居中。
+                // （左栏两个 IconButton 96dp vs 右栏选择框 32dp，不等宽会把文字挤歪）
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { onClose(pagerState.currentPage) }) {
-                        Icon(Icons.Filled.Close, contentDescription = "关闭", tint = Color.White)
+                    // 左栏：关闭 + 垃圾桶（左对齐）
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { onClose(pagerState.currentPage) }) {
+                            Icon(Icons.Filled.Close, contentDescription = "关闭", tint = Color.White)
+                        }
+                        // 机内删除当前照片（VM 预检后弹确认框）
+                        IconButton(onClick = {
+                            rows.getOrNull(pagerState.currentPage)?.let { onDelete(it) }
+                        }) {
+                            TrashIcon(UiSpec.error(vm.darkModeOn))
+                        }
                     }
                     Text(
                         "${pagerState.currentPage + 1} / ${rows.size}",
@@ -608,30 +663,36 @@ internal fun MainActivity.PreviewPager(
                         modifier = Modifier.weight(1f),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
-                    // 右上角选择框：加入/移出多选（选中打勾）
+                    // 右栏：选择框（等宽占位 + 右对齐）
                     val curRow = rows.getOrNull(pagerState.currentPage)
                     val selNow = curRow != null && curRow.selected.value
                     Box(
                         Modifier
-                            .padding(end = 8.dp)
-                            .size(24.dp)
-                            .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
-                            .background(if (selNow) UiSpec.accent(vm.darkModeOn) else Color.Transparent)
-                            .border(
-                                2.dp,
-                                if (selNow) UiSpec.accent(vm.darkModeOn) else Color.White,
-                                RoundedCornerShape(UiSpec.ROUND_SMALL)
-                            )
-                            .clickable { curRow?.let { vm.toggleRowSelected(it) } },
-                        contentAlignment = Alignment.Center
+                            .weight(1f)
+                            .padding(end = 8.dp),
+                        contentAlignment = Alignment.CenterEnd
                     ) {
-                        if (selNow) {
-                            Icon(
-                                Icons.Filled.Check,
-                                contentDescription = "已选择",
-                                tint = Color.White,
-                                modifier = Modifier.size(UiSpec.ICON_SM)
-                            )
+                        Box(
+                            Modifier
+                                .size(24.dp)
+                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                                .background(if (selNow) UiSpec.accent(vm.darkModeOn) else Color.Transparent)
+                                .border(
+                                    2.dp,
+                                    if (selNow) UiSpec.accent(vm.darkModeOn) else Color.White,
+                                    RoundedCornerShape(UiSpec.ROUND_SMALL)
+                                )
+                                .clickable { curRow?.let { vm.toggleRowSelected(it) } },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (selNow) {
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = "已选择",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(UiSpec.ICON_SM)
+                                )
+                            }
                         }
                     }
                 }
@@ -641,7 +702,8 @@ internal fun MainActivity.PreviewPager(
                     state = pagerState,
                     modifier = Modifier.fillMaxSize()
                 ) { page ->
-                    val row = rows[page]
+                    // 删除收缩 pageCount 的瞬时窗口内 page 可能越界 → 空渲染一帧等外层关闭
+                    val row = rows.getOrNull(page) ?: return@HorizontalPager
                     val zoom = remember { PreviewZoomState() }
                     Box(
                         Modifier
@@ -694,7 +756,8 @@ internal fun MainActivity.PreviewPager(
                     Modifier.fillMaxWidth().padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val row = rows[pagerState.currentPage]
+                    // 删除收缩 pageCount 的瞬时窗口内 currentPage 可能越界 → 跳过底栏一帧
+                    val row = rows.getOrNull(pagerState.currentPage) ?: return@Column
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             row.type,
@@ -714,6 +777,15 @@ internal fun MainActivity.PreviewPager(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
+                        // 受保护标记：相机端写保护，机内删除会被拒绝
+                        if (row.isProtected.value) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "受保护",
+                                color = UiSpec.error(vm.darkModeOn),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
                         if (row.downloaded.value)
                             Text(
                                 "已下载 ✓",

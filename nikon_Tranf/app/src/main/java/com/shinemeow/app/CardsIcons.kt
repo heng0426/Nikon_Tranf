@@ -306,39 +306,84 @@ internal fun MainActivity.WifiIcon(color: Color, modifier: Modifier = Modifier) 
         }
     }
 
-    /** 下载形状（向下箭头 + 底部托盘），用于下载队列指示（同自绘风格） */
-    @Composable
-    internal fun DownloadIcon(color: Color, modifier: Modifier = Modifier) {
-        Canvas(modifier.size(UiSpec.ICON_STD)) {
-            val w = size.width
-            val h = size.height
-            val stroke = w * 0.13f
-            // 箭杆
-            drawLine(
-                color,
-                start = Offset(w * 0.5f, h * 0.12f),
-                end = Offset(w * 0.5f, h * 0.55f),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round
-            )
-            // 箭头（实心三角）
-            val arrow = Path().apply {
-                moveTo(w * 0.26f, h * 0.48f)
-                lineTo(w * 0.74f, h * 0.48f)
-                lineTo(w * 0.5f, h * 0.74f)
-                close()
-            }
-            drawPath(arrow, color)
-            // 托盘
-            drawLine(
-                color,
-                start = Offset(w * 0.18f, h * 0.88f),
-                end = Offset(w * 0.82f, h * 0.88f),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round
-            )
+/** 下载形状（向下箭头 + 底部托盘），用于下载队列指示（同自绘风格） */
+@Composable
+internal fun DownloadIcon(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(UiSpec.ICON_STD)) {
+        val w = size.width
+        val h = size.height
+        val stroke = w * 0.13f
+        // 箭杆
+        drawLine(
+            color,
+            start = Offset(w * 0.5f, h * 0.12f),
+            end = Offset(w * 0.5f, h * 0.55f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        // 箭头（实心三角）
+        val arrow = Path().apply {
+            moveTo(w * 0.26f, h * 0.48f)
+            lineTo(w * 0.74f, h * 0.48f)
+            lineTo(w * 0.5f, h * 0.74f)
+            close()
         }
+        drawPath(arrow, color)
+        // 托盘
+        drawLine(
+            color,
+            start = Offset(w * 0.18f, h * 0.88f),
+            end = Offset(w * 0.82f, h * 0.88f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
     }
+}
+
+/** 删除形状（桶身 + 桶盖把手），用于机内删除入口（同自绘风格） */
+@Composable
+internal fun TrashIcon(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(UiSpec.ICON_STD)) {
+        val w = size.width
+        val h = size.height
+        val stroke = w * 0.11f
+        // 桶盖横杆
+        drawLine(
+            color,
+            start = Offset(w * 0.16f, h * 0.24f),
+            end = Offset(w * 0.84f, h * 0.24f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        // 盖把手（竖杆 + 顶部小横）
+        drawLine(
+            color,
+            start = Offset(w * 0.40f, h * 0.10f),
+            end = Offset(w * 0.40f, h * 0.24f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color,
+            start = Offset(w * 0.31f, h * 0.10f),
+            end = Offset(w * 0.49f, h * 0.10f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        // 桶身（两侧微外敞的梯形）
+        val body = Path().apply {
+            moveTo(w * 0.26f, h * 0.32f)
+            lineTo(w * 0.74f, h * 0.32f)
+            lineTo(w * 0.68f, h * 0.90f)
+            lineTo(w * 0.32f, h * 0.90f)
+            close()
+        }
+        drawPath(body, color, style = Stroke(width = stroke, cap = StrokeCap.Round))
+        // 桶身两道竖筋
+        drawLine(color, Offset(w * 0.42f, h * 0.40f), Offset(w * 0.40f, h * 0.82f), strokeWidth = stroke * 0.7f, cap = StrokeCap.Round)
+        drawLine(color, Offset(w * 0.58f, h * 0.40f), Offset(w * 0.60f, h * 0.82f), strokeWidth = stroke * 0.7f, cap = StrokeCap.Round)
+    }
+}
 
     /** 标准 USB Trident 标志：主干+箭头+底部圆+右侧方块+左右分支曲线，700×700 坐标系精确映射 */
     @Composable

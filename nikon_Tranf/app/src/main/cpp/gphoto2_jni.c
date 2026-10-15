@@ -485,9 +485,12 @@ static int pp_data_in(int fd, unsigned short op, unsigned int tid,
     return pp_data_in2(fd, op, tid, params, nparams, data_out, data_len_out, NULL);
 }
 
-/* 无数据事务：请求 → OpResponse */
-static int pp_cmd_in(int fd, unsigned short op, unsigned int tid,
-                     unsigned int *params, int nparams) {
+/* 无数据事务：请求 → OpResponse。rc_out 非 NULL 时回传相机响应码
+ * （0x2001=OK；0x2009=对象写保护；其余见 PTP 响应码表）。 */
+static int pp_cmd_in_rc(int fd, unsigned short op, unsigned int tid,
+                        unsigned int *params, int nparams,
+                        unsigned int *rc_out) {
+    if (rc_out) *rc_out = 0;
     int len = 18 + nparams * 4;
     unsigned char *req = (unsigned char *) malloc(len);
     if (!req) return -1;
@@ -512,10 +515,17 @@ static int pp_cmd_in(int fd, unsigned short op, unsigned int tid,
     int r = (type == PP_OP_RESP) ? 0 : -2;
     if (r == 0 && plen >= 2) {
         unsigned int rc16 = pl[0] | (pl[1] << 8);
+        if (rc_out) *rc_out = rc16;
         if (rc16 != 0x2001) r = -6;
     }
     free(pl);
     return r;
+}
+
+/* 兼容封装：不关心 rc 的调用方 */
+static int pp_cmd_in(int fd, unsigned short op, unsigned int tid,
+                     unsigned int *params, int nparams) {
+    return pp_cmd_in_rc(fd, op, tid, params, nparams, NULL);
 }
 
 JNIEXPORT jint JNICALL
@@ -1016,4 +1026,109 @@ Java_com_shinemeow_app_GPhoto2Bridge_nativeProbeCameraInfo(
     close(fd);
     (*env)->ReleaseStringUTFChars(env, jIp, ip);
     return result;
+}
+
+/* 机内删除（0x100B DeleteObject，参数 = 句柄）。ZENCHE 未实现，本机增量功能。
+ * 返回 PTP 响应码：0x2001=已删除；0x200D=对象只读/受保护（Z6 II 实测拒绝码）；
+ * 0x2009=句柄无效；其他非零=相机拒绝；-1=未连接/会话已断；-2=传输失败。
+ * 与 USB 侧 UsbPtpSession.deleteObject 同语义。 */
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeDeleteNative(
+        JNIEnv *env, jclass clz, jint jHandle) {
+    (void) env; (void) clz;
+    if (g_tfd < 0) return -1;
+    unsigned int handle = (unsigned int) jHandle;
+    unsigned int rc = 0;
+    int r = pp_cmd_in_rc(g_tfd, 0x100B, g_ttid++, &handle, 1, &rc);
+    if (r == -1 || r == -2) {
+        LOGE("delete: 0x%08x 传输失败 r=%d", handle, r);
+        return -2;
+    }
+    if (rc != 0x2001) LOGI("delete: 0x%08x 相机拒绝 rc=0x%04x", handle, rc);
+    else LOGI("delete: 0x%08x 已删除", handle);
+    return (jint) rc;
+}
+
+/* 对象写保护预检（0x1008 GetObjectInfo 前 8 字节：StorageID u32@0 /
+ * ObjectFormat u16@4 / ProtectionStatus u16@6）。返回 1=受保护，0=未保护，
+ * -1=未连接，-2=查询失败。删除前弹窗标注受保护张数用。 */
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeObjectProtectedNative(
+        JNIEnv *env, jclass clz, jint jHandle) {
+    (void) env; (void) clz;
+    if (g_tfd < 0) return -1;
+    unsigned int handle = (unsigned int) jHandle;
+    unsigned char *d = NULL; int dlen = 0;
+    unsigned int rc = 0;
+    int r = pp_data_in2(g_tfd, 0x1008, g_ttid++, &handle, 1, &d, &dlen, &rc);
+    if (r != 0 || dlen < 8) {
+        // 诊断：r=-6=相机响应码非 OK（rc 即真实拒绝码，0x2005=不支持 0x1008）；
+        //      r=-3=无数据阶段；r=-4/-5=帧错位
+        LOGI("prot: 0x%08x 查询失败 r=%d rc=0x%04x dlen=%d", handle, r, rc, dlen);
+        free(d);
+        return -2;
+    }
+    // 诊断：前 16 字节原样落日志（确认 ProtectionStatus 的真实偏移，
+    // 尼康部分固件 ObjectInfo 头部与 PTP 标准有 ±字节差异）
+    if (dlen >= 16) {
+        LOGI("prot: 0x%08x dlen=%d head=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+            handle, dlen, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7],
+            d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]);
+    } else {
+        LOGI("prot: 0x%08x dlen=%d head=%02x%02x%02x%02x %02x%02x%02x%02x",
+            handle, dlen, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+    }
+    unsigned int protection = (unsigned int) (d[6] | (d[7] << 8));
+    free(d);
+    return (protection != 0) ? 1 : 0;
+}
+
+/* 存储容量（0x1004 → 0x1005 GetStorageInfo，取首个存储）：
+ * 返回 "capacity|free|freeImages|label"，失败 NULL。
+ * dataset 布局同 USB 侧：MaxCapacity u64@6 / FreeSpaceInBytes u64@14 /
+ * FreeSpaceInImages u32@22 / StorageDescription PSTR@26。 */
+JNIEXPORT jstring JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeStorageInfoNative(
+        JNIEnv *env, jclass clz) {
+    (void) clz;
+    if (g_tfd < 0) return NULL;
+    unsigned int sid = 0;
+    if (g_nstorages > 0) {
+        sid = g_storages[0];
+    } else {
+        unsigned char *sd = NULL; int sdlen = 0;
+        if (pp_data_in2(g_tfd, 0x1004, g_ttid++, NULL, 0, &sd, &sdlen, NULL) != 0 || sdlen < 4) {
+            free(sd);
+            return NULL;
+        }
+        unsigned int cnt = (unsigned int) (sd[0] | (sd[1] << 8) | (sd[2] << 16) | ((unsigned) sd[3] << 24));
+        if (cnt == 0 || sdlen < 4 + 4) { free(sd); return NULL; }
+        sid = (unsigned int) (sd[4] | (sd[5] << 8) | (sd[6] << 16) | ((unsigned) sd[7] << 24));
+        free(sd);
+    }
+    unsigned char *d = NULL; int dlen = 0;
+    if (pp_data_in2(g_tfd, 0x1005, g_ttid++, &sid, 1, &d, &dlen, NULL) != 0 || dlen < 26) {
+        free(d);
+        return NULL;
+    }
+    unsigned long long capBytes = 0, freeBytes = 0;
+    memcpy(&capBytes, d + 6, 8);
+    memcpy(&freeBytes, d + 14, 8);
+    unsigned int freeImages = (unsigned int) (d[22] | (d[23] << 8) | (d[24] << 16) | ((unsigned) d[25] << 24));
+    /* StorageDescription PSTR@26：u8 长度 + UTF-16LE 字符（可能无 NUL 收尾） */
+    char label[64] = {0};
+    if (dlen > 26 && dlen > 26 + 1 + 2 * d[26]) {
+        int n = d[26];
+        int si = 0;
+        for (int i = 0; i < n && si < (int) sizeof(label) - 1; i++) {
+            unsigned char c = d[27 + i * 2];
+            label[si++] = (c >= 0x20 && c < 0x7f) ? (char) c : ' ';
+        }
+    }
+    free(d);
+    char out[160];
+    snprintf(out, sizeof(out), "%llu|%llu|%u|%s",
+             capBytes, freeBytes, freeImages, label);
+    LOGI("storage: cap=%llu free=%llu imgs=%u label=%s", capBytes, freeBytes, freeImages, label);
+    return (*env)->NewStringUTF(env, out);
 }

@@ -19,6 +19,17 @@ import java.nio.ByteOrder
  * 上层需要的四个原语：enumerate() / objectSize() / partialRead() / close()。
  * 枚举输出与 nativeListNative() 同格式："句柄:YYYYMMDD-HHMMSS:类型|..."。
  */
+/**
+ * 存储容量信息（0x1005 GetStorageInfo）：连接详情浮层展示，删除前可判断卡剩余空间。
+ * label 部分固件回空串；freeImages 为 -1 表示相机未报（不明）。
+ */
+data class CamStorageInfo(
+    val capacity: Long,
+    val free: Long,
+    val freeImages: Long,
+    val label: String
+)
+
 class UsbPtpSession(
     private val usbManager: UsbManager,
     private val device: UsbDevice
@@ -32,6 +43,8 @@ class UsbPtpSession(
     private val objectSizes = HashMap<Int, Long>()
     /** 相机自报支持的操作码（GetDeviceInfo.OperationsSupported） */
     private val supportedOps = HashSet<Int>()
+    /** 对象写保护缓存（GetObjectInfo.ProtectionStatus != 0 = 受保护，删除会被相机拒绝） */
+    private val objectProtected = HashMap<Int, Boolean>()
     /** 偏移读通道：1=尼康 0x101B，2=MTP 0x95C1 (GetPartialObject64) */
     private var partialMode = 0
     /** 0x101B 单次请求字节数：满块成功翻倍升档（1MB 封顶），0x2006 减半并封顶 */
@@ -56,10 +69,12 @@ class UsbPtpSession(
         private const val OP_OPEN_SESSION = 0x1002
         private const val OP_CLOSE_SESSION = 0x1003
         private const val OP_GET_STORAGE_IDS = 0x1004
+        private const val OP_GET_STORAGE_INFO = 0x1005
         private const val OP_GET_OBJECT_HANDLES = 0x1007
         private const val OP_GET_OBJECT_INFO = 0x1008
         private const val OP_GET_OBJECT = 0x1009
         private const val OP_GET_THUMB = 0x100A
+        private const val OP_DELETE_OBJECT = 0x100B
         private const val OP_GET_PARTIAL_OBJECT = 0x1014
         private const val OP_GET_PARTIAL_OBJECT64 = 0x95C1
         // 尼康 USB 的部分读取是专有 0x101B（操作码字典实证）；标准 0x1014 在尼康 USB 上
@@ -341,6 +356,59 @@ class UsbPtpSession(
         } else resp.data
     }
 
+    /** 机内删除（0x100B DeleteObject，参数 = 对象句柄；ZENCHE 未实现，本机增量功能）。
+     *  返回 PTP 响应码：0x2001=已删除；0x200D=对象只读/受保护（相机端二次拒绝，
+     *  Z6 II 实测）；0x2009=句柄无效（跨会话旧句柄）；其他见 PTP 响应码表；
+     *  -1=传输失败（withRecovery 已尝试重建会话）。
+     *  上层据此分别计入「已删除 / 受保护跳过 / 失败」三态。 */
+    fun deleteObject(handle: Int): Int = withRecovery {
+        val resp = transaction(OP_DELETE_OBJECT, intArrayOf(handle))
+        if (resp.code != RESP_OK) {
+            Log.w("UsbPtp", "DeleteObject($handle)=0x${(resp.code and 0xFFFF).toString(16)}")
+        }
+        resp.code
+    } ?: -1
+
+    /** 存储容量（0x1004 GetStorageIDs → 0x1005 GetStorageInfo，取首个存储）。
+     *  ZENCHE 的连接详情无容量展示；导入后让用户删前可判断卡剩余空间。
+     *  dataset 布局（PTP 标准）：StorageType u16@0 / FilesystemType u16@2 /
+     *  AccessCapability u16@4 / MaxCapacity u64@6 / FreeSpaceInBytes u64@14 /
+     *  FreeSpaceInImages u32@22 / StorageDescription PSTR@26。 */
+    fun storageInfo(): CamStorageInfo? = withRecovery {
+        val stor = transaction(OP_GET_STORAGE_IDS)
+        val ids = parseUint32Array(stor.data)
+        if (stor.code != RESP_OK || ids == null || ids.isEmpty()) {
+            Log.w("UsbPtp", "GetStorageIDs 失败 code=0x${(stor.code and 0xFFFF).toString(16)}")
+            return@withRecovery null
+        }
+        val r = transaction(OP_GET_STORAGE_INFO, intArrayOf(ids[0]))
+        if (r.code != RESP_OK || r.data.size < 26) {
+            Log.w("UsbPtp", "GetStorageInfo 失败 code=0x${(r.code and 0xFFFF).toString(16)}")
+            return@withRecovery null
+        }
+        parseStorageInfo(r.data)
+    }
+
+    /** 对象写保护预检（GetObjectInfo.ProtectionStatus）：删除前弹窗标注受保护张数。
+     *  null = 查询失败（不阻塞删除流程，交由相机端拒绝码兜底）。 */
+    fun objectProtected(handle: Int): Boolean? = withRecovery {
+        objectProtected[handle]?.let { return@withRecovery it }
+        val info = fetchObjectInfo(handle) ?: return@withRecovery null
+        objectProtected[handle] = info.protected
+        info.protected
+    }
+
+    private fun parseStorageInfo(d: ByteArray): CamStorageInfo? {
+        if (d.size < 26) return null
+        val bb = java.nio.ByteBuffer.wrap(d).order(ByteOrder.LITTLE_ENDIAN)
+        bb.position(6)
+        val capacity = bb.long
+        val free = bb.long
+        val freeImages = bb.int.toLong() and 0xFFFFFFFFL
+        val label = pstr(bb) ?: ""
+        return CamStorageInfo(capacity, free, freeImages, label)
+    }
+
     /** GetPartialObject 偏移读：与 nativePreviewNative(handle, offset, maxLen) 等价。
      *  双通道自适应：标准 0x1014（maxBytes u16 陷阱→clamp 32KB）失败自动切换
      *  MTP 扩展 0x95C1 GetPartialObject64（64 位 offset/length），并锁定成功通道。 */
@@ -418,6 +486,7 @@ class UsbPtpSession(
         try { connection?.close() } catch (_: Throwable) {}
         connection = null
         objectSizes.clear()
+        objectProtected.clear()
         Log.i("UsbPtp", "会话关闭")
     }
 
@@ -428,7 +497,8 @@ class UsbPtpSession(
         val name: String,
         val stamp: String,      // "YYYYMMDD-HHMMSS"
         val size: Long,
-        val isAssociation: Boolean
+        val isAssociation: Boolean,
+        val protected: Boolean = false
     ) {
         // 第 4 段 = 真实文件名：RAW+JPG 合并配对需要文件编号（同张 JPG/NEF 同名），
         // 秒级时间戳在连拍时会撞车。解析处 split(':', limit = 4) 兼容无文件名的 Wi-Fi 行。
@@ -546,7 +616,7 @@ class UsbPtpSession(
         val bb = ByteBuffer.wrap(d).order(ByteOrder.LITTLE_ENDIAN)
         bb.int                       // StorageID
         val format = bb.short.toInt() and 0xFFFF
-        bb.short                     // ProtectionStatus
+        val protection = bb.short.toInt() and 0xFFFF   // ProtectionStatus：0=无保护，非0=受保护
         val size = bb.int.toLong() and 0xFFFFFFFFL
         repeat(7) { bb.int }         // Thumb 尺寸×3 + 图像尺寸×2 + 位深 + Parent
         bb.short                     // AssociationType
@@ -593,7 +663,7 @@ class UsbPtpSession(
         val stamp = captured.takeIf { it.length >= 15 && it[8] == 'T' }
             ?.replaceRange(8, 9, "-") ?: ""
         objectSizes[handle] = size
-        return ObjInfo(handle, fname, stamp, size, isAssociation = false)
+        return ObjInfo(handle, fname, stamp, size, isAssociation = false, protected = protection != 0)
     }
     private var infoFailDetail = ""
 

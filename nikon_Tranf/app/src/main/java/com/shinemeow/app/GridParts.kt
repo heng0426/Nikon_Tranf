@@ -269,6 +269,10 @@ internal fun MainActivity.PairCell(
                 if (pair.jpgDownloaded) DLBadge("J", UiSpec.JPG_TEAL)
                 if (pair.nefDownloaded) DLBadge("N", UiSpec.NEF_PURPLE)
             }
+            // 右上保护标：相机端写保护（机内删除会被拒绝；合并格任一格式受保护即亮）
+            if (pair.jpg?.isProtected?.value == true || pair.nef?.isProtected?.value == true) {
+                Box(Modifier.align(Alignment.TopEnd).padding(4.dp)) { ProtBadge() }
+            }
             if (selected) {
                 Box(Modifier.fillMaxSize().background(UiSpec.selOverlay(vm.darkModeOn)))
                 Box(Modifier.fillMaxSize().border(UiSpec.SEL_BORDER_W, UiSpec.accent(vm.darkModeOn), RoundedCornerShape(UiSpec.ROUND_SMALL)))
@@ -296,13 +300,47 @@ internal fun MainActivity.MiniBadge(text: String, bg: Color) {
 
     /** 已下载小圆标（✓J / ✓N） */
     @Composable
-internal fun MainActivity.DLBadge(label: String, bg: Color) {
+    internal fun MainActivity.DLBadge(label: String, bg: Color) {
         Box(
             Modifier
                 .background(bg, CircleShape)
                 .padding(horizontal = 6.dp, vertical = 1.dp)
         ) {
             Text("✓$label", color = Color.White, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+
+    /** 保护小锁标：红圆底 + 白锁（相机端写保护，机内删除会被相机拒绝）。
+     *  material-icons-core 无 Lock 图标，Canvas 自绘（与 TrashIcon 同风格）。
+     *  18dp 圆标比文字徽章窄，不抢格式角标与已下载标记的位置。 */
+    @Composable
+    internal fun MainActivity.ProtBadge() {
+        Box(
+            Modifier
+                .size(18.dp)
+                .background(UiSpec.error(vm.darkModeOn), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            androidx.compose.foundation.Canvas(Modifier.size(11.dp)) {
+                val w = size.width
+                val h = size.height
+                val c = Color.White
+                // 锁梁：上半圆环
+                drawArc(
+                    color = c,
+                    startAngle = 180f, sweepAngle = 180f, useCenter = false,
+                    topLeft = androidx.compose.ui.geometry.Offset(w * 0.27f, 0f),
+                    size = androidx.compose.ui.geometry.Size(w * 0.46f, h * 0.40f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = w * 0.13f)
+                )
+                // 锁体：圆角横条
+                drawRoundRect(
+                    color = c,
+                    topLeft = androidx.compose.ui.geometry.Offset(w * 0.12f, h * 0.46f),
+                    size = androidx.compose.ui.geometry.Size(w * 0.76f, h * 0.48f),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.12f)
+                )
+            }
         }
     }
 
@@ -412,6 +450,10 @@ internal fun MainActivity.GridCell(
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
+            }
+            // 右上保护标：相机端写保护（机内删除会被拒绝）
+            if (row.isProtected.value) {
+                Box(Modifier.align(Alignment.TopEnd).padding(4.dp)) { ProtBadge() }
             }
             // 选中态：绿色边框 + 中央勾
             if (row.selected.value) {

@@ -467,6 +467,9 @@ class MainActivity : ComponentActivity() {
         BackHandler(enabled = showDownloads) { showDownloads = false }
         BackHandler(enabled = showSettings) { showSettings = false }
 
+        // 机内删除后预览停留：rows 快照缩短 → Pager 当前页不变、自然落到下一张
+        // （用户要求的行为）；删到末尾越界时由 Pager 内 LaunchedEffect(rows.size) 负责关闭
+
         // 毛玻璃：预览打开时主界面内容实时模糊（API31+，低版本自动退化为半透明黑）
         val previewing = (mergeOn && pairPreviewIndex >= 0) || (!mergeOn && previewIndex >= 0)
         Box(Modifier.fillMaxSize()) {
@@ -661,6 +664,37 @@ class MainActivity : ComponentActivity() {
                                     "已连接：$cm ($cs) · ${if (isUsb) "USB" else connectedIp.value}",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = UiSpec.connChipText(vm.darkModeOn, isUsb)
+                                )
+                                // 存储容量（0x1005 GetStorageInfo；相机不报/读取失败时隐藏该行）
+                                val st = vm.camStorage.value
+                                if (st != null) {
+                                    Text(
+                                        "存储：剩余 ${humanSize(st.free)} / ${humanSize(st.capacity)}" +
+                                            if (st.freeImages >= 0) "（约 ${st.freeImages} 张）" else "",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = UiSpec.connChipText(vm.darkModeOn, isUsb)
+                                            .copy(alpha = 0.75f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                // 保护状态（诊断行）：受保护张数 + 扫描状态。
+                                // 有命中就直接显示张数（不再提示"不提供"），避免误导。
+                                val protN = vm.protectedCount.value
+                                val ps = vm.protScanState.value
+                                val suffix = when {
+                                    protN > 0 -> ""
+                                    ps == "running" -> "（扫描中…）"
+                                    ps == "unsupported" -> "（相机不提供保护状态）"
+                                    else -> ""
+                                }
+                                Text(
+                                    "保护：$protN 张$suffix",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (protN > 0) UiSpec.error(vm.darkModeOn)
+                                    else UiSpec.connChipText(vm.darkModeOn, isUsb).copy(alpha = 0.75f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { vm.disconnect() } } }) {
@@ -1217,6 +1251,16 @@ class MainActivity : ComponentActivity() {
                             enabled = total > 0,
                             modifier = Modifier.fillMaxWidth()
                         ) { Text(if (allDownloaded) "所选照片均已下载" else "下载所选（$total）") }
+                        // 机内删除（0x100B，ZENCHE 五端均无）：破坏性操作，
+                        // VM 内预检（队列冲突/写保护）后弹确认框，不在这里直接删
+                        OutlinedButton(
+                            onClick = { scope.launch { withContext(Dispatchers.IO) { vm.requestDelete() } } },
+                            enabled = selCount > 0 && !vm.deleteBusy.value,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = UiSpec.error(vm.darkModeOn)
+                            )
+                        ) { Text(if (vm.deleteBusy.value) "删除预检中…" else "删除所选（$selCount）") }
                         }
                     }
                 }
@@ -1261,6 +1305,13 @@ class MainActivity : ComponentActivity() {
                         row.nef?.let { n ->
                             scope.launch { withContext(Dispatchers.IO) { vm.downloadOne(n) } }
                         }
+                    },
+                    onDelete = { pair ->
+                        // 合并对删除 = 该张 JPG+NEF 一并删（确认框标注总张数）
+                        val targets = listOfNotNull(pair.jpg, pair.nef)
+                        if (targets.isNotEmpty()) {
+                            scope.launch { withContext(Dispatchers.IO) { vm.requestDelete(targets) } }
+                        }
                     }
                 )
             } else if (!mergeOn && previewIndex >= 0 && visible.isNotEmpty()) {
@@ -1295,11 +1346,66 @@ class MainActivity : ComponentActivity() {
                     },
                     onDownload = { row ->
                         scope.launch { withContext(Dispatchers.IO) { vm.downloadOne(row) } }
+                    },
+                    onDelete = { row ->
+                        scope.launch { withContext(Dispatchers.IO) { vm.requestDeleteOne(row) } }
                     }
                 )
             }
             // 筛选卡片（底部弹出，实时生效）
             if (showFilter) FilterSheet(onDismiss = { showFilter = false })
+            // 机内删除确认框（VM 预检完成后弹出）：
+            //   全部受保护 → 阻断式告知（无删除按钮，引导去机身取消保护）；
+            //   部分受保护 → 正常确认 + 标注将被跳过的张数；
+            //   无保护     → 正常确认。
+            vm.deletePlan.value?.let { plan ->
+                val allProt = plan.protectedCount > 0 && plan.protectedCount >= plan.total
+                AlertDialog(
+                    onDismissRequest = { vm.cancelDeletePlan() },
+                    title = { Text(if (allProt) "无法删除" else "删除相机中的 ${plan.total} 张照片？") },
+                    text = {
+                        Text(
+                            buildString {
+                                if (allProt) {
+                                    append("所选 ").append(plan.total)
+                                        .append(" 张照片在相机中设了保护，相机拒绝删除。\n")
+                                    append("请先在相机上取消保护（播放/菜单里的「保护」），再回本 App 删除。")
+                                } else {
+                                    append("照片将从相机存储卡中永久删除，此操作不可恢复。\n")
+                                    append("已下载到手机的副本不受影响。")
+                                    if (plan.protectedCount > 0) {
+                                        append("\n\n其中 ").append(plan.protectedCount)
+                                            .append(" 张在相机中设了保护，将被跳过。")
+                                    }
+                                }
+                            }
+                        )
+                    },
+                    confirmButton = {
+                        if (allProt) {
+                            TextButton(onClick = { vm.cancelDeletePlan() }) { Text("好") }
+                        } else {
+                            TextButton(onClick = {
+                                scope.launch { withContext(Dispatchers.IO) { vm.confirmDelete() } }
+                            }) { Text("删除", color = UiSpec.error(vm.darkModeOn)) }
+                        }
+                    },
+                    dismissButton = if (allProt) null else {
+                        { TextButton(onClick = { vm.cancelDeletePlan() }) { Text("取消") } }
+                    }
+                )
+            }
+            // 机内删除结果汇总（单次展示，点「好」消散）
+            vm.deleteResult.value?.let { msg ->
+                AlertDialog(
+                    onDismissRequest = { vm.dismissDeleteResult() },
+                    title = { Text("删除完成") },
+                    text = { Text(msg) },
+                    confirmButton = {
+                        TextButton(onClick = { vm.dismissDeleteResult() }) { Text("好") }
+                    }
+                )
+            }
             // 热点未开启提醒（本 App 主拓扑 = 相机连手机热点）
             if (hotspotHint) {
                 AlertDialog(

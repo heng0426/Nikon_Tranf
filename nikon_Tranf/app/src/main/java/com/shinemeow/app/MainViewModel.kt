@@ -37,6 +37,10 @@ class PhotoRow(val name: String, val handle: Int, val type: String, val stamp: S
     val preview = mutableStateOf<Bitmap?>(null)
     val selected = mutableStateOf(false)
     val downloaded = mutableStateOf(false)
+    /** 相机端写保护（GetObjectInfo.ProtectionStatus != 0）：机内删除会被相机拒绝。
+     *  三个来源：①枚举后后台渐进扫描（事前显示徽标）②删除预检（选中即查）
+     *  ③0x2009 失败学习（相机端确认受保护后回写）。 */
+    val isProtected = mutableStateOf(false)
     /** 格子是否在屏幕上：由 GridCell 进入/离开组合维护。滑动中读回的位图若格子
      *  已滚出屏幕则只写 LRU 缓存、不写 preview —— 避免滑动中位图填充触发的重组风暴。 */
     @Volatile var onScreen = false
@@ -216,6 +220,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             connectedIp.value = ""
             connText.value = "正在读取照片列表…"
             uiLog = listFiles()
+            refreshCamStorage()      // 容量展示（连接详情浮层）
             val model = session.modelInfo.split("|").first()
             connText.value = "USB 已连接 · $model"
             Log.i("UsbPtp", "USB 直连建立: ${session.modelInfo} (auto=$auto)")
@@ -1402,6 +1407,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connDetail.value = info
         connText.value = "正在读取照片列表…"
         uiLog = listFiles()
+        refreshCamStorage()          // 容量展示（连接详情浮层）
         connText.value = "$model ($serial) · $ip"
         connPhase.value = "connected"
         everConnected = true
@@ -1528,6 +1534,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         photoRows.addAll(parsed)
         rebuildRowIndex()
         refreshPairRows()                 // 枚举线程上预构建配对缓存（滑动主线程零重算）
+        startProtectionScan(parsed)       // 后台渐进采集保护状态（网格徽标 + 删除预警）
         displayLimit.value = if (chunkedLoad.value) chunkSize.value else Int.MAX_VALUE   // 重新枚举 → 分块进度重置
         val autoPreview = prefs.getBoolean("set_auto_preview", true)
         if (autoPreview) {
@@ -3230,6 +3237,249 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         showConnDetail.value = false
         pendingChannel.value = null
         Log.i("GPhoto2", "手动断开连接")
+        camStorage.value = null
+        deletePlan.value = null
+        deleteResult.value = null
+    }
+
+    /* ---------- 机内删除（0x100B DeleteObject）+ 存储容量（0x1005）----------
+     * ZENCHE 五端均无机内删除，对标落地任务 7。双通道分发：
+     *   USB   → UsbPtpSession.deleteObject / storageInfo / objectProtected
+     *   Wi-Fi → nativeDeleteNative / nativeStorageInfoNative / nativeObjectProtectedNative
+     * 流程：requestDelete 队列冲突前置拦截 + 写保护预检（IO 线程）→ deletePlan
+     * 弹确认框 → confirmDelete 逐句柄执行 → deleteResult 单次汇总对话框。
+     * 删除成功只移除本地枚举行并重建配对缓存；不碰已下载标记与本地文件。 */
+
+    /** 存储容量（连接详情浮层展示；连接成功后刷新，删除成功后刷新） */
+    val camStorage = mutableStateOf<CamStorageInfo?>(null)
+
+    /** 删除确认计划：预检完成后由 UI 弹出确认框（total=张数，protectedCount=受保护将跳过） */
+    data class DeletePlan(val total: Int, val protectedCount: Int, val rows: List<PhotoRow>)
+    val deletePlan = mutableStateOf<DeletePlan?>(null)
+
+    /** 删除结果汇总（单次 AlertDialog 展示；null=不显示） */
+    val deleteResult = mutableStateOf<String?>(null)
+    val deleteBusy = mutableStateOf(false)
+
+    fun dismissDeleteResult() { deleteResult.value = null }
+    fun cancelDeletePlan() { deletePlan.value = null }
+
+    /** 后台刷新存储容量（双通道分发；失败静默留空，不影响主流程） */
+    fun refreshCamStorage() {
+        if (demoMode.value || !connected) { camStorage.value = null; return }
+        Thread {
+            val info = try {
+                synchronized(camMutex) {
+                    usbSession?.storageInfo()
+                        ?: GPhoto2Bridge.nativeStorageInfoNative()?.let { parseCamStorage(it) }
+                }
+            } catch (t: Throwable) {
+                Log.w("GPhoto2", "存储容量读取失败", t)
+                null
+            }
+            camStorage.value = info
+        }.start()
+    }
+
+    private fun parseCamStorage(s: String): CamStorageInfo? {
+        val p = s.split('|')
+        if (p.size < 3) return null
+        return CamStorageInfo(
+            p[0].toLongOrNull() ?: return null,
+            p[1].toLongOrNull() ?: return null,
+            p[2].toLongOrNull() ?: -1L,
+            p.getOrNull(3)?.trim() ?: ""
+        )
+    }
+
+    /* ---------- 保护状态采集（GetObjectInfo.ProtectionStatus）----------
+     * 枚举快路径（0x9434 表 + 句柄位段）不含保护位；删除预检按需查询只覆盖选中项。
+     * 为让网格/预览能"事前"显示保护徽标、删除前给出预警，枚举完成后启用后台
+     * 渐进扫描：新→旧逐句柄查询，命中即回写 row.isProtected（主线程）。
+     * 查询连续失败（通道不支持 0x1008 / 管道损坏）达阈值即静默放弃 —— 保护知识
+     * 另有删除预检 + 0x2009 学习两条兜底路径，不影响主流程。
+     * 代价：886 句柄 × 一次 0x1008 小事务，与缩略图加载共享 camMutex 交替执行。 */
+    private val protScanGen = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** 保护扫描状态（UI 可见诊断）：idle 未开始 / running 扫描中 / done 完成 / unsupported 通道不支持 */
+    val protScanState = mutableStateOf("idle")
+    /** 受保护张数（随渐进扫描增长）；derivedStateOf 保证网格徽标与计数同步刷新 */
+    val protectedCount: State<Int> = derivedStateOf { photoRows.count { it.isProtected.value } }
+
+    fun startProtectionScan(rows: List<PhotoRow>) {
+        if (demoMode.value || !connected) return
+        val gen = protScanGen.incrementAndGet()          // 重新枚举/断开 → 旧扫描自行退出
+        protScanState.value = "running"
+        val ch = if (usbSession != null) "usb" else "wifi"
+        Log.i("GPhoto2", "保护扫描开始：${rows.size} 张（通道=$ch）")
+        Thread {
+            var failStreak = 0
+            var hit = 0
+            var miss = 0
+            for (r in rows) {
+                if (gen != protScanGen.get() || !connected) {
+                    protScanState.value = "idle"        // 断开/重枚举：不留"扫描中"僵尸态
+                    return@Thread
+                }
+                val p = try {
+                    synchronized(camMutex) {
+                        usbSession?.objectProtected(r.handle)
+                            ?: GPhoto2Bridge.nativeObjectProtectedNative(r.handle)
+                                .let { c -> if (c < 0) null else c == 1 }
+                    }
+                } catch (t: Throwable) { null }
+                if (p == null) {
+                    miss++
+                    if (++failStreak >= 6) {
+                        // 通道不配合（0x1008 不支持/管道坏）→ 如实标记，别卡在"扫描中"
+                        protScanState.value = "unsupported"
+                        Log.w("GPhoto2", "保护扫描放弃：连续 6 次查询失败（通道=$ch，多为 0x1008 不支持）")
+                        return@Thread
+                    }
+                    continue
+                }
+                failStreak = 0
+                if (p) {
+                    hit++
+                    mainHandler.post {
+                        if (gen == protScanGen.get()) r.isProtected.value = true
+                    }
+                }
+            }
+            if (gen == protScanGen.get()) protScanState.value = if (miss > 0) "unsupported" else "done"
+            Log.i("GPhoto2", "保护扫描结束：命中=$hit 查询失败=$miss 状态=${protScanState.value}")
+        }.start()
+    }
+
+    /** 选中项收集（与 downloadSelected 同口径：合并模式按选中对展开 JPG/NEF 两张） */
+    private fun collectSelectedRows(): List<PhotoRow> {
+        val rows = mutableListOf<PhotoRow>()
+        if (mergePairs.value) {
+            visiblePairs.filter { it.key in pairSelection.value }.forEach { p ->
+                p.jpg?.let { rows.add(it) }
+                p.nef?.let { rows.add(it) }
+            }
+        } else {
+            photoRows.filter { it.selected.value }.forEach { rows.add(it) }
+        }
+        return rows
+    }
+
+    /** 删除所选 → 预检（IO 线程）→ deletePlan 弹确认框。
+     *  rows=null 取当前多选；非 null = 预览页单张删除入口。
+     *  队列冲突：有选中正在下载/排队即整体拦截（删了正在读的句柄会让该次下载半路失败），
+     *  提示用户先取消下载——不静默删一部分，避免"选了 10 张只删 6 张"的困惑。 */
+    fun requestDelete(rows: List<PhotoRow>? = null) {
+        if (demoMode.value) { uiLog = "演示模式不支持机内删除"; return }
+        if (!connected) { uiLog = "未连接相机，无法删除"; return }
+        if (deleteBusy.value || deletePlan.value != null) return
+        val picked = rows ?: collectSelectedRows()
+        if (picked.isEmpty()) { uiLog = "未选中任何照片"; return }
+        val busy = downloadQueue
+            .filter { it.status.value == QStatus.QUEUED || it.status.value == QStatus.RUNNING }
+            .mapTo(HashSet()) { it.handle }
+        val conflict = picked.count { it.handle in busy }
+        if (conflict > 0) {
+            uiLog = "所选照片中有 $conflict 张正在下载，请先取消或等待完成后再删除"
+            return
+        }
+        deleteBusy.value = true
+        Thread {
+            // 写保护预检：①先看已知状态（后台扫描确认过 / 上次删除被 0x200D 拒过）
+            // ②未知才问相机（0x1008 在 Wi-Fi 传输会话可能不支持 → 失败不计入，
+            //   交由相机端 0x200D 拒绝码兜底，并在删除失败时回写徽标）
+            var prot = 0
+            for (r in picked) {
+                if (r.isProtected.value) { prot++; continue }
+                val p = try {
+                    synchronized(camMutex) {
+                        usbSession?.objectProtected(r.handle)
+                            ?: GPhoto2Bridge.nativeObjectProtectedNative(r.handle)
+                                .let { c -> if (c < 0) null else c == 1 }
+                    }
+                } catch (t: Throwable) { null }
+                if (p == true) {
+                    prot++
+                    mainHandler.post { r.isProtected.value = true }   // 预检确认：回写徽标
+                }
+            }
+            deleteBusy.value = false
+            deletePlan.value = DeletePlan(picked.size, prot, picked)
+        }.start()
+    }
+
+    /** 预览页单张删除入口 */
+    fun requestDeleteOne(row: PhotoRow) = requestDelete(listOf(row))
+
+    /** 确认框「删除」→ IO 线程逐句柄执行（串行 camMutex，与下载互斥）。
+     *  0x2001=已删除；0x200D=受保护/只读（跳过，Z6 II 实测拒绝码）；
+     *  0x2009=句柄无效（同按跳过计）；其他=失败（记响应码）。 */
+    fun confirmDelete() {
+        val plan = deletePlan.value ?: return
+        deletePlan.value = null
+        deleteBusy.value = true
+        Thread {
+            var ok = 0; var prot = 0; var fail = 0
+            val codes = StringBuilder()
+            for (r in plan.rows) {
+                if (!connected) break
+                // 已知受保护（扫描确认 / 上次 0x200D 拒过）：不发命令，直接跳过——
+                // 发了必被拒，还会让整批多等一次往返
+                if (r.isProtected.value) { prot++; continue }
+                val code = try {
+                    synchronized(camMutex) {
+                        usbSession?.deleteObject(r.handle)
+                            ?: GPhoto2Bridge.nativeDeleteNative(r.handle)
+                    }
+                } catch (t: Throwable) { -2 }
+                when {
+                    code == 0x2001 -> { ok++; removePhotoRow(r.handle) }
+                    // 0x200D = PTP_RC_ReadOnlyObject：相机端「保护/只读」（Z6 II 实测拒绝码）。
+                    // 0x2009 = Invalid ObjectHandle 也按受保护计（句柄失效/跨会话旧句柄）。
+                    code == 0x200D || code == 0x2009 -> {
+                        prot++
+                        // 从相机端确认受保护：回写徽标，下次删除前有预警
+                        mainHandler.post { r.isProtected.value = true }
+                    }
+                    else -> {
+                        fail++
+                        if (codes.length < 100)
+                            codes.append("0x").append((code and 0xFFFF).toString(16)).append(' ')
+                    }
+                }
+            }
+            deleteBusy.value = false
+            deleteResult.value = buildString {
+                append("已删除 ").append(ok).append(" 张")
+                if (prot > 0) append("；").append(prot)
+                    .append(" 张受保护已跳过（需在机身上取消「保护」后才能删除）")
+                if (fail > 0) append("；").append(fail).append(" 张失败（").append(codes.toString().trim()).append("）")
+                if (ok + prot + fail < plan.rows.size) append("；连接已中断，剩余未处理")
+            }
+            Log.i("GPhoto2", "机内删除完成: ok=$ok prot=$prot fail=$fail / 共${plan.rows.size}")
+            if (ok > 0) refreshCamStorage()
+        }.start()
+    }
+
+    /** 删除成功后本地行移除 + 选中态同步 + 配对缓存重建（已下载标记与本地文件不动）。
+     *  ⚠️ 必须整体 post 主线程：photoRows 是 SnapshotStateList，IO 线程 removeAll 与
+     *  主线程 derivedStateOf{computeFilteredPhotos()} 的迭代并发 = ConcurrentModificationException
+     *  （实测堆栈 StateListIterator.validateModification ← computeFilteredPhotos，选 4 张删到第 2/3 张即崩，
+     *  且崩溃会中断 confirmDelete 循环导致"删不全"）。计数 ok++ 留在 IO 线程，仅状态变更回主线程。 */
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    private fun removePhotoRow(handle: Int) {
+        mainHandler.post {
+            val row = photoRows.firstOrNull { it.handle == handle } ?: return@post
+            if (row.selected.value) selectedCount.value = (selectedCount.value - 1).coerceAtLeast(0)
+            photoRows.removeAll { it.handle == handle }
+            rowByHandle.remove(handle)
+            refreshPairRows()
+            val alive = pairRowsAll.mapTo(HashSet()) { it.key }
+            if (pairSelection.value.any { it !in alive }) {
+                pairSelection.value = pairSelection.value.filterTo(LinkedHashSet()) { it in alive }
+            }
+        }
     }
 
     /** Wi-Fi 卡内「扫描相机」：直接走网段扫描（跳过上次 IP） */
@@ -3298,6 +3548,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connText.value = "连接已断开 · 点按重连"
         connFailMsg.value = "相机连接已断开（$reason）"
         uiLog = "相机连接已断开（$reason）"
+        camStorage.value = null
+        deletePlan.value = null      // 删除中失联：撤下确认框，confirmDelete 循环自行中断
         Log.i("GPhoto2", "markSessionLost: $reason")
         stopKeepAlive()
     }
