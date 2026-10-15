@@ -23,5 +23,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NikonTransfer"
+rootProject.name = "ShineMeow"
 include(":app")

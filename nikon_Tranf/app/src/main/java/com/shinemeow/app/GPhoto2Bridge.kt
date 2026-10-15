@@ -1,4 +1,4 @@
-package com.example.nikontransfer
+package com.shinemeow.app
 
 object GPhoto2Bridge {
     @Volatile private var libReady = false

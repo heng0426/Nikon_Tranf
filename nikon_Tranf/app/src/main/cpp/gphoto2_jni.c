@@ -74,7 +74,7 @@ static void gp_log_to_logcat(GPLogLevel level, const char *domain,
 
 /* ---------- 0. 初始化库路径（必须在任何 gp_* 之前调用） ---------- */
 JNIEXPORT void JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeSetupLibPaths(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeSetupLibPaths(
         JNIEnv *env, jclass clz, jstring jCamlibs, jstring jIolibs) {
 const char *camlibs = (*env)->GetStringUTFChars(env, jCamlibs, 0);
 const char *iolibs  = (*env)->GetStringUTFChars(env, jIolibs, 0);
@@ -124,7 +124,7 @@ gp_log_add_func(GP_LOG_DEBUG, gp_log_to_logcat, NULL);
  * （gp_port_info_list_load 会给每个端口填好 library_filename），
  * 这也是 gphoto2 命令行工具的标准做法。 */
 JNIEXPORT jint JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeConnect(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeConnect(
         JNIEnv *env, jclass clz, jstring jPath) {
     const char *path = (*env)->GetStringUTFChars(env, jPath, 0);
     CameraAbilitiesList *al = NULL;
@@ -182,7 +182,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeConnect(
 
 /* ---------- 2. 列出某目录下的文件，返回 "name|size|..." 的拼接串 ---------- */
 JNIEXPORT jstring JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeListFiles(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeListFiles(
         JNIEnv *env, jclass clz, jstring jFolder) {
     if (!g_camera) return NULL;
     const char *folder = (*env)->GetStringUTFChars(env, jFolder, 0);
@@ -211,7 +211,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeListFiles(
 
 /* ---------- 2b. 列出某目录下的子文件夹，返回 "name|name|..." 拼接串 ---------- */
 JNIEXPORT jstring JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeListFolders(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeListFolders(
         JNIEnv *env, jclass clz, jstring jFolder) {
     if (!g_camera) return NULL;
     const char *folder = (*env)->GetStringUTFChars(env, jFolder, 0);
@@ -240,7 +240,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeListFolders(
 
 /* ---------- 3. 下载文件，返回字节数组 ---------- */
 JNIEXPORT jbyteArray JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeDownloadFile(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeDownloadFile(
         JNIEnv *env, jclass clz, jstring jFolder, jstring jName) {
     if (!g_camera) return NULL;
     const char *folder = (*env)->GetStringUTFChars(env, jFolder, 0);
@@ -268,7 +268,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeDownloadFile(
 
 /* ---------- 4. 断开 ---------- */
 JNIEXPORT void JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeExit(JNIEnv *env, jclass clz) {
+Java_com_shinemeow_app_GPhoto2Bridge_nativeExit(JNIEnv *env, jclass clz) {
 if (g_camera) {
 gp_camera_exit(g_camera, g_context);
 gp_camera_free(g_camera);
@@ -283,7 +283,7 @@ LOGI("camera closed");
  * 否则相机判定发起方失联（配对状态机不前进、连接可能被丢弃）。
  * 由 Kotlin 后台线程周期调用；libgphoto2 内部锁保证与其它操作串行。 */
 JNIEXPORT jint JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeWaitEvent(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeWaitEvent(
         JNIEnv *env, jclass clz, jint timeoutMs) {
     if (!g_camera) return -1;
     CameraEventType etype = GP_EVENT_UNKNOWN;
@@ -519,7 +519,7 @@ static int pp_cmd_in(int fd, unsigned short op, unsigned int tid,
 }
 
 JNIEXPORT jint JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativePairingProbe(
+Java_com_shinemeow_app_GPhoto2Bridge_nativePairingProbe(
         JNIEnv *env, jclass clz, jstring jIp) {
     const char *ip = (*env)->GetStringUTFChars(env, jIp, 0);
     int result = -100;
@@ -714,7 +714,7 @@ static void transfer_close_locked(void) {
 }
 
 JNIEXPORT void JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeTransferClose(JNIEnv *env, jclass clz) {
+Java_com_shinemeow_app_GPhoto2Bridge_nativeTransferClose(JNIEnv *env, jclass clz) {
     (void) env; (void) clz;
     transfer_close_locked();
     LOGI("tsession: closed");
@@ -733,7 +733,7 @@ static int cmp_u32(const void *a, const void *b) {
 #define HI_IS_JPG(hi) (((hi) & 0xff00u) == 0x2a00u)
 #define HI_IS_NEF(hi) (((hi) & 0xff00u) == 0x0a00u)
 JNIEXPORT jstring JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeListNative(JNIEnv *env, jclass clz) {
+Java_com_shinemeow_app_GPhoto2Bridge_nativeListNative(JNIEnv *env, jclass clz) {
     (void) clz;
     if (g_tfd < 0) return NULL;
 
@@ -852,7 +852,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeListNative(JNIEnv *env, jclas
 
 /* 下载：0x9421 取总大小 → 0x9431 按 64KB 分块循环 → 完整字节数组 */
 JNIEXPORT jbyteArray JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeDownloadNative(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeDownloadNative(
         JNIEnv *env, jclass clz, jint jHandle) {
     (void) clz;
     if (g_tfd < 0) return NULL;
@@ -907,7 +907,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeDownloadNative(
 
 /* 事件消费（配对模式下 0x941c GetEventEx），维持会话健康 */
 JNIEXPORT jint JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeEventPollNative(JNIEnv *env, jclass clz) {
+Java_com_shinemeow_app_GPhoto2Bridge_nativeEventPollNative(JNIEnv *env, jclass clz) {
     (void) env; (void) clz;
     if (g_tfd < 0) return -1;
     unsigned char *d = NULL; int dlen = 0;
@@ -920,7 +920,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeEventPollNative(JNIEnv *env, 
  * JPEG），Kotlin 侧扫描完整 JPEG 段（FFD8..FFD9）解码。配对模式下没有专门的
  * 缩略图指令——预览网格就是从首块数据里抠出完整 JPEG 段。 */
 JNIEXPORT jbyteArray JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativePreviewNative(
+Java_com_shinemeow_app_GPhoto2Bridge_nativePreviewNative(
         JNIEnv *env, jclass clz, jint jHandle, jint jOffset, jint jMaxLen) {
     (void) clz;
     if (g_tfd < 0) return NULL;
@@ -944,7 +944,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativePreviewNative(
 
 /* 对象总大小：0x9421 数据前 8 字节（u64）。下载分块循环用它算进度。 */
 JNIEXPORT jlong JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeObjectSizeNative(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeObjectSizeNative(
         JNIEnv *env, jclass clz, jint jHandle) {
     (void) clz;
     if (g_tfd < 0) return -1;
@@ -964,7 +964,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeObjectSizeNative(
  * 解析相机型号与序列号。返回 "型号|序列号"（如 "Z_6_2|8060212"），失败 NULL。
  * 网段扫描器用它给扫描结果显示「相机名 + IP」。 */
 JNIEXPORT jstring JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeProbeCameraInfo(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeProbeCameraInfo(
         JNIEnv *env, jclass clz, jstring jIp) {
     const char *ip = (*env)->GetStringUTFChars(env, jIp, 0);
     jstring result = NULL;

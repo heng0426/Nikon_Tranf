@@ -1,4 +1,4 @@
-package com.example.nikontransfer
+package com.shinemeow.app
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf

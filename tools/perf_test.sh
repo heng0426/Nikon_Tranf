@@ -8,7 +8,7 @@
 # 读数：logcat -s Perf，一行一条 PERF[tag]
 
 set -u
-PKG=com.example.nikontransfer
+PKG=com.shinemeow.app
 APK="$(dirname "$0")/../nikon_Tranf/app/build/outputs/apk/debug/app-debug.apk"
 
 ADB="${ADB:-}"

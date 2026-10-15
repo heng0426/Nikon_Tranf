@@ -329,7 +329,7 @@ camlib 与 iolib 作为资产打进 APK，运行时解包：
 ### 4.2 CMakeLists.txt（链接预编译的 libgphoto2）
 ```cmake
 cmake_minimum_required(VERSION 3.22)
-project(nikontransfer)
+project(shinemeow)
 set(GP_DIR ${CMAKE_SOURCE_DIR}/../../../libs/gphoto2/${ANDROID_ABI})
 
 add_library(gphoto2 SHARED IMPORTED)
@@ -347,7 +347,7 @@ target_link_libraries(gphoto2_jni gphoto2 gphoto2_port log)
 `app/build.gradle.kts` 关键项：
 ```kotlin
 android {
-    namespace = "com.example.nikontransfer"
+    namespace = "com.shinemeow.app"
     defaultConfig {
         minSdk = 28   // 与 NDK 平台一致：bionic 的 iconv 需要 API 28+
         ndk { abiFilters += "arm64-v8a" }

@@ -1,4 +1,4 @@
-# NikonTransfer
+# ShineMeow
 
 尼康相机 → 安卓手机的照片传输 App：通过 **Wi-Fi（PTP/IP）** 或 **USB 数据线（PTP over bulk）** 直连尼康 Z 系相机，浏览照片网格（JPG + NEF）、全屏预览（高清大图 + EXIF 参数）、单张/批量下载到系统相册。
 
@@ -41,7 +41,7 @@
 
 ```
 nikon_Tranf/                          # Android Studio 工程
-├── app/src/main/java/com/example/nikontransfer/
+├── app/src/main/java/com/shinemeow/app/
 │   ├── MainActivity.kt               # Activity 本体 + MainScreen（连接双卡/网格骨架/多选）
 │   ├── UiSpec.kt                     # 设计令牌中心（动画/圆角/主题色/尺寸/行为参数）
 │   ├── GridParts.kt                  # 网格部件（格子/日期胶囊/筛选面板）

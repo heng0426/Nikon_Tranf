@@ -1,4 +1,4 @@
-package com.example.nikontransfer
+package com.shinemeow.app
 
 import android.Manifest
 import android.content.ContentUris
@@ -163,7 +163,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.example.nikontransfer.ui.theme.NikonTransferTheme
+import com.shinemeow.app.ui.theme.ShineMeowTheme
 import kotlinx.coroutines.Dispatchers
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
@@ -252,11 +252,11 @@ class MainActivity : ComponentActivity() {
     /* ---------- 自动化性能测量入口（仅 debuggable 包注册，release 零影响）----------
      * 存在的理由：手动进设置页开演示模式、再手滑，采样窗口不可控、结果不可复现，
      * 前后对比就没有意义。有了它就能用 adb 跑同一套动作：
-     *   adb shell am start -n com.example.nikontransfer/.MainActivity --ez demo true
-     *   adb shell am broadcast -a com.example.nikontransfer.PERF --es cmd reset
-     *   adb shell am broadcast -a com.example.nikontransfer.PERF --es cmd select --ei n 200
-     *   adb shell am broadcast -a com.example.nikontransfer.PERF --es cmd download --ei n 20
-     *   adb shell am broadcast -a com.example.nikontransfer.PERF --es cmd dump --es tag scroll
+     *   adb shell am start -n com.shinemeow.app/.MainActivity --ez demo true
+     *   adb shell am broadcast -a com.shinemeow.app.PERF --es cmd reset
+     *   adb shell am broadcast -a com.shinemeow.app.PERF --es cmd select --ei n 200
+     *   adb shell am broadcast -a com.shinemeow.app.PERF --es cmd download --ei n 20
+     *   adb shell am broadcast -a com.shinemeow.app.PERF --es cmd dump --es tag scroll
      * 读数走 logcat -s Perf。 */
     private val perfReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -348,14 +348,14 @@ class MainActivity : ComponentActivity() {
         val hz = if (Build.VERSION.SDK_INT >= 30) (display?.refreshRate ?: 60f) else 60f
         PerfTrace.attach(hz)
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
-            val f = IntentFilter("com.example.nikontransfer.PERF")
+            val f = IntentFilter("com.shinemeow.app.PERF")
             // 必须 EXPORTED：adb shell 的 uid 是 2000，NOT_EXPORTED 会把它挡在外面
             // （只放通同 UID / system）。这是 debug 包专属入口，无敏感数据。
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(perfReceiver, f, Context.RECEIVER_EXPORTED)
             else registerReceiver(perfReceiver, f)
         }
         setContent {
-            NikonTransferTheme(dark = vm.darkModeOn) {
+            ShineMeowTheme(dark = vm.darkModeOn) {
                 Surface(Modifier.fillMaxSize()) {
                     MainScreen()
                 }

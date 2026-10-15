@@ -1,4 +1,4 @@
-package com.example.nikontransfer
+package com.shinemeow.app
 
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
@@ -93,7 +93,7 @@ class UsbPtpSession(
         fun requestPermission(ctx: android.content.Context, usbManager: UsbManager, device: UsbDevice) {
             val pi = android.app.PendingIntent.getBroadcast(
                 ctx, 0,
-                android.content.Intent("com.example.nikontransfer.USB_PERMISSION")
+                android.content.Intent("com.shinemeow.app.USB_PERMISSION")
                     .setPackage(ctx.packageName),
                 android.app.PendingIntent.FLAG_MUTABLE
             )

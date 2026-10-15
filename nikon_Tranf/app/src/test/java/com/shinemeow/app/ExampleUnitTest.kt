@@ -1,4 +1,4 @@
-package com.example.nikontransfer
+package com.shinemeow.app
 
 import org.junit.Test
 

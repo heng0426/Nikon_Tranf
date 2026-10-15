@@ -1,4 +1,4 @@
-package com.example.nikontransfer.ui.theme
+package com.shinemeow.app.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

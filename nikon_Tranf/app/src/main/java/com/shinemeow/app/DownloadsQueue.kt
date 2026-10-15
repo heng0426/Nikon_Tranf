@@ -1,4 +1,4 @@
-package com.example.nikontransfer
+package com.shinemeow.app
 
 import android.Manifest
 import android.content.ContentUris
@@ -166,7 +166,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.example.nikontransfer.ui.theme.NikonTransferTheme
+import com.shinemeow.app.ui.theme.ShineMeowTheme
 import kotlinx.coroutines.Dispatchers
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job

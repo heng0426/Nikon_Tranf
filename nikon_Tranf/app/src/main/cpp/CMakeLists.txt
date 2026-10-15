@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(nikontransfer)
+project(shinemeow)
 
 set(GP_DIR ${CMAKE_SOURCE_DIR}/../../../libs/gphoto2/${ANDROID_ABI})
 

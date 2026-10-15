@@ -139,7 +139,7 @@ static GPContext *g_context;
 
 // 1. 连接：Wi-Fi 时 path = "ptpip:192.168.1.66:15740"
 JNIEXPORT jint JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeConnect(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeConnect(
         JNIEnv *env, jobject thiz, jstring jpath) {
     const char *path = (*env)->GetStringUTFChars(env, jpath, 0);
 
@@ -160,7 +160,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeConnect(
 
 // 2. 列出存储卡上的文件
 JNIEXPORT jobjectArray JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeListFiles(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeListFiles(
         JNIEnv *env, jobject thiz, jstring jfolder) {
     // gp_camera_folder_list_files(camera, "/store_00010001/DCIM/100NZ510", &list, ctx)
     // 转成 String[] 返回
@@ -168,7 +168,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeListFiles(
 
 // 3. 下载一张照片（JPEG 或 NEF）
 JNIEXPORT jbyteArray JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeDownloadFile(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeDownloadFile(
         JNIEnv *env, jobject thiz,
         jstring jfolder, jstring jname) {
     CameraFile *file;
@@ -184,7 +184,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeDownloadFile(
 
 // 4. 事件循环：等"相机拍了新照片"（自动传图的核心）
 JNIEXPORT jobjectArray JNICALL   // 返回 [event_type, folder, name]，简化示意
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeWaitEvent(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeWaitEvent(
         JNIEnv *env, jobject thiz, jint timeout_ms) {
     CameraEventType ev; void *data = NULL;
     int ret = gp_camera_wait_for_event(g_camera, timeout_ms, &ev, &data, g_context);
@@ -218,7 +218,7 @@ object GPhoto2Bridge {
 app/
  ├─ src/main/
  │   ├─ cpp/               # JNI + 预编译的 libgphoto2 .so（或 CMake 源码编译）
- │   ├─ java/com/example/nikontransfer/
+ │   ├─ java/com/shinemeow/app/
  │   │   ├─ GPhoto2Bridge.kt        # JNI 声明
  │   │   ├─ service/CameraService.kt# 前台服务：连接保活 + 事件循环
  │   │   ├─ data/PhotoRepository.kt  # Room 记录 + MediaStore 写入

@@ -13,9 +13,9 @@
 1. Android Studio → **New Project**
 2. 模板选 **Empty Activity**（Compose 模板；若列表里有 "Empty Activity (Compose)" 同样可以）
 3. 逐项填写：
-   - Name: `NikonTransfer`
-   - Package name: `com.example.nikontransfer`
-   - Save location: 自选（如 `C:\dev\NikonTransfer`）
+   - Name: `ShineMeow`
+   - Package name: `com.shinemeow.app`
+   - Save location: 自选（如 `C:\dev\ShineMeow`）
    - Language: **Kotlin**
    - Minimum SDK: **API 28 (Android 9.0)**
    - Build configuration language: **Kotlin DSL (build.gradle.kts)**
@@ -27,11 +27,11 @@
 
 ```kotlin
 android {
-    namespace = "com.example.nikontransfer"
+    namespace = "com.shinemeow.app"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.example.nikontransfer"
+        applicationId = "com.shinemeow.app"
         minSdk = 28
         targetSdk = 37
         versionCode = 1
@@ -80,7 +80,7 @@ dependencies {
 
 ## 第 3 步：放置预编译的 .so 和头文件
 
-在 Windows 资源管理器操作（假设工程在 `C:\dev\NikonTransfer`）：
+在 Windows 资源管理器操作（假设工程在 `C:\dev\ShineMeow`）：
 
 1. 建 `app\libs\gphoto2\arm64-v8a\` 目录
 2. 从 `C:\dev\gp-android\lib\` 拷入：
@@ -125,7 +125,7 @@ app/src/main/assets/gphoto2/
 
 ```cmake
 cmake_minimum_required(VERSION 3.22)
-project(nikontransfer)
+project(shinemeow)
 
 set(GP_DIR ${CMAKE_SOURCE_DIR}/../../../libs/gphoto2/${ANDROID_ABI})
 
@@ -166,7 +166,7 @@ static GPContext *g_context = NULL;
 
 /* ---------- 0. 初始化库路径（必须在任何 gp_* 之前调用） ---------- */
 JNIEXPORT void JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeSetupLibPaths(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeSetupLibPaths(
         JNIEnv *env, jclass clz, jstring jCamlibs, jstring jIolibs) {
     const char *camlibs = (*env)->GetStringUTFChars(env, jCamlibs, 0);
     const char *iolibs  = (*env)->GetStringUTFChars(env, jIolibs, 0);
@@ -179,7 +179,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeSetupLibPaths(
 
 /* ---------- 1. 连接相机：path 形如 "ptpip:192.168.1.66" ---------- */
 JNIEXPORT jint JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeConnect(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeConnect(
         JNIEnv *env, jclass clz, jstring jPath) {
     const char *path = (*env)->GetStringUTFChars(env, jPath, 0);
     g_context = gp_context_new();
@@ -206,7 +206,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeConnect(
 
 /* ---------- 2. 列出某目录下的文件，返回 "name|size|..." 的拼接串 ---------- */
 JNIEXPORT jstring JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeListFiles(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeListFiles(
         JNIEnv *env, jclass clz, jstring jFolder) {
     if (!g_camera) return NULL;
     const char *folder = (*env)->GetStringUTFChars(env, jFolder, 0);
@@ -235,7 +235,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeListFiles(
 
 /* ---------- 3. 下载文件，返回字节数组 ---------- */
 JNIEXPORT jbyteArray JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeDownloadFile(
+Java_com_shinemeow_app_GPhoto2Bridge_nativeDownloadFile(
         JNIEnv *env, jclass clz, jstring jFolder, jstring jName) {
     if (!g_camera) return NULL;
     const char *folder = (*env)->GetStringUTFChars(env, jFolder, 0);
@@ -263,7 +263,7 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeDownloadFile(
 
 /* ---------- 4. 断开 ---------- */
 JNIEXPORT void JNICALL
-Java_com_example_nikontransfer_GPhoto2Bridge_nativeExit(JNIEnv *env, jclass clz) {
+Java_com_shinemeow_app_GPhoto2Bridge_nativeExit(JNIEnv *env, jclass clz) {
     if (g_camera) {
         gp_camera_exit(g_camera, g_context);
         gp_camera_free(g_camera);
@@ -274,11 +274,11 @@ Java_com_example_nikontransfer_GPhoto2Bridge_nativeExit(JNIEnv *env, jclass clz)
 }
 ```
 
-> 注意：Java 方法名必须与包名严格对应 `Java_com_example_nikontransfer_GPhoto2Bridge_nativeXxx`。如果你改了包名/类名，这里要同步改。
+> 注意：Java 方法名必须与包名严格对应 `Java_com_shinemeow_app_GPhoto2Bridge_nativeXxx`。如果你改了包名/类名，这里要同步改。
 
 ## 第 7 步：Kotlin 桥接类 + assets 解包
 
-`app/src/main/java/com/example/nikontransfer/GPhoto2Bridge.kt`：
+`app/src/main/java/com/shinemeow/app/GPhoto2Bridge.kt`：
 
 ```kotlin
 object GPhoto2Bridge {
@@ -338,7 +338,7 @@ object GPhoto2Bridge {
 替换 `MainActivity.kt`（最小可用版）：
 
 ```kotlin
-package com.example.nikontransfer
+package com.shinemeow.app
 
 import android.content.ContentValues
 import android.content.Context

@@ -1,4 +1,4 @@
-package com.example.nikontransfer
+package com.shinemeow.app
 
 import android.app.Application
 import android.content.BroadcastReceiver
@@ -94,7 +94,7 @@ data class DlPhotoStats(
  *  ViewModel 跨重建存活 —— 前台服务维持的相机会话不会被 UI 重置丢掉。 */
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val ACTION_USB_PERMISSION = "com.example.nikontransfer.USB_PERMISSION"
+    private val ACTION_USB_PERMISSION = "com.shinemeow.app.USB_PERMISSION"
 
 
     private val ctx: Context get() = getApplication()
@@ -562,10 +562,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /* ---------- 已下载标记（跨会话持久化，键 = 合成文件名）---------- */
     private val downloadedNames = mutableStateOf<Set<String>>(emptySet())
 
-    /* ---------- 存储位置（Q1=A 默认 Pictures/NikonTransfer/<拍摄日期>/，可 SAF 自定义）---------- */
+    /* ---------- 存储位置（Q1=A 默认 Pictures/ShineMeow/<拍摄日期>/，可 SAF 自定义）---------- */
     val dateFolderOn = mutableStateOf(true)          // 按拍摄日期文件夹保存，默认开（Q3=A）
     val customDirUri = mutableStateOf<String?>(null) // SAF tree URI，null = 默认位置
-    val dirDisplay = mutableStateOf("Pictures/NikonTransfer")
+    val dirDisplay = mutableStateOf("Pictures/ShineMeow")
 
     fun setDateFolder(on: Boolean) {
         dateFolderOn.value = on
@@ -583,7 +583,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshDirDisplay() {
         val u = customDirUri.value
         if (u == null) {
-            dirDisplay.value = "Pictures/NikonTransfer（默认）"
+            dirDisplay.value = "Pictures/ShineMeow（默认）"
             return
         }
         try {
@@ -626,7 +626,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 col,
                 arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
                 "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? OR ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
-                arrayOf("Pictures/NikonTransfer%", "Download/NikonTransfer%"),
+                arrayOf("Pictures/ShineMeow%", "Download/ShineMeow%"),
                 null
             )?.use { c ->
                 while (c.moveToNext()) c.getString(0)?.let { out.add(it) }
@@ -699,7 +699,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 统计数据源与保存逻辑对齐（两处同时统计——换过目录的旧文件也真实占用空间）：
-     *  ① 默认位置（MediaStore）：Pictures/NikonTransfer% + NEF 回退 Download/NikonTransfer%；
+     *  ① 默认位置（MediaStore）：Pictures/ShineMeow% + NEF 回退 Download/ShineMeow%；
      *  ② 自定义目录（SAF tree）：根 + 日期子目录（写入最多两级，遍历同深防失控）。
      *  按扩展名分类：jpg/jpeg → JPG，nef/nrw → RAW（尼康 RAW 家族），其余忽略。 */
     private fun computeDownloadStats(): DlPhotoStats {
@@ -720,7 +720,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 col,
                 arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.SIZE),
                 "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? OR ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
-                arrayOf("Pictures/NikonTransfer%", "Download/NikonTransfer%"),
+                arrayOf("Pictures/ShineMeow%", "Download/ShineMeow%"),
                 null
             )?.use { c ->
                 while (c.moveToNext())
@@ -1808,7 +1808,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 默认 MediaStore 位置
         return try {
             val rel = if (dateFolderOn.value && dateSub != null)
-                "Pictures/NikonTransfer/$dateSub" else "Pictures/NikonTransfer"
+                "Pictures/ShineMeow/$dateSub" else "Pictures/ShineMeow"
             // NEF（raw 图像，Android 10+ 识别为 image media）必须走 Images 集合：
             // Files 集合只允许 Download/Documents 路径， Pictures 会直接被拒（实测异常见日志）。
             if (type.equals("NEF", true) && android.os.Build.VERSION.SDK_INT >= 29) {
@@ -1827,7 +1827,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     // 个别系统对 Images+raw 校验严格 → 回退 Files 集合（只能 Download/）
                     Log.w("GPhoto2", "NEF 写 Pictures 失败，回退 Download", t)
                     val dlRel = if (dateFolderOn.value && dateSub != null)
-                        "Download/NikonTransfer/$dateSub" else "Download/NikonTransfer"
+                        "Download/ShineMeow/$dateSub" else "Download/ShineMeow"
                     val values = ContentValues().apply {
                         put(MediaStore.MediaColumns.DISPLAY_NAME, name)
                         put(MediaStore.MediaColumns.MIME_TYPE, mime)

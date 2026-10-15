@@ -1,4 +1,4 @@
-package com.example.nikontransfer.ui.theme
+package com.shinemeow.app.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -7,13 +7,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
-import com.example.nikontransfer.UiSpec
+import com.shinemeow.app.UiSpec
 
 /** 应用主题：dark = 深色模式开关（设置项，默认 false = 浅色）。
  *  colorScheme 随 UiSpec 当前配色主题构造 —— 按钮/开关/复选框/滑块/TextButton
  *  等所有读 MaterialTheme.colorScheme.primary 的控件都随主题联动切换。 */
 @Composable
-fun NikonTransferTheme(
+fun ShineMeowTheme(
     dark: Boolean = false,
     content: @Composable () -> Unit
 ) {

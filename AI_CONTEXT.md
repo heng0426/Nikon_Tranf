@@ -12,7 +12,7 @@
 通过 **Wi-Fi（PTP/IP）** 或 **USB 线（PTP over bulk）** 连接尼康 Z 系相机，浏览照片网格（JPG+NEF）、
 全屏预览（高清大图 + EXIF 参数胶囊）、单张/批量下载到系统相册。
 
-- 包名：`com.example.nikontransfer`
+- 包名：`com.shinemeow.app`
 - 实测相机：**Nikon Z 6_2**（序列号 0000008060212），固件 USB PTP 有 **83 个操作、无任何部分读取能力**（详见 §6 quirks）
 - 实测手机：小米 24129PN74C，Android 16（API 37），**120Hz 屏**
 
@@ -42,7 +42,7 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 - 实测设备 adb 序列号 `4e465073`；**注意手机只有一个 USB-C 口**——接电脑（adb）和接相机（OTG）互斥，调试 USB 通道时 adb 会断开。
 - `screen_off_timeout` 曾被改为 10 分钟（`settings put system screen_off_timeout 600000`），`svc power stayon usb` 已开启。
 
-## 3. 源码地图（全部在 `app/src/main/java/com/example/nikontransfer/`）
+## 3. 源码地图（全部在 `app/src/main/java/com/shinemeow/app/`）
 
 **UI 层按界面拆成扩展函数文件**（`internal fun MainActivity.Xxx`，共享 Activity 的 internal 成员；改 UI 先定位文件再动手）：
 
@@ -150,15 +150,15 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 
 ```bash
 # 帧数据（程序化滑动后）：聚合 percentile + 最近 120 帧分解
-adb shell dumpsys gfxinfo com.example.nikontransfer reset
+adb shell dumpsys gfxinfo com.shinemeow.app reset
 adb shell input swipe 400 1800 400 500 120     # fling；慢滑改 duration=600
-adb shell dumpsys gfxinfo com.example.nikontransfer framestats > frames.txt
+adb shell dumpsys gfxinfo com.shinemeow.app framestats > frames.txt
 # framestats 列名（小米 API37）：Flags,FrameTimelineVsyncId,IntendedVsync,...,FrameCompleted,...
 # 分段：anim=PerformTraversalsStart-AnimationStart（重组所在）；解析脚本见 doc/analyze_gfx2.py
 
 # 方法级采样（simpleperf 在小米内核被拒 perf_event，用这个替代）
-adb shell am profile start --sampling 1000 com.example.nikontransfer /data/local/tmp/perf.trace
-adb shell am profile stop com.example.nikontransfer
+adb shell am profile start --sampling 1000 com.shinemeow.app /data/local/tmp/perf.trace
+adb shell am profile stop com.shinemeow.app
 # ART trace v3 格式：数据段在 "*end\n" 后有 "SLOW" 4 字节 magic 要跳过；解析脚本 doc/parse_art_trace.py
 
 # 常用日志过滤
@@ -187,7 +187,7 @@ adb logcat -d | grep -E "UsbPtp|GPhoto2"
 
 **已完成**：Wi-Fi 全功能（成熟；递归枚举+0x9434 并集后 886/886 张全可见）；USB 直连全链路（0x9434 快路径枚举 ~1 秒、表空回退旧路径/发现/权限/去重/自适应文件名/整对象下载/GetThumb 缩略图/NEF 内存切片高清/EXIF/管道自愈）；连接 UI 重构（全屏双卡/紧凑重连条/ConnInfoCard 信息卡片带动画、Wi-Fi 可取消+USB 接力、USB 读取进度并入信息卡片不再跳独立页）；网格性能优化四件套 + 合并模式配对缓存 + 滚动条快拖 dispatchRawDelta 重写 + 强制 120Hz（HyperOS 类别限频规避，见 §9#11）；日期折叠（合并+文件模式，"只藏不见"）；滚动条显示阈值设置（开关+展开阈值选择器）；**分块加载**（可关，每块 50/100/200/500，滑近末尾自动追加，置顶胶囊显示"已加载 X/Y"）；下载队列改版（缩略图行、卡片化进度填充铺卡、汇总双胶囊+总进度条、全部取消、顶栏角标替换图标+数字滚动、tnum 等宽数字）；预览页重构（图层分离、EXIF 淡入、图片名称+日期胶囊、下载进度进按钮、40dp 锁高、配色与队列同步）；多选「选当天」；**UI 设计令牌中心 UiSpec.kt**（动画三档/圆角双档/成对主题色/布局尺寸/行为参数，约 70 处散值已接线）；**UI 按界面拆文件**（GridParts/PreviewPagers/SettingsScreens/DownloadsQueue/CardsIcons，MainActivity 从 3964 行瘦到 1363 行）；设置页卡片化（分组色块图标/动作胶囊 ActionPill/行标题 onSurface）。
 
-**2026-10-08 ~ 10-14 新增**：**Wi-Fi 发现与路由重写**（上次 IP → mDNS 主路径 → 网段扫描兜底；分层网络策略——热点网段直连免绑/受管网段 bindProcessToNetwork，删掉反射+Parcel 伪造 Network 的热点 netId 绑定；修复 MIUI 热点非受管黑洞、移动数据抢默认路由、扫描超时漏相机等系列问题）；**双通道下载统一 1MB 偏移读分块管线**（Wi-Fi 0x9431 / USB 0x101B，逐块进度+实时速度；USB 高清预览同构管线）；下载队列第二轮改版（**总览卡**恒显+阶段化速率排+字节权重进度、队列行**滑动移出**、两段式全部取消、**进度读取下沉绘制阶段线性补间零重组**）；顶栏扩展（**合并 JPG/NEF 快捷开关**类型徽章样式、**短⇆长反转徽章**、三页状态栏高度自适应）；**顶栏上边距可调设置**（`set_topbar_gap`，外观分组 −/+ 步进 2dp，0~32，三页共用即时生效）；**短/长按反转开关**（开=短按选中、长按进预览，关=默认行为）；设置·存储**已下载照片统计**（JPG/RAW 计数与占用）；设置·**性能/诊断**分区 + `PerfTrace.kt` App 内帧率采样（相机连着无 adb 时的尺子）；UiSpec 令牌二次收敛（16 个新令牌替换 ~40 处散值）；置顶胶囊收起当天+滚动自动对齐；筛选卡下载状态改单选三按钮；连接指示图标点击详情浮层；同秒照片排序修复。
+**2026-10-08 ~ 10-14 新增**：**Wi-Fi 发现与路由重写**（上次 IP → mDNS 主路径 → 网段扫描兜底；分层网络策略——热点网段直连免绑/受管网段 bindProcessToNetwork，删掉反射+Parcel 伪造 Network 的热点 netId 绑定；修复 MIUI 热点非受管黑洞、移动数据抢默认路由、扫描超时漏相机等系列问题）；**双通道下载统一 1MB 偏移读分块管线**（Wi-Fi 0x9431 / USB 0x101B，逐块进度+实时速度；USB 高清预览同构管线）；下载队列第二轮改版（**总览卡**恒显+阶段化速率排+字节权重进度、队列行**滑动移出**、两段式全部取消、**进度读取下沉绘制阶段线性补间零重组**）；顶栏扩展（**合并 JPG/NEF 快捷开关**类型徽章样式、**短⇆长反转徽章**、三页状态栏高度自适应）；**顶栏上边距可调设置**（`set_topbar_gap`，外观分组 −/+ 步进 2dp，0~32，三页共用即时生效）；**短/长按反转开关**（开=短按选中、长按进预览，关=默认行为）；设置·存储**已下载照片统计**（JPG/RAW 计数与占用）；设置·**性能/诊断**分区 + `PerfTrace.kt` App 内帧率采样（相机连着无 adb 时的尺子）；UiSpec 令牌二次收敛（16 个新令牌替换 ~40 处散值）；置顶胶囊收起当天+滚动自动对齐；筛选卡下载状态改单选三按钮；连接指示图标点击详情浮层；同秒照片排序修复。**2026-10-14 应用更名**：品牌名 NikonTransfer→**ShineMeow**（显示名「拾影喵」，strings.xml），包名 `com.example.nikontransfer`→`com.shinemeow.app`（目录搬移 `com/shinemeow/app`、JNI 符号 `Java_com_shinemeow_app_*`、CMake project、Theme.ShineMeow/ShineMeowTheme、全部文档与 perf 脚本同步替换）；因应用身份变更已卸载重装，**应用设置重置**（SharedPreferences 键值清空，需重配）。
 
 **已知取舍**：USB 缩略图用 GetThumb（~160px，网格上略糊）；USB 高清预览优先 0x101B 偏移读管线（仅失败回退整文件下载+内存切片）；下载耗时统计功能代码存在但入口已按用户要求移除；强制 120Hz 仅前台生效（后台系统自动回落）。
 

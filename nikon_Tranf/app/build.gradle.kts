@@ -6,13 +6,13 @@ plugins {
 }
 
 android {
-    namespace = "com.example.nikontransfer"
+    namespace = "com.shinemeow.app"
     compileSdk = 37
     // 用本机已装的 NDK 30，避免 AGP 联网去装它默认的 ndk;28.2.13676358
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
-        applicationId = "com.example.nikontransfer"
+        applicationId = "com.shinemeow.app"
         minSdk = 28
         targetSdk = 37
         versionCode = 1
