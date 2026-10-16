@@ -896,7 +896,7 @@ class MainActivity : ComponentActivity() {
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        TextButton(onClick = { vm.resetFilter() }) { Text("清除筛选") }
+                        ActionPill("清除筛选") { vm.resetFilter() }
                     }
                 }
                 /* [SCROLLBAR-SEALED] 快速滚动条封存：设置与拖动状态一并停用，重启时随标记恢复

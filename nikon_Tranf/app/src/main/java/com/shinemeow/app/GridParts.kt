@@ -724,7 +724,7 @@ internal fun MainActivity.FilterSheet(onDismiss: () -> Unit) {
                         style = MaterialTheme.typography.titleLarge,
                         modifier = Modifier.weight(1f)
                     )
-                    TextButton(onClick = { vm.resetFilter() }) { Text("重置") }
+                    ActionPill("重置") { vm.resetFilter() }
                 }
                 Spacer(Modifier.height(6.dp))
                 // 合并模式下每个格子已同时呈现 JPG+NEF，格式筛选行隐藏（①b）

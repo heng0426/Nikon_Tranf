@@ -271,11 +271,11 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
                     }
                 }
             }
-            // 总览卡片（总计卡）：恒显示（空队列 = 0/0/0），与有任务时统一风格。
-            // 空队列时第二排两个分支（速率排/完成排）都不命中 → 只有一排计数胶囊；
-            // 填充为 0；点击滚动空转。perfHideOverallBar 仅性能测具隐藏用。
+            // 总览统计条（总计）：恒显示（空队列 = 0/0/0），去卡片化纯展示。
+            // 空队列时第二排两个分支（速率排/完成排）都不命中 → 只有一排计数数字。
+            // perfHideOverallBar 仅性能测具隐藏用。
             if (!vm.perfHideOverallBar.value) {
-                OverallCard(st, listState)
+                OverallCard(st)
             }
             LazyColumn(Modifier.fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(vm.downloadQueue, key = { it.handle }) { item ->
@@ -285,61 +285,71 @@ internal fun MainActivity.DownloadsScreen(onBack: () -> Unit) {
         }
     }
 
-    /** 总览卡片。
-     *  第一排恒定三胶囊：已完成 / 总数量 / 排队中（"下载中"不再占位 —— 总数量-已完成-排队中
-     *  的差就是正在下载的那条，串行 worker 至多一条）。
-     *  第二排按阶段切换：下载中 → [滑窗速度][剩 mm:ss][百分比]；批次完成 → [平均速度][总时长]；
-     *  仅排队（还没开跑）→ 无第二排。
-     *  进度口径：字节权重 Σ已收/Σ总字节 —— 入队后台预取 0x9421 大小，未知条目按已知均值估计，
-     *  整批全未知时退回按张数。点击卡片滚动到正在下载（或第一个排队）的行。
-     *  got（高频）读取全部关进 OverallFill / PercentPill 两个窄作用域，整卡其余部分只在
-     *  状态变化（低频）时重组；速度/ETA 由 VM 500ms 采样线程写入，本卡只读结果。 */
+    /** 总览统计条（去卡片化）：无底色无描边，与队列行（灰卡+缩略图）结构区分。
+     *  第一排恒定三组计数：已完成 / 总数量 / 排队中 —— 灰标签 + 着色粗体数字（无胶囊底）；
+     *  第二排按阶段切换：下载中 → [速度 · 剩 mm:ss · 百分比]，完成 → [平均 · 总时长]（绿色 mono 小字）；
+     *  底部 3dp 圆角细进度条（字节权重口径同原总览卡填充）。纯展示，无点击。
+     *  got（高频）读取全部关进 OverallFill / PercentText 两个窄作用域，其余部分只在
+     *  状态变化（低频）时重组；速度/ETA 由 VM 500ms 采样线程写入，这里只读结果。 */
     @Composable
-internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: LazyListState) {
-        val scope = rememberCoroutineScope()
+internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats) {
         val green = UiSpec.accent(vm.darkModeOn)
-        Surface(
-            shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
-            // primary 着色底：与队列行的 surfaceVariant 灰卡区分（这是汇总卡）
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-            modifier = Modifier.clickable {
-                val runningIdx = st.runningItem?.let { cur ->
-                    vm.downloadQueue.indexOfFirst { q -> q === cur }.takeIf { ix -> ix >= 0 }
-                }
-                val idx = runningIdx
-                    ?: vm.downloadQueue.indexOfFirst { it.status.value == QStatus.QUEUED }.takeIf { ix -> ix >= 0 }
-                if (idx != null) scope.launch { listState.animateScrollToItem(idx) }
-            }
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Box(Modifier.fillMaxWidth()) {
-                OverallFill(st, Modifier.matchParentSize())
-                Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    // 第一排（恒定）：已完成 / 总数量 / 排队中 —— 绿 / amber / primary 三色同族
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Pill("已完成 ${st.done}", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, rolling = true)
-                        val amber = UiSpec.amber(vm.darkModeOn)
-                        Pill("总数量 ${st.denom}", bg = amber.copy(alpha = UiSpec.PILL_TINT), fg = amber, rolling = true)
-                        Pill("排队中 ${st.queued}", bg = MaterialTheme.colorScheme.primary.copy(alpha = UiSpec.PILL_TINT), fg = MaterialTheme.colorScheme.primary, rolling = true)
-                    }
-                    // 第二排（按阶段切换）。runningItem 在两条目交接瞬间会短暂为 null
-                    // （worker 取下一条的空档，演示模式固定 40ms），此时只要还有排队
-                    // （且本批已开跑）就保持速率排 —— 否则每张完成时第二排消失一帧
-                    // 再出现，整卡高度跳一下 = "闪一下"。
-                    when {
-                        st.runningItem != null || (st.queued > 0 && st.done > 0) -> BatchPaceRow(st)
-                        !st.hasActive && st.hasFinished && st.msDone > 0L -> BatchDoneRow(st)
-                    }
-                }
+            // 第一排（恒定）：已完成 / 总数量 / 排队中 —— 绿 / amber / primary
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CountStat("已完成", st.done, green)
+                CountStat("总数量", st.denom, UiSpec.amber(vm.darkModeOn))
+                CountStat("排队中", st.queued, MaterialTheme.colorScheme.primary)
+            }
+            // 第二排（按阶段切换）。runningItem 在两条目交接瞬间会短暂为 null
+            // （worker 取下一条的空档，演示模式固定 40ms），此时只要还有排队
+            // （且本批已开跑）就保持速率排 —— 否则每张完成时第二排消失一帧再出现
+            when {
+                st.runningItem != null || (st.queued > 0 && st.done > 0) -> BatchPaceRow(st)
+                !st.hasActive && st.hasFinished && st.msDone > 0L -> BatchDoneRow(st)
+            }
+            // 底部细进度条：灰轨道 + 绿色填充（OverallFill 只画 frac 宽度）
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            ) {
+                OverallFill(st, Modifier.fillMaxSize())
             }
         }
     }
 
-    /** 卡底绿色进度填充：字节权重比例（整批未知大小时退回按张数）。
+    /** 统计数字：灰色小标签 + 着色粗体数字（无胶囊底，数字变化走 RollingText 滚动） */
+    @Composable
+    private fun MainActivity.CountStat(label: String, value: Int, tint: Color) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(5.dp))
+            RollingText(
+                "$value",
+                color = tint,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
+                )
+            )
+        }
+    }
+
+    /** 卡底细进度条填充：字节权重比例（整批未知大小时退回按张数）。
      *  got 变化只重算这一个窄作用域；drawBehind 只走绘制阶段，不参与测量/布局。
-     *  modifier 由调用处传 matchParentSize（BoxScope 接收者扩展，跨不出父 Box 作用域）。 */
+     *  放在 3dp 高的圆角轨道 Box 内，只画 frac 宽度的填充矩形。 */
     @Composable
     private fun MainActivity.OverallFill(st: MainViewModel.QueueStats, modifier: Modifier) {
         val frac by remember(st) {
@@ -375,10 +385,10 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
         val green = UiSpec.accent(vm.darkModeOn)
         val speed = vm.batchSpeedBps.value
         val eta = vm.batchEtaMs.value
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Pill(if (speed > 0) "${humanSize(speed)}/s" else "…", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
-            Pill(if (eta > 0) "剩 ${fmtDur(eta)}" else "剩 …", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
-            PercentPill(st)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            PaceText(if (speed > 0) "${humanSize(speed)}/s" else "…", green)
+            PaceText(if (eta > 0) "剩 ${fmtDur(eta)}" else "剩 …", green)
+            PercentText(st, green)
         }
     }
 
@@ -388,15 +398,25 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
     @Composable
     private fun MainActivity.BatchDoneRow(st: MainViewModel.QueueStats) {
         val green = UiSpec.accent(vm.darkModeOn)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Pill("平均 ${humanSize(st.queueAvgBps)}/s", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
-            Pill("总时长 ${fmtDur(st.msDone)}", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            PaceText("平均 ${humanSize(st.queueAvgBps)}/s", green)
+            PaceText("总时长 ${fmtDur(st.msDone)}", green)
         }
     }
 
-    /** 百分比胶囊：字节权重（整批未知大小时退回按张数）。got 变化只重组这一个胶囊。 */
+    /** 速率/时长小字：着色 mono（tnum 高频数值防抖动），无胶囊底 */
     @Composable
-    private fun MainActivity.PercentPill(st: MainViewModel.QueueStats) {
+    private fun MainActivity.PaceText(text: String, tint: Color) {
+        Text(
+            text,
+            color = tint,
+            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum")
+        )
+    }
+
+    /** 百分比文字：字节权重（整批未知大小时退回按张数）。got 变化只重组这一个文本。 */
+    @Composable
+    private fun MainActivity.PercentText(st: MainViewModel.QueueStats, tint: Color) {
         val pct by remember(st) {
             derivedStateOf {
                 val cur = st.runningItem
@@ -413,8 +433,7 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
                 v.roundToInt()
             }
         }
-        val green = UiSpec.accent(vm.darkModeOn)
-        Pill("$pct%", bg = green.copy(alpha = UiSpec.PILL_TINT), fg = green, mono = true)
+        PaceText("$pct%", tint)
     }
 
     /** 毫秒 → m:ss（满 1 小时 h:mm:ss） */
@@ -422,37 +441,6 @@ internal fun MainActivity.OverallCard(st: MainViewModel.QueueStats, listState: L
         val s = ms / 1000
         return if (s >= 3600) String.format(java.util.Locale.US, "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60)
         else String.format(java.util.Locale.US, "%d:%02d", s / 60, s % 60)
-    }
-
-    /** 总览卡内的文字胶囊：ROUND_SMALL + 着色底，与全局胶囊风格一致。
-     *  rolling = true 时数字变化走 RollingText 滚动动画（仅用于低频计数）；
-     *  mono = true 时加 tnum 等宽数字（高频数值防抖动，如总进度 250ms 一次）。 */
-    @Composable
-    private fun MainActivity.Pill(
-        text: String,
-        bg: Color,
-        fg: Color,
-        rolling: Boolean = false,
-        mono: Boolean = false
-    ) {
-        Surface(shape = RoundedCornerShape(UiSpec.ROUND_SMALL), color = bg) {
-            if (rolling) {
-                RollingText(
-                    text,
-                    Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                    color = fg
-                )
-            } else {
-                Text(
-                    text,
-                    Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                    color = fg,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontFeatureSettings = if (mono) "tnum" else null
-                    )
-                )
-            }
-        }
     }
 
     /** 队列行缩略图：handle → photoRows 既有预览位图（网格加载过即命中），无位图时兜底加载 */
@@ -592,7 +580,7 @@ internal fun MainActivity.QueueThumb(handle: Int) {
                                 modifier = Modifier.size(UiSpec.ICON_SM)
                             )
                         }
-                        QStatus.FAILED -> TextButton(onClick = { vm.retryDownload(item) }) { Text("重试") }
+                        QStatus.FAILED -> ActionPill("重试") { vm.retryDownload(item) }
                         else -> {}
                     }
                 }
