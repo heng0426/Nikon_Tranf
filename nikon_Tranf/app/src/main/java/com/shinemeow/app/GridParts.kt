@@ -67,6 +67,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -117,7 +118,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -151,6 +153,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -727,7 +730,8 @@ internal fun MainActivity.FilterSheet(onDismiss: () -> Unit) {
                         .matchParentSize()
                         .then(
                             glassBackdropModifier(
-                                tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                                tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
+                                blur = 40f
                             )
                         )
                 )
@@ -735,8 +739,12 @@ internal fun MainActivity.FilterSheet(onDismiss: () -> Unit) {
                     Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 28.dp)
                 ) {
                     // 自绘拖拽把手：替代 M3 dragHandle（把手区也要被毛玻璃覆盖，
-                    // 否则把手条与内容区上下两截观感割裂）
-                    BottomSheetDefaults.DragHandle()
+                    // 否则把手条与内容区上下两截观感割裂）；包一层 fillMaxWidth
+                    // 居中，还原 M3 原版把手的水平居中位（直接放 Column 会靠 start）
+                    Box(
+                        Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) { BottomSheetDefaults.DragHandle() }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     FunnelIcon(MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
@@ -895,29 +903,73 @@ internal fun MainActivity.DateField(
         if (open) {
             val init = value?.let { keyToMillis(it) }
             val st = rememberDatePickerState(initialSelectedDateMillis = init)
-            DatePickerDialog(
+            // 用 Popup 而非 DatePickerDialog：独立 Dialog window 会被仍在前台的
+            // ModalBottomSheet window 盖住下半部（window Z 序不受 Compose 树控制，
+            // 两层半透明内容叠印成"内外两圈"）；Popup 是 attached window，
+            // 恒在其宿主（筛选面板）之上。遮罩与玻璃卡片自己排布，效果与其他弹窗一致
+            Popup(
                 onDismissRequest = { open = false },
-                // 全屏 edge-to-edge 窗口：内容坐标与主窗口对齐，毛玻璃底材可精确回绘
-                properties = DialogProperties(
+                alignment = Alignment.TopStart,
+                properties = PopupProperties(
+                    focusable = true,
                     usePlatformDefaultWidth = false,
-                    decorFitsSystemWindows = false
-                ),
-                modifier = glassBackdropModifier(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
-                ),
-                colors = DatePickerDefaults.colors(containerColor = Color.Transparent),
-                confirmButton = {
-                    TextButton(onClick = {
-                        st.selectedDateMillis?.let { onSet(millisToKey(it)) }
-                        open = false
-                    }) { Text("确定") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { open = false }) { Text("取消") }
-                }
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true
+                )
             ) {
-                DatePicker(state = st)
+                // Popup 的内容测量约束不是全屏，fillMaxSize 会缩成卡片大小
+                // ——用 requiredSize 强制铺满屏幕；不画遮罩（筛选面板自带
+                // 暗化，再叠一层 MASK 会"整屏再暗一下"），只做点击捕获层
+                val config = LocalConfiguration.current
+                Box(
+                    Modifier
+                        .requiredSize(
+                            config.screenWidthDp.dp,
+                            config.screenHeightDp.dp
+                        )
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { open = false }
+                ) {
+                    Surface(
+                        Modifier
+                            .align(Alignment.Center)
+                            .padding(start = 24.dp, end = 24.dp)
+                            .then(
+                                glassBackdropModifier(
+                                    shape = MaterialTheme.shapes.extraLarge,
+                                    tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
+                                    border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
+                                    blur = 40f,
+                                    shadow = 8.dp
+                                )
+                            ),
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = Color.Transparent
+                    ) {
+                        Column {
+                            // containerColor 透明：DatePicker 内部头部/日历容器各自
+                            // .background(colors.containerColor)，不传会盖住玻璃
+                            DatePicker(
+                                state = st,
+                                colors = DatePickerDefaults.colors(containerColor = Color.Transparent)
+                            )
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 8.dp, end = 6.dp),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(onClick = { open = false }) { Text("取消") }
+                                TextButton(onClick = {
+                                    st.selectedDateMillis?.let { onSet(millisToKey(it)) }
+                                    open = false
+                                }) { Text("确定") }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

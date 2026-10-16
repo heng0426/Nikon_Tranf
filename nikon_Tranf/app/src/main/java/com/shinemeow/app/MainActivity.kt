@@ -134,6 +134,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -145,8 +146,10 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.addOutline
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -179,10 +182,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.toIntSize
 import androidx.core.content.ContextCompat
 import com.shinemeow.app.ui.theme.ShineMeowTheme
 import kotlinx.coroutines.Dispatchers
@@ -206,6 +212,9 @@ class MainActivity : ComponentActivity() {
     /** 主界面内容的离屏录制层（MainScreen 组合期赋值）：设置/下载/筛选/弹窗等
      *  玻璃面用它回绘主内容的模糊像（毛玻璃底材）。弹窗在独立窗口，也取同一层。 */
     internal var glassSource: androidx.compose.ui.graphics.layer.GraphicsLayer? = null
+    /** 全屏预览页的录制层（预览在主 Column 外、不在 glassSource 里）；
+     *  预览打开时弹窗玻璃底材要先画 glassSource 再叠本层，才能透出预览正后方内容 */
+    internal var glassSourcePreview: androidx.compose.ui.graphics.layer.GraphicsLayer? = null
 
     /** 主界面根 Box 的布局坐标：玻璃面用 localPositionOf 换算含 graphicsLayer 位移的
      *  屏幕位置（AnimatedVisibility 滑入是位移动画，positionInRoot 不够）。 */
@@ -514,6 +523,10 @@ class MainActivity : ComponentActivity() {
         // 低版本 renderEffect 不生效，气泡自动退化为纯半透明底）
         val contentLayer = rememberGraphicsLayer()
         glassSource = contentLayer
+        // 预览页录制层：预览打开时玻璃面（弹窗等）底材在主内容之上再叠预览层，
+        // 透出的才是弹窗正后方的预览内容；关闭时置空，玻璃底材回落到纯主内容
+        val previewLayer = rememberGraphicsLayer()
+        glassSourcePreview = if (previewing) previewLayer else null
         val glassLayer = rememberGraphicsLayer()
         if (Build.VERSION.SDK_INT >= 31) {
             glassLayer.renderEffect = BlurEffect(24f, 24f, TileMode.Clamp)
@@ -1157,17 +1170,35 @@ class MainActivity : ComponentActivity() {
                     [/SCROLLBAR-SEALED] */
                     }
                 } // else: 文件模式网格结束
-                // 多选操作条：有选中才从底部弹出（全选 + 格式勾选(合并) + 下载所选）
-                AnimatedVisibility(
-                    visible = selCount > 0,
-                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(tween(UiSpec.STANDARD)),
-                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(tween(UiSpec.QUICK))
+            }
+            // 多选操作条：浮层玻璃卡片（有选中弹出/无选中消失，交互逻辑不变），
+            // 效果与其他弹窗一致（32dp 模糊+同款着色/描边/阴影），底材=网格主内容
+            AnimatedVisibility(
+                visible = selCount > 0,
+                // slide+fade：expandVertically 会裁剪内容（阴影在边缘外被裁掉，
+                // 动画结束瞬间阴影才出现，非常割裂）；slide 位移不裁剪，阴影全程跟随
+                enter = slideInVertically(tween(UiSpec.STANDARD)) { it } + fadeIn(tween(UiSpec.STANDARD)),
+                exit = slideOutVertically(tween(UiSpec.QUICK)) { it } + fadeOut(tween(UiSpec.QUICK)),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = UiSpec.PAGE_PAD, end = UiSpec.PAGE_PAD)
+                    .navigationBarsPadding()
+                    .padding(bottom = UiSpec.PAGE_PAD)
+            ) {
+                Surface(
+                    Modifier
+                        .fillMaxWidth()
+                        .then(
+                            glassBackdropModifier(
+                                shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
+                                tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
+                                border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
+                                blur = 40f
+                            )
+                        ),
+                    shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
+                    color = Color.Transparent
                 ) {
-                    Surface(
-                        Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
-                        color = MaterialTheme.colorScheme.surfaceVariant
-                    ) {
                         Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                         // 分格式计数（已应用"跳过已下载"过滤；格式勾掉时其标签变灰）
                         val skip = vm.skipDownloadedOn
@@ -1302,9 +1333,14 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-            }
             // 全屏预览（横向滑动翻页，只在筛选结果内翻；合并模式翻合并对）
+            // 包录制 Box：预览内容录进 previewLayer 供弹窗玻璃底材回绘——
+            // 预览在主 Column 外、不在 contentLayer 里，不录则玻璃透出的是网格
             if (mergeOn && pairPreviewIndex >= 0 && pairs.isNotEmpty()) {
+                Box(Modifier.fillMaxSize().drawWithContent {
+                    previewLayer.record { this@drawWithContent.drawContent() }
+                    drawLayer(previewLayer)   // 正常显示走录制层（无模糊）
+                }) {
                 PairPager(
                     initialIndex = pairPreviewIndex,
                     rows = pairs.toList(),
@@ -1352,7 +1388,12 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 )
+                }
             } else if (!mergeOn && previewIndex >= 0 && visible.isNotEmpty()) {
+                Box(Modifier.fillMaxSize().drawWithContent {
+                    previewLayer.record { this@drawWithContent.drawContent() }
+                    drawLayer(previewLayer)
+                }) {
                 PreviewPager(
                     initialIndex = previewIndex,
                     rows = visible.toList(),
@@ -1389,6 +1430,7 @@ class MainActivity : ComponentActivity() {
                         scope.launch { withContext(Dispatchers.IO) { vm.requestDeleteOne(row) } }
                     }
                 )
+                }
             }
             // 筛选卡片（底部弹出，实时生效）
             if (showFilter) FilterSheet(onDismiss = { showFilter = false })
@@ -1406,7 +1448,10 @@ class MainActivity : ComponentActivity() {
                     ),
                     modifier = glassBackdropModifier(
                         shape = MaterialTheme.shapes.extraLarge,
-                        tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                        tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
+                        border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
+                        blur = 40f,
+                        shadow = 8.dp
                     ),
                     containerColor = Color.Transparent,
                     onDismissRequest = { vm.cancelDeletePlan() },
@@ -1452,7 +1497,10 @@ class MainActivity : ComponentActivity() {
                     ),
                     modifier = glassBackdropModifier(
                         shape = MaterialTheme.shapes.extraLarge,
-                        tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                        tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
+                        border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
+                        blur = 40f,
+                        shadow = 8.dp
                     ),
                     containerColor = Color.Transparent,
                     onDismissRequest = { vm.dismissDeleteResult() },
@@ -1472,7 +1520,10 @@ class MainActivity : ComponentActivity() {
                     ),
                     modifier = glassBackdropModifier(
                         shape = MaterialTheme.shapes.extraLarge,
-                        tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                        tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
+                        border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
+                        blur = 40f,
+                        shadow = 8.dp
                     ),
                     containerColor = Color.Transparent,
                     onDismissRequest = { hotspotHint = false },
@@ -1808,11 +1859,24 @@ class MainActivity : ComponentActivity() {
      *    主窗口内 → 根 Box 的 localPositionOf（含 graphicsLayer）；
      *    独立窗口 → positionInRoot + 本窗口 decorView 的屏幕位置。
      *  并用每帧循环持续重算（ drawBehind 只在读到的状态变化时才重绘）。 */
-    @Composable
-    internal fun glassBackdropModifier(shape: Shape? = null, tint: Color? = null): Modifier {
+    internal fun glassBackdropModifier(
+        shape: Shape? = null,
+        tint: Color? = null,
+        border: Color? = null,
+        blur: Float = 24f,
+        shadow: Dp? = null
+    ): Modifier =
+        Modifier.composed {
+        // ⚠️ 必须 composed：LocalView 要在「modifier 被应用处的组合」里读——
+        // AlertDialog 的 modifier 参数在主窗口组合求值，直接读 LocalView 拿到的是
+        // 主窗口 view，窗口判断恒走主窗分支 → localPositionOf 跨层级抛 "not part
+        // of the same hierarchy" → fallback positionInRoot 只是弹窗窗口内坐标（小
+        // 值）→ 玻璃透出 src 顶部（顶栏/置顶栏）而非正后方内容。composed 后在弹窗
+        // 组合里求值，LocalView 才是弹窗自己的 view（FilterSheet 在 content lambda
+        // 里调用所以一直正确）。主窗口玻璃面应用处即主组合，行为不变。
         val glass = rememberGraphicsLayer()
         if (Build.VERSION.SDK_INT >= 31) {
-            glass.renderEffect = BlurEffect(24f, 24f, TileMode.Clamp)
+            glass.renderEffect = BlurEffect(blur, blur, TileMode.Clamp)
         }
         val view = LocalView.current
         val coords = remember { mutableStateOf<LayoutCoordinates?>(null) }
@@ -1824,31 +1888,59 @@ class MainActivity : ComponentActivity() {
                 pos.value = glassPosOnScreen(view, c)
             }
         }
-        return Modifier
+        Modifier
+            .then(
+                if (shadow != null && shape != null) {
+                    Modifier.shadow(shadow, shape, clip = false)
+                } else Modifier
+            )
             .onGloballyPositioned {
                 coords.value = it
                 pos.value = glassPosOnScreen(view, it)
             }
             .drawBehind {
                 val src = glassSource ?: return@drawBehind
-                glass.record {
-                    clipGlassBounds(shape) {
-                        translate(-pos.value.x, -pos.value.y) { drawLayer(src) }
+                val outline = shape?.createOutline(size, layoutDirection, this)
+                // ⚠️ record 必须显式传 Density：无参 record 走 DrawScope companion 扩展，
+                // 会把 drawBehind 的 DrawScope 本身当作 Density 传给 layer——块内一旦
+                // 访问 density（shape.createOutline 的 dp→px 换算就会），CanvasDrawScope
+                // .getDensity 调自身无限递归 → StackOverflowError（弹窗即闪退的根因）。
+                // 旧版块内只有 clipRect/translate/drawLayer（纯 float 参数）从不碰
+                // density 才侥幸没炸。显式传干净 Density 后块内环境与 drawBehind 一致。
+                glass.record(
+                    Density(density, fontScale),
+                    layoutDirection,
+                    size.toIntSize()
+                ) {
+                    clipOutline(outline) {
+                        translate(-pos.value.x, -pos.value.y) {
+                            drawLayer(src)
+                            // 预览打开时叠预览录制层（预览在主 Column 外，不叠的话
+                            // 玻璃透出的是网格而非弹窗正后方的预览内容）
+                            glassSourcePreview?.let { drawLayer(it) }
+                        }
                     }
                 }
-                clipGlassBounds(shape) {
+                clipOutline(outline) {
+                    // 模糊像：record 录好的离屏层（挂 blur renderEffect），必须画出来——
+                    // 镜像栈回退时曾把本行连带删掉，玻璃只剩 tint 薄纱、透出锐利背景
                     drawLayer(glass)
+                    // tint 必须与模糊像同受轮廓裁剪：裸 drawRect 是方形，
+                    // 会在弹窗四角轮廓外突出着色块，视觉上"圆角变方角"
+                    tint?.let { drawRect(it) }
                 }
-                tint?.let { drawRect(it) }
+                // 轮廓描边：沿玻璃面边缘一圈，画在裁剪之外（描边本身贴边）
+                if (border != null && outline != null) {
+                    drawOutline(outline, border, style = Stroke(1.dp.toPx()))
+                }
             }
-    }
+        }
 
-    /** 毛玻璃底材的裁剪：有 shape（圆角轮廓）按轮廓裁，否则按矩形边界裁 */
-    private fun DrawScope.clipGlassBounds(shape: Shape?, block: DrawScope.() -> Unit) {
-        if (shape == null) {
+    /** 毛玻璃底材的裁剪：有轮廓（圆角等）按轮廓裁，无则按矩形边界裁 */
+    private fun DrawScope.clipOutline(outline: Outline?, block: DrawScope.() -> Unit) {
+        if (outline == null) {
             clipRect(0f, 0f, size.width, size.height, block = block)
         } else {
-            val outline = shape.createOutline(size, layoutDirection, this)
             clipPath(Path().apply { addOutline(outline) }, block = block)
         }
     }
@@ -1857,7 +1949,10 @@ class MainActivity : ComponentActivity() {
     private fun glassPosOnScreen(view: android.view.View, c: LayoutCoordinates): Offset {
         val root = glassRootCoords
         return if (mainWindowDecor(view) && root != null) {
-            try { root.localPositionOf(c, Offset.Zero) } catch (t: Throwable) { c.positionInRoot() }
+            try { root.localPositionOf(c, Offset.Zero) } catch (_: Throwable) {
+                // 跨窗口层级兜底（理论上 composed 修正后不会走到）
+                c.positionInRoot()
+            }
         } else {
             // 独立窗口（弹窗/底部弹层）：窗口内相对坐标 + 窗口在屏幕上的位置
             val loc = IntArray(2)

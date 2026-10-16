@@ -1,7 +1,7 @@
 # Nikon Transfer — AI 开发上下文文档
 
 > **本文档的目的**：任何 AI 工具（或新开发者）读取本文件后，无需重新探索即可继续本项目的开发工作。
-> 所有内容基于代码实证与真机调试记录，最后更新：2026-10-15。
+> 所有内容基于代码实证与真机调试记录，最后更新：2026-10-16。
 > **维护规则：每次提交代码前必须先更新本文件与 README.md**（见项目规则）。
 
 ---
@@ -39,7 +39,7 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 - **daemon JVM 已固定 JDK21**（`gradle/gradle-daemon-jvm.properties` `toolchainVersion=21`）：JDK25.0.4 编译时 MainScreen 超大方法会产生 d8/ART VerifyError 运行时闪退；JDK 下载源不可达时把该文件 `toolchainUrl` 切清华镜像（文件内 URL 是 `https\://` 转义格式）。
 - **应用图标自动生成**：构建时 `buildSrc` 的 `GenerateAppIconTask` 读取仓库根 `img/logo.png`（居中裁方→5 密度 ic_launcher.png + 圆形蒙版 round 变体）写入 `app/src/main/res/mipmap-*`；换图标只需替换 `img/logo.png` 重新编译。注意 Gradle Kotlin DSL 脚本内引用不到 `java.awt`，逻辑必须放 buildSrc；任务字段存 String 路径（transient 字段会被配置缓存反序列化成 null），执行期禁止访问 `Task.project`。
 - **部署约定**：改完代码 → `assembleDebug` → 手机 adb 连着就 `install -r` → 回报。⚠️ 编译失败时 adb install 会装上**上一次的旧 APK**——"Success" ≠ 最新代码上机，务必确认 BUILD SUCCESSFUL 再装。
-- 实测设备 adb 序列号 `4e465073`；**注意手机只有一个 USB-C 口**——接电脑（adb）和接相机（OTG）互斥，调试 USB 通道时 adb 会断开。
+- 实测设备 adb 序列号 `4e465073`；**注意手机只有一个 USB-C 口**——接电脑（adb）和接相机（OTG）互斥，调试 USB 通道时 adb 会断开。另一台测试机 `6fb39951`（Android 14/API 34，非小米）：`install -r` 覆盖装会**重置应用设置**（演示模式开关等），每次装包后需重开；且 adb install 在本机 Git Bash 沙箱被拦截，**adb 一律走 PowerShell 工具**（PowerShell `>` 重定向会损坏二进制截图，须 screencap 到 /sdcard 再 pull）。
 - `screen_off_timeout` 曾被改为 10 分钟（`settings put system screen_off_timeout 600000`），`svc power stayon usb` 已开启。
 
 ## 3. 源码地图（全部在 `app/src/main/java/com/shinemeow/app/`）
@@ -48,9 +48,9 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `MainActivity.kt` | ~1642 | Activity 本体 + `MainScreen`（全屏双卡连接/紧凑重连条/双模式网格骨架/筛选/多选+选当天/日期折叠）+ 顶栏（齿轮/筛选/合并快捷开关/反转徽章/下载按钮/连接状态，TOPBAR_GAP 自适应状态栏）+ TopBarDownloadButton/ConnInfoCard/RollingText；PerfTrace.attach 与强制 120Hz 在 onCreate；机内删除确认框/结果框（`vm.deletePlan`/`vm.deleteResult`）也在本文件 |
+| `MainActivity.kt` | ~1988 | Activity 本体 + `MainScreen`（全屏双卡连接/紧凑重连条/双模式网格骨架/筛选/多选+选当天/日期折叠）+ 顶栏（齿轮/筛选/合并快捷开关/反转徽章/下载按钮/连接状态，TOPBAR_GAP 自适应状态栏）+ TopBarDownloadButton/ConnInfoCard/RollingText；PerfTrace.attach 与强制 120Hz 在 onCreate；机内删除确认框/结果框（`vm.deletePlan`/`vm.deleteResult`）也在本文件；**毛玻璃底材系统 `glassBackdropModifier`**（contentLayer 离屏录制 + BlurEffect + 轮廓裁剪 + tint/描边/阴影，shape/tint/border/blur/shadow 参数化，全部弹层共用；坑见 §9#17-21）；多选操作条 = 根 Box 浮层玻璃卡片 |
 | `UiSpec.kt` | ~144 | **设计令牌中心**：动画三档（QUICK/STANDARD/EMPHASIS）、圆角双档（ROUND_SMALL/LARGE）、浅深成对主题色（accent/accentDeep/error/amber/usbBlue/connChip/卡片面/选中遮罩/已下载标/徽章/蒙层/占位灰）、布局尺寸（TOPBAR_GAP/PAGE_PAD/TOPBAR_BTN/TOPBAR_BTN_GAP/ICON_STD·SM/PILL_*/ACTION_*/PILL_SLOT/CONN_INFO_H/QUEUE_ROW_H/PREVIEW_SLOT_H/CHECK_ICON/QUEUE_THUMB/DRAG_STRIP_W/SEL_BORDER_W/SCROLLBAR_THICKNESS）、透明度/字号令牌、行为参数（CHUNK_TRIGGER）。**新代码一律取令牌，不写散值**（已两轮收敛，替换 ~110 处散值） |
-| `GridParts.kt` | ~860 | 双格 PairCell/单格 GridCell/格式徽章/已下载标、置顶日期胶囊与槽位、日期节头胶囊、筛选面板 FilterSheet（下载状态单选三按钮）；滚动条覆盖层 GridScrollbarOverlay 已封存（SCROLLBAR-SEALED 注释） |
+| `GridParts.kt` | ~991 | 双格 PairCell/单格 GridCell/格式徽章/已下载标、置顶日期胶囊与槽位、日期节头胶囊、筛选面板 FilterSheet（下载状态单选三按钮、自绘把手 fillMaxWidth 居中、玻璃参数随弹窗）；**日期选择框 = Popup 承载**（attached window 恒在面板之上 + 全屏点击捕获层 requiredSize 强制铺满 + 居中玻璃卡片 + 自排确定/取消行，见 §9#20）；滚动条覆盖层 GridScrollbarOverlay 已封存（SCROLLBAR-SEALED 注释） |
 | `PreviewPagers.kt` | ~802 | 合并/单格式全屏预览 Pager、PreviewZoomState 缩放状态与手势、EXIF/下载槽位；两页顶栏均有垃圾桶删除入口（onDelete → VM 预检） |
 | `SettingsScreens.kt` | ~943 | 设置页 + 全部设置组件（SettingsSection/SettingSwitch/ChannelChip/ActionPill/两个选择器）；分组含**存储**（存储目录+已下载照片统计 JPG/RAW 计数与占用）与**性能/诊断**（PerfTrace 读数） |
 | `DownloadsQueue.kt` | ~850 | 下载队列侧板 + 队列行（支持左右滑动移出）/缩略图/下载槽位、**总览卡**（恒定计数胶囊+阶段化速率排+字节权重进度）、两段式全部取消 |
@@ -202,6 +202,11 @@ adb logcat -d | grep -E "UsbPtp|GPhoto2"
 14. **预览页删除交互三件套**（2026-10-15 用户反馈修复）：①删除后预览**停留**并自然落到下一张（rows 快照缩短、currentPage 不变即天然换页），**不要**在 MainActivity 挂 `LaunchedEffect(deleteResult)` 自动关预览；删到末尾越界才关——由 Pager 内 `LaunchedEffect(rows.size) { if (currentPage >= rows.size) onClose(...) }` 负责，且 HorizontalPager page 内容用 `rows.getOrNull(page) ?: return@HorizontalPager` 兜越界帧（不赌 Foundation 是否钳制 currentPage）。②顶栏计数文字居中：左栏两个 IconButton（96dp）vs 右栏选择框（32dp）**宽度不对称**会把 weight(1f) 的文字区挤歪——必须三栏等宽 `[左 Row weight1f][文字 weight1f Center][右 Box weight1f CenterEnd]`。③破坏性图标（垃圾桶）用 `UiSpec.error(dark)` 红色语义色，不用白色。
 15. **保护状态：0x200D 才是受保护 + Wi-Fi 侧无法预检**（2026-10-16 实测修正，见 §6.5）：受保护拒绝码 **0x200D=ReadOnlyObject**（0x2009=Invalid ObjectHandle）；且 **0x1008 在 Wi-Fi PTP/IP 传输会话被拒（r=-6）** → Wi-Fi 下保护知识只能来自「删除被拒后学习」，USB 下可事前预检。**新增原语两侧必须都跑通再收工。**
 16. **保护状态的三来源采集 + 删除收缩越界防护面**（2026-10-16 用户反馈"受保护照片无显示/无预警/删除失败"后补）：①枚举快路径（0x9434+位段）**不含保护位**，PhotoRow 原先根本没有保护字段——UI 不可能显示；保护知识靠 `startProtectionScan` 后台渐进扫描（枚举后新→旧逐句柄 0x1008，连续 6 次失败即放弃，不阻塞主流程）+ 删除预检回写 + 0x2009 失败学习三路汇总，`row.isProtected` 是 `mutableStateOf` 单值（可跨线程写，项目仍统一 mainHandler.post 保 UI 一致）。②**pageCount 收缩的越界面不止 Pager 内容**：预览底栏信息区同样直接 `rows[pagerState.currentPage]` 索引——删到最后一张时若 Foundation 不钳制 currentPage 会 IndexOutOfBounds；两处底栏均已改 `getOrNull(...) ?: return@Column`。③确认框自适应：全部受保护 → 阻断式「无法删除」告知（删按钮直接不渲染，`dismissButton = null`），避免"点了删除必然失败"的死流程。
+17. **Compose `GraphicsLayer.record {}` 无参写法 + 块内访问 density = StackOverflowError**（2026-10-16 弹窗打开即闪退的根因，读 ui-graphics 1.7.6 sources 实证）：无参 record 解析到 `DrawScope` companion 扩展，它把 drawBehind 的 **DrawScope 实例本身**当作 Density 传给 layer（`record(this@DrawScope, ...)`）→ 块内 `drawParams.density` 就是自己 → 一旦访问 density（`shape.createOutline` 的 dp→px 换算就会）→ `CanvasDrawScope.getDensity` 调自身无限递归。旧代码块内只有纯 float 操作（clipRect/translate/drawLayer）从不碰 density 才侥幸没炸。**record 必须显式传干净环境：`glass.record(Density(density, fontScale), layoutDirection, size.toIntSize()) {...}`**。
+18. **弹窗玻璃 LocalView 陷阱**：glassBackdropModifier 若在 `Modifier.composed {}` 外直接读 `LocalView.current`，AlertDialog 的 modifier 参数在**主窗口组合**求值 → 窗口判断恒走主窗分支 → `localPositionOf` 跨窗口层级抛 "not part of the same hierarchy" → 兜底 `positionInRoot` 只是弹窗窗口内小坐标 → 玻璃透出主内容顶部而非正后方。composed 后在 modifier 应用处（弹窗自己的组合）求值才正确；ModalBottomSheet 在 content lambda 里调用所以一直正确——同类代码两处行为不同时先查组合环境。
+19. **M3 DatePicker 毛玻璃化三件套**（漏一件就出纯色/方角）：①外层 DatePickerDialog 与内层 `DatePicker` **都要**传 `colors(containerColor = Color.Transparent)`——内部头部/日历容器各自 `.background(colors.containerColor)`，漏传内层=上半纯色断层；②DatePickerDialog 必须 `tonalElevation = 0.dp`——M3 Surface 用 `surfaceColorAtElevation` 把透明底按 elevation **染成不透明表面色**，按钮区就纯色了；③tint 不能裸 `drawRect`（画方形，圆角轮廓外突出着色块="圆角变方角"）——必须与模糊像同受轮廓裁剪。
+20. **独立 window 的 Z 序不受 Compose 树控制**：DatePickerDialog（独立 Dialog window）会被仍在前台的 ModalBottomSheet window 盖住下半部，两层半透明内容叠印成"内外两圈"——面板上再弹弹窗必须用 **Popup**（attached window，恒在其宿主之上）。⚠️ Popup 内容的测量约束**不是全屏**，`fillMaxSize` 会缩成内容大小，全屏点击捕获层必须 `requiredSize(screenWidthDp.dp, screenHeightDp.dp)` 强制铺满；Popup 里**不要再画遮罩**（面板 scrim 之上再叠 MASK = "整屏再暗一下"）。
+21. **⚠️ 脚本回退/块删除后必须 diff 审查完整函数体**（2026-10-16 血泪）：镜像栈回退脚本误删 drawBehind 里的 `drawLayer(glass)`——record 录完模糊像从未上屏，**所有玻璃面只剩 tint 薄纱、透出锐利真实背景**，且"两圈/分层"表象把排查引向 Popup/Z 序等无关变量绕了三大圈。脚本 assert 通过 ≠ 语义完整；修一处玻璃问题后，其余共用同一函数的面板要连带确认。
 
 ## 10. 当前状态与待办（截至 2026-10-14）
 
@@ -213,7 +218,9 @@ adb logcat -d | grep -E "UsbPtp|GPhoto2"
 
 **2026-10-16 新增（任务 7 反馈二连）**：**保护状态可视化 + 删除预警**（用户反馈"受保护照片无显示/无预警/删除失败"）：`PhotoRow.isProtected` 三来源采集（后台渐进扫描/预检回写/0x2009 学习）；网格 TopEnd 红圆白锁 `ProtBadge`；预览底栏「受保护」红字 chip；删除确认框自适应（全部受保护 → 「无法删除」阻断式告知，部分 → 标注跳过张数）；预览底栏 pageCount 收缩越界防护（`getOrNull ?: return@Column`）。详见 §6.5 与 §9#15。
 
-**已知取舍**：USB 缩略图用 GetThumb（~160px，网格上略糊）；USB 高清预览优先 0x101B 偏移读管线（仅失败回退整文件下载+内存切片）；下载耗时统计功能代码存在但入口已按用户要求移除；强制 120Hz 仅前台生效（后台系统自动回落）。
+**2026-10-16 新增（弹窗毛玻璃第二轮，接续 6c5785e）**：修复 6c5785e 引入的弹窗打开闪退（§9#17 record 无参写法）；`glassBackdropModifier` 参数化升级并统一全部弹层规格——**40dp 模糊 + 着色（深色黑 48% `0x7A000000` / 浅色白 70% `0xB3FFFFFF`）+ 1dp 描边（白 14%/黑 10%）+ 8dp 系统阴影**（气泡同款），覆盖删除确认/删除结果/热点提醒/日期选择/重下载确认五个弹窗 + FilterSheet；tint 收进轮廓裁剪修"圆角变方角"（§9#19③）；LocalView composed 修弹窗分支（§9#18）；预览页独立录制层 `glassSourcePreview` 叠画（预览在主 Column 外，不叠则弹窗玻璃透出网格）；**多选操作条改根 Box 浮层玻璃卡片**（BottomCenter + navigationBarsPadding，交互逻辑不变，slide+fade 动画——expandVertically 会裁剪内容致动画期间阴影/内容突变）；无选中卡片无阴影（用户指定）。**日期选择框改 Popup 承载**（§9#20：Dialog window 被面板 window 盖住下半部 → Popup attached window 根治；不画遮罩避免二次暗屏）+ DatePicker 透明化三件套（§9#19）。镜像栈方案（FilterSheet/侧板把自己视觉镜像供上层弹窗叠画）真机观感不可控已整体撤回——面板上弹窗的玻璃透出主内容模糊像（见已知取舍）。
+
+**已知取舍**：USB 缩略图用 GetThumb（~160px，网格上略糊）；USB 高清预览优先 0x101B 偏移读管线（仅失败回退整文件下载+内存切片）；下载耗时统计功能代码存在但入口已按用户要求移除；强制 120Hz 仅前台生效（后台系统自动回落）；筛选面板/下载侧板上再弹弹窗（日期选择/重下载确认）玻璃透出的是**主内容模糊像而非面板**——"玻璃面镜像栈"真机观感不可控已撤，如要"透面板"正解是改成面板内嵌展开区（不走独立弹窗）；多选浮层卡片会遮住网格最后一行部分区域（原占位条是挤开网格），滚动到底遮挡影响操作时再给网格加底部 contentPadding。
 
 **明确不做/已否决**：gphoto2 补 libusb USB 端口（fd 注入硬骨头）；MtpDevice API（黑盒、厂商差异）；手机↔电脑方向；OTG 读卡器；相机热点网关探测（用户明确留待以后）；多选时点节头日期胶囊当全选用（否决——会废掉折叠功能，改为多选操作条「选当天」）；网格整体淡入/已下载标记弹入/多选勾选弹跳（用户逐一否决——"闪一下"或多余，微交互仅保留队列/角标数字滚动）；**快速滚动条整体封存**（2026-10-14 用户要求：LazyColumnScrollbar 依赖已从编译移除，全部相关代码以 `SCROLLBAR-SEALED` 标记注释封存于 build.gradle.kts/UiSpec/MainViewModel/MainActivity/GridParts/SettingsScreens/CardsIcons/DownloadsQueue/PreviewPagers；重启步骤记录在 app/build.gradle.kts 依赖注释处，`set_scrollbar_threshold` 键保留不丢旧值）。
 

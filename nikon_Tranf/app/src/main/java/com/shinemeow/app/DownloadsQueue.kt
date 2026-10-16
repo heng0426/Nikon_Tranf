@@ -748,7 +748,10 @@ internal fun MainActivity.DownloadStateSlot(
                         ),
                         modifier = glassBackdropModifier(
                             shape = MaterialTheme.shapes.extraLarge,
-                            tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                            tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
+                            border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
+                            blur = 40f,
+                            shadow = 8.dp
                         ),
                         containerColor = Color.Transparent,
                         onDismissRequest = { confirmRedownload = false },
