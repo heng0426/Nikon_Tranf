@@ -145,6 +145,7 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
@@ -1600,9 +1601,12 @@ class MainActivity : ComponentActivity() {
                             .drawBehind {
                                 // 毛玻璃底材：主内容层按气泡位置反向平移录进 glassLayer
                                 //（renderEffect 模糊挂在该层上），再回绘 —— 模糊仅限气泡区域
+                                // record 画布不自动裁剪：clipRect 显式裁到气泡范围防溢出
                                 glassLayer.record {
-                                    translate(-bubblePos.x, -bubblePos.y) {
-                                        drawLayer(contentLayer)
+                                    clipRect(0f, 0f, size.width, size.height) {
+                                        translate(-bubblePos.x, -bubblePos.y) {
+                                            drawLayer(contentLayer)
+                                        }
                                     }
                                 }
                                 drawLayer(glassLayer)
@@ -1764,7 +1768,9 @@ class MainActivity : ComponentActivity() {
     /** 毛玻璃面修饰（设置/下载侧板、FilterSheet、各弹窗共用）：在本面自身范围内
      *  回绘主内容离屏层的模糊像 —— 背景保持清晰，只有透过玻璃面才是模糊的
      *  （与删除成功气泡同款手法）。挂到玻璃面根 modifier 的最外层；
-     *  API<31 无模糊，仅剩调用方自己的半透明底。 */
+     *  API<31 无模糊，仅剩调用方自己的半透明底。
+     *  ⚠️ record 的画布不会自动裁剪到图层尺寸，必须 clipRect 显式裁到本面范围，
+     *  否则主内容会溢出到玻璃面之外（边缘外的模糊竖条/半屏模糊就是这么来的）。 */
     @Composable
     internal fun glassBackdropModifier(): Modifier {
         val glass = rememberGraphicsLayer()
@@ -1776,7 +1782,11 @@ class MainActivity : ComponentActivity() {
             .onGloballyPositioned { pos.value = it.positionInRoot() }
             .drawBehind {
                 val src = glassSource ?: return@drawBehind
-                glass.record { translate(-pos.value.x, -pos.value.y) { drawLayer(src) } }
+                glass.record {
+                    clipRect(0f, 0f, size.width, size.height) {
+                        translate(-pos.value.x, -pos.value.y) { drawLayer(src) }
+                    }
+                }
                 drawLayer(glass)
             }
     }
