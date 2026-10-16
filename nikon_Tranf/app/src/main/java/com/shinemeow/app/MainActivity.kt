@@ -1186,11 +1186,15 @@ class MainActivity : ComponentActivity() {
                 exit = slideOutVertically(tween(UiSpec.QUICK)) { it } + fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    // 左右比网格区（主 Column 的 PAGE_PAD 内缩）各宽出 6dp：
-                    // 与网格边缘完全对齐显得过于"焊死"，微微外扩更有浮层感
-                    .padding(start = UiSpec.PAGE_PAD - 6.dp, end = UiSpec.PAGE_PAD - 6.dp)
+                    // 左右/底部比网格区（主 Column 的 PAGE_PAD 内缩）外扩
+                    // SEL_CARD_OVERHANG：与网格边缘完全对齐显得过于"焊死"，
+                    // 微微外扩更有浮层感；量在 UiSpec 统一调
+                    .padding(
+                        start = UiSpec.PAGE_PAD - UiSpec.SEL_CARD_OVERHANG,
+                        end = UiSpec.PAGE_PAD - UiSpec.SEL_CARD_OVERHANG
+                    )
                     .navigationBarsPadding()
-                    .padding(bottom = UiSpec.PAGE_PAD)
+                    .padding(bottom = UiSpec.PAGE_PAD - UiSpec.SEL_CARD_OVERHANG)
             ) {
                 Surface(
                     Modifier
