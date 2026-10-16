@@ -740,10 +740,13 @@ internal fun MainActivity.DownloadStateSlot(
                     Text("已下载")
                 }
                 if (confirmRedownload) {
-                    DisposableEffect(Unit) {
-                        vm.glassAcquire(); onDispose { vm.glassRelease() }
-                    }
                     AlertDialog(
+                        // 全屏 edge-to-edge 弹窗窗口：内容坐标与主窗口对齐，毛玻璃底材可精确回绘
+                        properties = androidx.compose.ui.window.DialogProperties(
+                            usePlatformDefaultWidth = false,
+                            decorFitsSystemWindows = false
+                        ),
+                        modifier = glassBackdropModifier(),
                         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
                         onDismissRequest = { confirmRedownload = false },
                         title = { Text("已下载") },

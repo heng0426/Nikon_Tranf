@@ -118,6 +118,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -710,15 +711,14 @@ internal fun MainActivity.DateHeaderPill(
 
     /** 筛选卡片（毛玻璃底部弹层）：文件类型(单选) / 下载状态(单选：全部/未下载/已下载) / 拍摄日期(起止)。
      *  实时生效，右上角重置；样式对照用户提供的参考图（去掉连拍与保护）。
-     *  玻璃面：显示期间主内容背景模糊，弹层半透明 surface 透出。 */
+     *  玻璃面：背景保持清晰，仅弹层自身范围内透出主内容的模糊像（glassBackdropModifier）。
+     *  其窗口本就全屏 edge-to-edge（坐标与主窗口对齐），无需额外 properties。 */
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
 internal fun MainActivity.FilterSheet(onDismiss: () -> Unit) {
-        DisposableEffect(Unit) {
-            vm.glassAcquire(); onDispose { vm.glassRelease() }
-        }
         ModalBottomSheet(
             onDismissRequest = onDismiss,
+            modifier = glassBackdropModifier(),
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
         ) {
             Column(
@@ -881,11 +881,14 @@ internal fun MainActivity.DateField(
         if (open) {
             val init = value?.let { keyToMillis(it) }
             val st = rememberDatePickerState(initialSelectedDateMillis = init)
-            DisposableEffect(Unit) {
-                vm.glassAcquire(); onDispose { vm.glassRelease() }
-            }
             DatePickerDialog(
                 onDismissRequest = { open = false },
+                // 全屏 edge-to-edge 窗口：内容坐标与主窗口对齐，毛玻璃底材可精确回绘
+                properties = DialogProperties(
+                    usePlatformDefaultWidth = false,
+                    decorFitsSystemWindows = false
+                ),
+                modifier = glassBackdropModifier(),
                 colors = DatePickerDefaults.colors(
                     containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
                 ),

@@ -150,6 +150,7 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Path
@@ -193,6 +194,10 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
 
     internal val vm: MainViewModel by viewModels()
+
+    /** 主界面内容的离屏录制层（MainScreen 组合期赋值）：设置/下载/筛选/弹窗等
+     *  玻璃面用它回绘主内容的模糊像（毛玻璃底材）。弹窗在独立窗口，也取同一层。 */
+    internal var glassSource: androidx.compose.ui.graphics.layer.GraphicsLayer? = null
 
     // ---- 转发到 ViewModel（Activity 重建时状态由 VM 保留）----
     internal val connected get() = vm.connected
@@ -482,16 +487,17 @@ class MainActivity : ComponentActivity() {
         // 机内删除后预览停留：rows 快照缩短 → Pager 当前页不变、自然落到下一张
         // （用户要求的行为）；删到末尾越界时由 Pager 内 LaunchedEffect(rows.size) 负责关闭
 
-        // 毛玻璃：预览/设置/下载/筛选/弹窗任一玻璃面打开时，主界面内容实时模糊
-        //（API31+，低版本自动退化为半透明黑）
+        // 毛玻璃：仅全屏预览打开时主界面内容整体模糊（API31+，低版本自动退化为半透明黑）。
+        // 设置/下载/筛选/弹窗的玻璃面不走全局模糊 —— 背景保持清晰，只在玻璃面自身
+        // 范围内回绘主内容的模糊像（见 glassBackdropModifier，与删除气泡同款手法）
         val previewing = (mergeOn && pairPreviewIndex >= 0) || (!mergeOn && previewIndex >= 0)
-        val overlaying = previewing || vm.glassOverlay.value > 0
         // 删除成功气泡的毛玻璃底材：主内容每帧录进离屏层（contentLayer，不带模糊，
         // 正常显示走它），气泡内再把它平移回绘进 glassLayer 并施加 24dp 模糊 ——
         // 模糊只作用于气泡区域，不能设在 contentLayer 上（否则整屏跟着糊）。
         // 网格/全屏预览都在这个 Column 里 → 气泡背后无论是什么都能截到（API31+；
         // 低版本 renderEffect 不生效，气泡自动退化为纯半透明底）
         val contentLayer = rememberGraphicsLayer()
+        glassSource = contentLayer
         val glassLayer = rememberGraphicsLayer()
         if (Build.VERSION.SDK_INT >= 31) {
             glassLayer.renderEffect = BlurEffect(24f, 24f, TileMode.Clamp)
@@ -504,7 +510,7 @@ class MainActivity : ComponentActivity() {
                         drawLayer(contentLayer)                // 正常显示走离屏层（无模糊）
                     }
                     .graphicsLayer {
-                        if (overlaying && Build.VERSION.SDK_INT >= 31) {
+                        if (previewing && Build.VERSION.SDK_INT >= 31) {
                             renderEffect = android.graphics.RenderEffect
                                 .createBlurEffect(24f, 24f, android.graphics.Shader.TileMode.CLAMP)
                                 .asComposeRenderEffect()
@@ -1372,10 +1378,13 @@ class MainActivity : ComponentActivity() {
             //   无保护     → 正常确认。
             vm.deletePlan.value?.let { plan ->
                 val allProt = plan.protectedCount > 0 && plan.protectedCount >= plan.total
-                DisposableEffect(Unit) {
-                    vm.glassAcquire(); onDispose { vm.glassRelease() }
-                }
                 AlertDialog(
+                    // 全屏 edge-to-edge 弹窗窗口：内容坐标与主窗口对齐，毛玻璃底材可精确回绘
+                    properties = DialogProperties(
+                        usePlatformDefaultWidth = false,
+                        decorFitsSystemWindows = false
+                    ),
+                    modifier = glassBackdropModifier(),
                     containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
                     onDismissRequest = { vm.cancelDeletePlan() },
                     title = { Text(if (allProt) "无法删除" else "删除相机中的 ${plan.total} 张照片？") },
@@ -1413,10 +1422,12 @@ class MainActivity : ComponentActivity() {
             }
             // 机内删除结果汇总（仅受保护/失败/中断时弹出；全部成功静默不弹）
             vm.deleteResult.value?.let { msg ->
-                DisposableEffect(Unit) {
-                    vm.glassAcquire(); onDispose { vm.glassRelease() }
-                }
                 AlertDialog(
+                    properties = DialogProperties(
+                        usePlatformDefaultWidth = false,
+                        decorFitsSystemWindows = false
+                    ),
+                    modifier = glassBackdropModifier(),
                     containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
                     onDismissRequest = { vm.dismissDeleteResult() },
                     title = { Text(vm.deleteResultTitle.value ?: "删除结果") },
@@ -1428,10 +1439,12 @@ class MainActivity : ComponentActivity() {
             }
             // 热点未开启提醒（本 App 主拓扑 = 相机连手机热点）
             if (hotspotHint) {
-                DisposableEffect(Unit) {
-                    vm.glassAcquire(); onDispose { vm.glassRelease() }
-                }
                 AlertDialog(
+                    properties = DialogProperties(
+                        usePlatformDefaultWidth = false,
+                        decorFitsSystemWindows = false
+                    ),
+                    modifier = glassBackdropModifier(),
                     containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
                     onDismissRequest = { hotspotHint = false },
                     title = { Text("手机热点未开启") },
@@ -1458,17 +1471,14 @@ class MainActivity : ComponentActivity() {
                     }
                 )
             }
-            // 设置：从左侧滑出的卡片式玻璃面板（蒙层点击关闭，主界面模糊透底）
+            // 设置：从左侧滑出的卡片式玻璃面板（蒙层点击关闭，主界面保持清晰，
+            // 仅面板自身范围内透出主内容的模糊像）
             AnimatedVisibility(
                 visible = showSettings,
                 enter = fadeIn(tween(UiSpec.QUICK)),
                 exit = fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier.matchParentSize()
             ) {
-                // 玻璃面存活期：主内容背景模糊（离组合自动释放）
-                DisposableEffect(Unit) {
-                    vm.glassAcquire(); onDispose { vm.glassRelease() }
-                }
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -1488,6 +1498,7 @@ class MainActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize()) {
                     Surface(
                         Modifier
+                            .then(glassBackdropModifier())
                             .align(Alignment.CenterStart)
                             .fillMaxHeight()
                             .fillMaxWidth(0.88f),
@@ -1516,9 +1527,6 @@ class MainActivity : ComponentActivity() {
                 exit = fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier.matchParentSize()
             ) {
-                DisposableEffect(Unit) {
-                    vm.glassAcquire(); onDispose { vm.glassRelease() }
-                }
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -1538,6 +1546,7 @@ class MainActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize()) {
                     Surface(
                         Modifier
+                            .then(glassBackdropModifier())
                             .align(Alignment.CenterEnd)
                             .fillMaxHeight()
                             .fillMaxWidth(0.88f),
@@ -1750,6 +1759,26 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** 毛玻璃面修饰（设置/下载侧板、FilterSheet、各弹窗共用）：在本面自身范围内
+     *  回绘主内容离屏层的模糊像 —— 背景保持清晰，只有透过玻璃面才是模糊的
+     *  （与删除成功气泡同款手法）。挂到玻璃面根 modifier 的最外层；
+     *  API<31 无模糊，仅剩调用方自己的半透明底。 */
+    @Composable
+    internal fun glassBackdropModifier(): Modifier {
+        val glass = rememberGraphicsLayer()
+        if (Build.VERSION.SDK_INT >= 31) {
+            glass.renderEffect = BlurEffect(24f, 24f, TileMode.Clamp)
+        }
+        val pos = remember { mutableStateOf(Offset.Zero) }
+        return Modifier
+            .onGloballyPositioned { pos.value = it.positionInRoot() }
+            .drawBehind {
+                val src = glassSource ?: return@drawBehind
+                glass.record { translate(-pos.value.x, -pos.value.y) { drawLayer(src) } }
+                drawLayer(glass)
+            }
     }
 
     /** 数字滚动文本：内容变化时旧值上滑淡出、新值自下滑入（队列计数、顶栏角标等微交互） */
