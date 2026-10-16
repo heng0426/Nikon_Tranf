@@ -149,6 +149,9 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.window.DialogProperties
@@ -199,6 +202,13 @@ class MainActivity : ComponentActivity() {
     /** 主界面内容的离屏录制层（MainScreen 组合期赋值）：设置/下载/筛选/弹窗等
      *  玻璃面用它回绘主内容的模糊像（毛玻璃底材）。弹窗在独立窗口，也取同一层。 */
     internal var glassSource: androidx.compose.ui.graphics.layer.GraphicsLayer? = null
+
+    /** 主界面根 Box 的布局坐标：玻璃面用 localPositionOf 换算含 graphicsLayer 位移的
+     *  屏幕位置（AnimatedVisibility 滑入是位移动画，positionInRoot 不够）。 */
+    internal var glassRootCoords: androidx.compose.ui.layout.LayoutCoordinates? = null
+
+    /** 主窗口 decorView：判断玻璃面是否在主窗口内（弹窗/底部弹层是独立窗口） */
+    internal var glassMainDecor: android.view.View? = null
 
     // ---- 转发到 ViewModel（Activity 重建时状态由 VM 保留）----
     internal val connected get() = vm.connected
@@ -339,6 +349,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        glassMainDecor = window.decorView
         // 自动化入口：adb shell am start ... --ez demo true 直接进演示模式
         if (intent?.getBooleanExtra("demo", false) == true) vm.setDemoMode(true)
         // 请求最高刷新率：HyperOS「智能刷新率」把无帧率声明的应用归入 normal=60Hz 档，
@@ -503,7 +514,11 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 31) {
             glassLayer.renderEffect = BlurEffect(24f, 24f, TileMode.Clamp)
         }
-        Box(Modifier.fillMaxSize()) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { glassRootCoords = it }
+        ) {
             Column(
                 Modifier.fillMaxSize()
                     .drawWithContent {
@@ -1770,16 +1785,34 @@ class MainActivity : ComponentActivity() {
      *  （与删除成功气泡同款手法）。挂到玻璃面根 modifier 的最外层；
      *  API<31 无模糊，仅剩调用方自己的半透明底。
      *  ⚠️ record 的画布不会自动裁剪到图层尺寸，必须 clipRect 显式裁到本面范围，
-     *  否则主内容会溢出到玻璃面之外（边缘外的模糊竖条/半屏模糊就是这么来的）。 */
+     *  否则主内容会溢出到玻璃面之外（边缘外的模糊竖条/半屏模糊就是这么来的）。
+     *  位置换算：玻璃面可能被 graphicsLayer 动画（侧板滑入）或放在独立窗口
+     *  （弹窗/底部弹层）—— positionInRoot 前者不含 graphicsLayer 位移、后者是
+     *  窗口内相对坐标，都不能直接用。统一换算成屏幕坐标：
+     *    主窗口内 → 根 Box 的 localPositionOf（含 graphicsLayer）；
+     *    独立窗口 → positionInRoot + 本窗口 decorView 的屏幕位置。
+     *  并用每帧循环持续重算（ drawBehind 只在读到的状态变化时才重绘）。 */
     @Composable
     internal fun glassBackdropModifier(): Modifier {
         val glass = rememberGraphicsLayer()
         if (Build.VERSION.SDK_INT >= 31) {
             glass.renderEffect = BlurEffect(24f, 24f, TileMode.Clamp)
         }
+        val view = LocalView.current
+        val coords = remember { mutableStateOf<LayoutCoordinates?>(null) }
         val pos = remember { mutableStateOf(Offset.Zero) }
+        LaunchedEffect(view) {
+            while (true) {
+                withFrameNanos { }
+                val c = coords.value ?: continue
+                pos.value = glassPosOnScreen(view, c)
+            }
+        }
         return Modifier
-            .onGloballyPositioned { pos.value = it.positionInRoot() }
+            .onGloballyPositioned {
+                coords.value = it
+                pos.value = glassPosOnScreen(view, it)
+            }
             .drawBehind {
                 val src = glassSource ?: return@drawBehind
                 glass.record {
@@ -1787,9 +1820,28 @@ class MainActivity : ComponentActivity() {
                         translate(-pos.value.x, -pos.value.y) { drawLayer(src) }
                     }
                 }
-                drawLayer(glass)
+                clipRect(0f, 0f, size.width, size.height) {
+                    drawLayer(glass)
+                }
             }
     }
+
+    /** 玻璃面节点在屏幕坐标系中的位置（与 contentLayer 录制坐标系对齐） */
+    private fun glassPosOnScreen(view: android.view.View, c: LayoutCoordinates): Offset {
+        val root = glassRootCoords
+        return if (mainWindowDecor(view) && root != null) {
+            try { root.localPositionOf(c, Offset.Zero) } catch (t: Throwable) { c.positionInRoot() }
+        } else {
+            // 独立窗口（弹窗/底部弹层）：窗口内相对坐标 + 窗口在屏幕上的位置
+            val loc = IntArray(2)
+            view.rootView.getLocationOnScreen(loc)
+            c.positionInRoot() + Offset(loc[0].toFloat(), loc[1].toFloat())
+        }
+    }
+
+    /** 该 view 是否属于主窗口（弹窗/底部弹层有自己的 decorView） */
+    private fun mainWindowDecor(view: android.view.View): Boolean =
+        view.rootView === glassMainDecor
 
     /** 数字滚动文本：内容变化时旧值上滑淡出、新值自下滑入（队列计数、顶栏角标等微交互） */
     @Composable

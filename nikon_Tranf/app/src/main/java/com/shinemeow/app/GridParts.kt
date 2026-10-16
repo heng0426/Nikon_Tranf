@@ -711,19 +711,25 @@ internal fun MainActivity.DateHeaderPill(
 
     /** 筛选卡片（毛玻璃底部弹层）：文件类型(单选) / 下载状态(单选：全部/未下载/已下载) / 拍摄日期(起止)。
      *  实时生效，右上角重置；样式对照用户提供的参考图（去掉连拍与保护）。
-     *  玻璃面：背景保持清晰，仅弹层自身范围内透出主内容的模糊像（glassBackdropModifier）。
-     *  其窗口本就全屏 edge-to-edge（坐标与主窗口对齐），无需额外 properties。 */
+     *  玻璃面：M3 把 modifier 挂在 align(TopCenter) 的外层、下滑 offset 在其内侧，
+     *  玻璃修饰器挂 modifier 参数会画到屏幕顶部 —— 故改为在弹层内容内包一层
+     *  Box，玻璃底材 matchParentSize 铺在内容底下（位置随弹层，坐标正确）。 */
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
 internal fun MainActivity.FilterSheet(onDismiss: () -> Unit) {
         ModalBottomSheet(
             onDismissRequest = onDismiss,
-            modifier = glassBackdropModifier(),
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
         ) {
-            Column(
-                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 28.dp)
-            ) {
+            Box(Modifier.fillMaxWidth()) {
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .then(glassBackdropModifier())
+                )
+                Column(
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 28.dp)
+                ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     FunnelIcon(MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
@@ -793,6 +799,7 @@ internal fun MainActivity.FilterSheet(onDismiss: () -> Unit) {
                         modifier = Modifier.weight(1f)
                     )
                 }
+            }
             }
         }
     }
