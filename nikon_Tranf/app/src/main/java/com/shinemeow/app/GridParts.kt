@@ -310,37 +310,19 @@ internal fun MainActivity.MiniBadge(text: String, bg: Color) {
         }
     }
 
-    /** 保护小锁标：红圆底 + 白锁（相机端写保护，机内删除会被相机拒绝）。
-     *  material-icons-core 无 Lock 图标，Canvas 自绘（与 TrashIcon 同风格）。
-     *  18dp 圆标比文字徽章窄，不抢格式角标与已下载标记的位置。 */
+    /** 保护小锁标：琥珀圆底 + 白锁（相机端写保护，机内删除会被相机拒绝）。
+     *  用警示琥珀而非 error 红：红色在本 App 专属破坏性/出错语义（删除、失败），
+     *  保护是"删除将被拒绝"的预警状态 —— 全局保护视觉统一琥珀（胶囊锁标同步）。
+     *  锁形与置顶胶囊共用同一 LockIcon（CardsIcons）。 */
     @Composable
     internal fun MainActivity.ProtBadge() {
         Box(
             Modifier
                 .size(18.dp)
-                .background(UiSpec.error(vm.darkModeOn), CircleShape),
+                .background(UiSpec.amber(vm.darkModeOn), CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            androidx.compose.foundation.Canvas(Modifier.size(11.dp)) {
-                val w = size.width
-                val h = size.height
-                val c = Color.White
-                // 锁梁：上半圆环
-                drawArc(
-                    color = c,
-                    startAngle = 180f, sweepAngle = 180f, useCenter = false,
-                    topLeft = androidx.compose.ui.geometry.Offset(w * 0.27f, 0f),
-                    size = androidx.compose.ui.geometry.Size(w * 0.46f, h * 0.40f),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = w * 0.13f)
-                )
-                // 锁体：圆角横条
-                drawRoundRect(
-                    color = c,
-                    topLeft = androidx.compose.ui.geometry.Offset(w * 0.12f, h * 0.46f),
-                    size = androidx.compose.ui.geometry.Size(w * 0.76f, h * 0.48f),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(w * 0.12f)
-                )
-            }
+            LockIcon(Color.White, Modifier.size(10.dp))
         }
     }
 
@@ -511,7 +493,8 @@ internal fun DateBubble(text: String) {
         return 0
     }
 
-    /** 置顶信息胶囊槽（合并/文件共用）：左=当前分节日期，右=张数（分块开启时为已加载/总量）。
+    /** 置顶信息胶囊槽（合并/文件共用）：左=当前分节日期，右=张数（分块开启时为已加载/总量），
+     *  末尾=受保护张数胶囊（小锁+数字，protCount=0 时整个胶囊不显示）。
      *  固定槽位随滚动更新，不与照片重叠。
      *  onToggle 非空时日期胶囊可点击 → 折叠/展开当前日期（与节头胶囊同视觉语言：
      *  折叠态箭头转 -90° + 胶囊变淡）。 */
@@ -519,6 +502,7 @@ internal fun DateBubble(text: String) {
 internal fun MainActivity.PinnedPillSlot(
         dateText: String?,
         countText: String,
+        protCount: Int = 0,
         collapsed: Boolean = false,
         onToggle: (() -> Unit)? = null
     ) {
@@ -571,6 +555,28 @@ internal fun MainActivity.PinnedPillSlot(
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                    if (protCount > 0) {
+                        Surface(
+                            shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = UiSpec.PILL_SOLID)
+                        ) {
+                            Row(
+                                Modifier.padding(
+                                    start = 7.dp, end = UiSpec.PILL_HPAD,
+                                    top = UiSpec.PILL_VPAD, bottom = UiSpec.PILL_VPAD
+                                ),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                LockIcon(UiSpec.amber(vm.darkModeOn), Modifier.size(11.dp))
+                                Text(
+                                    "$protCount",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = UiSpec.amber(vm.darkModeOn)
+                                )
+                            }
+                        }
                     }
                 }
             }

@@ -91,6 +91,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
@@ -353,7 +354,7 @@ internal fun MainActivity.PairPager(
                         IconButton(onClick = {
                             rows.getOrNull(pagerState.currentPage)?.let { onDelete(it) }
                         }) {
-                            TrashIcon(UiSpec.error(vm.darkModeOn))
+                            Icon(Icons.Filled.Delete, contentDescription = "机内删除", tint = UiSpec.error(vm.darkModeOn))
                         }
                     }
                     Text(
@@ -653,7 +654,7 @@ internal fun MainActivity.PreviewPager(
                         IconButton(onClick = {
                             rows.getOrNull(pagerState.currentPage)?.let { onDelete(it) }
                         }) {
-                            TrashIcon(UiSpec.error(vm.darkModeOn))
+                            Icon(Icons.Filled.Delete, contentDescription = "机内删除", tint = UiSpec.error(vm.darkModeOn))
                         }
                     }
                     Text(

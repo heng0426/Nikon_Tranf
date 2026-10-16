@@ -656,7 +656,7 @@ internal fun MainActivity.SettingsScreen(
                 SettingsDivider()
                 SettingSwitch(
                     title = "演示数据模式",
-                    subtitle = "不连相机也能测 UI 流畅度：886 张假照片 + 零解码成本缩略图。相机连着时没有 adb 通道（USB 口被占 / Wi-Fi 与热点互斥），只能这样测",
+                    subtitle = "不连相机也能测 UI 流畅度：886 张假照片 + 零解码成本缩略图。含删除演练（约 10 张预置保护，可验证成功气泡/混合结果框）与假存储容量；相机连着时没有 adb 通道（USB 口被占 / Wi-Fi 与热点互斥），只能这样测",
                     checked = vm.demoMode.value,
                     onChange = { vm.setDemoMode(it) }
                 )

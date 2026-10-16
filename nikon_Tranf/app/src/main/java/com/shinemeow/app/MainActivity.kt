@@ -680,30 +680,12 @@ class MainActivity : ComponentActivity() {
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                // 保护状态（诊断行）：受保护张数 + 扫描状态。
-                                // 有命中就直接显示张数（不再提示"不提供"），避免误导。
-                                val protN = vm.protectedCount.value
-                                val ps = vm.protScanState.value
-                                val suffix = when {
-                                    protN > 0 -> ""
-                                    ps == "running" -> "（扫描中…）"
-                                    ps == "unsupported" -> "（相机不提供保护状态）"
-                                    else -> ""
-                                }
-                                Text(
-                                    "保护：$protN 张$suffix",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (protN > 0) UiSpec.error(vm.darkModeOn)
-                                    else UiSpec.connChipText(vm.darkModeOn, isUsb).copy(alpha = 0.75f),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                // 受保护张数已上移到置顶胶囊槽（小锁+数字，0 张不显示），
+                                // 浮层只保留连接信息与容量两行
                             }
-                            TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { vm.disconnect() } } }) {
-                                Text(
-                                    "断开",
-                                    color = UiSpec.error(vm.darkModeOn)
-                                )
+                            // 与全局操作按钮同风格（描边胶囊 ActionPill），不再是裸 TextButton
+                            ActionPill("断开") {
+                                scope.launch { withContext(Dispatchers.IO) { vm.disconnect() } }
                             }
                         }
                     }
@@ -970,6 +952,7 @@ class MainActivity : ComponentActivity() {
                         dateText = sec?.let { vm.dateLabel(it.dateKey, it.rows.size) },
                         countText = if (vm.chunkedLoad.value) "已加载 ${pairs.size}/${vm.fullVisibleCount()} 张"
                         else "共 ${pairs.size} 张",
+                        protCount = vm.protectedCount.value,
                         collapsed = sec != null && sec.dateKey in vm.collapsedDates.value,
                         onToggle = if (sec != null) ({
                             val wasCollapsed = sec.dateKey in vm.collapsedDates.value
@@ -1059,6 +1042,7 @@ class MainActivity : ComponentActivity() {
                         dateText = sec?.let { vm.dateLabel(it.dateKey, it.rows.size) },
                         countText = if (vm.chunkedLoad.value) "已加载 ${visible.size}/${vm.fullVisibleCount()} 张"
                         else "共 ${visible.size} 张",
+                        protCount = vm.protectedCount.value,
                         collapsed = sec != null && sec.dateKey in vm.collapsedDates.value,
                         onToggle = if (sec != null) ({
                             val wasCollapsed = sec.dateKey in vm.collapsedDates.value

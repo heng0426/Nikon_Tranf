@@ -79,8 +79,9 @@ fun prettyStamp(s: String): String =
 /** 下载队列条目状态 / QueueItem / 队列调度：见 DownloadManager.kt */
 
 fun humanSize(b: Long): String = when {
-    b >= 1 shl 20 -> "%.1fMB".format(b / 1048576.0)
-    b >= 1 shl 10 -> "%.0fKB".format(b / 1024.0)
+    b >= 1L shl 30 -> "%.1fGB".format(b / 1073741824.0)
+    b >= 1L shl 20 -> "%.1fMB".format(b / 1048576.0)
+    b >= 1L shl 10 -> "%.0fKB".format(b / 1024.0)
     else -> "${b}B"
 }
 
@@ -1626,6 +1627,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 "IMG_${stamp}_$i.${type.lowercase()}", 0x900000 + i, type, stamp, "DSC_${1000 + i}"
             )
             r.preview.value = demoBitmap(i)
+            // 演示保护：每 89 张预置 1 张受保护（共约 10 张）——网格/预览出保护徽标，
+            // 删除预检计入 protectedCount，确认删除时被 0x200D 分支跳过 → 可离线演练
+            // 「已删除 N 张；M 张受保护已跳过」的混合结果框与全成功的静默气泡两条路径
+            if (i % 89 == 7) r.isProtected.value = true
             rows.add(r)
         }
         rows.sortWith(
@@ -1646,6 +1651,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connectedIp.value = "演示模式"
         connText.value = "演示模式 · ${photoRows.size} 张"
         uiLog = "演示模式：${photoRows.size} 张假数据"
+        demoRowTotal = photoRows.size
+        refreshCamStorage()   // 演示假容量：连接详情浮层立即可见
     }
 
     private fun clearDemo() {
@@ -1660,6 +1667,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         connDetail.value = ""
         connectedIp.value = ""
         connText.value = "未连接 · 点按连接相机"
+        camStorage.value = null
+        deletePlan.value = null
+        deleteResult.value = null
+        deleteResultTitle.value = null
     }
 
     /** 假下载：走与真实下载同一条进度节流路径，用来复现/验证下载页的更新压力 */
@@ -3273,9 +3284,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun consumeDeleteOk() { deleteOkEvent.value = null }
     fun cancelDeletePlan() { deletePlan.value = null }
 
-    /** 后台刷新存储容量（双通道分发；失败静默留空，不影响主流程） */
+    /** 后台刷新存储容量（双通道分发；失败静默留空，不影响主流程）
+     *  演示模式：假容量（64GB 卡），剩余 = 基数 43GB + 已删张数 × 24MB（单张口径与假下载一致），
+     *  删除成功后 confirmDelete 的 refreshCamStorage 会同步回升，可离线验证容量展示。 */
+    private var demoRowTotal = 0
     fun refreshCamStorage() {
-        if (demoMode.value || !connected) { camStorage.value = null; return }
+        if (demoMode.value) {
+            val per = 24L * 1024 * 1024
+            val free = 43L * 1024 * 1024 * 1024 +
+                (demoRowTotal - photoRows.size).coerceAtLeast(0) * per
+            camStorage.value = CamStorageInfo(
+                64L * 1024 * 1024 * 1024, free, free / per, "演示"
+            )
+            return
+        }
+        if (!connected) { camStorage.value = null; return }
         Thread {
             val info = try {
                 synchronized(camMutex) {
@@ -3377,9 +3400,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 删除所选 → 预检（IO 线程）→ deletePlan 弹确认框。
      *  rows=null 取当前多选；非 null = 预览页单张删除入口。
      *  队列冲突：有选中正在下载/排队即整体拦截（删了正在读的句柄会让该次下载半路失败），
-     *  提示用户先取消下载——不静默删一部分，避免"选了 10 张只删 6 张"的困惑。 */
+     *  提示用户先取消下载——不静默删一部分，避免"选了 10 张只删 6 张"的困惑。
+     *  演示模式同样走全流程（预检→确认框→逐张执行），仅执行结果为模拟值。 */
     fun requestDelete(rows: List<PhotoRow>? = null) {
-        if (demoMode.value) { uiLog = "演示模式不支持机内删除"; return }
         if (!connected) { uiLog = "未连接相机，无法删除"; return }
         if (deleteBusy.value || deletePlan.value != null) return
         val picked = rows ?: collectSelectedRows()
@@ -3397,10 +3420,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // 写保护预检：①先看已知状态（后台扫描确认过 / 上次删除被 0x200D 拒过）
             // ②未知才问相机（0x1008 在 Wi-Fi 传输会话可能不支持 → 失败不计入，
             //   交由相机端 0x200D 拒绝码兜底，并在删除失败时回写徽标）
+            // 演示模式不问相机（无通道）：只用预置的 isProtected 已知状态
             var prot = 0
             for (r in picked) {
                 if (r.isProtected.value) { prot++; continue }
-                val p = try {
+                val p = if (demoMode.value) null else try {
                     synchronized(camMutex) {
                         usbSession?.objectProtected(r.handle)
                             ?: GPhoto2Bridge.nativeObjectProtectedNative(r.handle)
@@ -3422,7 +3446,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 确认框「删除」→ IO 线程逐句柄执行（串行 camMutex，与下载互斥）。
      *  0x2001=已删除；0x200D=受保护/只读（跳过，Z6 II 实测拒绝码）；
-     *  0x2009=句柄无效（同按跳过计）；其他=失败（记响应码）。 */
+     *  0x2009=句柄无效（同按跳过计）；其他=失败（记响应码）。
+     *  演示模式：无相机通道，未受保护的行一律模拟 0x2001 成功（受保护行在
+     *  上方已被 isProtected 跳过），覆盖"全成功气泡 / 混合结果框"两条 UI 路径。 */
     fun confirmDelete() {
         val plan = deletePlan.value ?: return
         deletePlan.value = null
@@ -3435,7 +3461,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // 已知受保护（扫描确认 / 上次 0x200D 拒过）：不发命令，直接跳过——
                 // 发了必被拒，还会让整批多等一次往返
                 if (r.isProtected.value) { prot++; continue }
-                val code = try {
+                val code = if (demoMode.value) 0x2001 else try {
                     synchronized(camMutex) {
                         usbSession?.deleteObject(r.handle)
                             ?: GPhoto2Bridge.nativeDeleteNative(r.handle)

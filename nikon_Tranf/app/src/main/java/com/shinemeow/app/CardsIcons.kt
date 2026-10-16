@@ -130,6 +130,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asComposeRenderEffect
@@ -336,6 +337,36 @@ internal fun DownloadIcon(color: Color, modifier: Modifier = Modifier) {
             end = Offset(w * 0.82f, h * 0.88f),
             strokeWidth = stroke,
             cap = StrokeCap.Round
+        )
+    }
+}
+
+/** 锁形（实心锁体 + 描边锁梁）：material-icons-core 无 Lock，自绘的 Material Filled.Lock 风格。
+ *  保护视觉全局唯一锁源：网格 ProtBadge（琥珀圆底内白色）与置顶保护胶囊（琥珀裸锁）共用。
+ *  实心锁体比描边款在 10dp 级别更清晰；锁梁竖腿下端伸入锁体范围，被实心体覆盖 → 衔接无缝。 */
+@Composable
+internal fun LockIcon(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val shackle = w * 0.13f
+        // 锁梁：上半圆（圆心 x 居中，跨 0.31~0.69w，顶 0.15h）
+        drawArc(
+            color,
+            startAngle = 180f, sweepAngle = 180f, useCenter = false,
+            topLeft = Offset(w * 0.31f, h * 0.15f),
+            size = Size(w * 0.38f, h * 0.38f),
+            style = Stroke(width = shackle, cap = StrokeCap.Round)
+        )
+        // 锁梁竖腿：自半圆端点下垂，下端埋进锁体
+        drawLine(color, Offset(w * 0.31f, h * 0.34f), Offset(w * 0.31f, h * 0.52f), shackle, StrokeCap.Round)
+        drawLine(color, Offset(w * 0.69f, h * 0.34f), Offset(w * 0.69f, h * 0.52f), shackle, StrokeCap.Round)
+        // 锁体：实心圆角矩形（覆盖竖腿下端，衔接无缝）
+        drawRoundRect(
+            color,
+            topLeft = Offset(w * 0.17f, h * 0.44f),
+            size = Size(w * 0.66f, h * 0.46f),
+            cornerRadius = CornerRadius(w * 0.16f)
         )
     }
 }
