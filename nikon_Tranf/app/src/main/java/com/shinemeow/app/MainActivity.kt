@@ -1186,7 +1186,9 @@ class MainActivity : ComponentActivity() {
                 exit = slideOutVertically(tween(UiSpec.QUICK)) { it } + fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(start = UiSpec.PAGE_PAD, end = UiSpec.PAGE_PAD)
+                    // 左右比网格区（主 Column 的 PAGE_PAD 内缩）各宽出 6dp：
+                    // 与网格边缘完全对齐显得过于"焊死"，微微外扩更有浮层感
+                    .padding(start = UiSpec.PAGE_PAD - 6.dp, end = UiSpec.PAGE_PAD - 6.dp)
                     .navigationBarsPadding()
                     .padding(bottom = UiSpec.PAGE_PAD)
             ) {
