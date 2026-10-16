@@ -1034,7 +1034,9 @@ class MainActivity : ComponentActivity() {
                     // 免疫无障碍扫描：GKD/记账类服务监听 CONTENT_CHANGED 且全树遍历坐标，
                     // 网格几百节点 × 每帧滚动 = 主线程每帧 6-17ms 语义计算（实测 trace 热点）。
                     // 清空网格子树语义后对外只剩 1 个空节点，服务扫描成本归零（工具类 app 可接受）。
-                    Box(Modifier.fillMaxWidth().weight(1f).clearAndSetSemantics { }) {
+                    // 同款 ROUND_LARGE 圆角裁剪：网格区与底部浮层多选卡片圆角一致，
+                    // 消除卡片旁网格的直角突兀感
+                    Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(UiSpec.ROUND_LARGE)).clearAndSetSemantics { }) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
                         modifier = Modifier.fillMaxSize(),
@@ -1120,7 +1122,9 @@ class MainActivity : ComponentActivity() {
                         }) else null
                     )
                     // 免疫无障碍扫描（同合并模式）：语义子树清空，服务扫描成本归零
-                    Box(Modifier.fillMaxWidth().weight(1f).clearAndSetSemantics { }) {
+                    // 同款 ROUND_LARGE 圆角裁剪：网格区与底部浮层多选卡片圆角一致，
+                    // 消除卡片旁网格的直角突兀感
+                    Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(UiSpec.ROUND_LARGE)).clearAndSetSemantics { }) {
                     LazyVerticalGrid(
                     columns = GridCells.Fixed(3),
                     modifier = Modifier.fillMaxSize(),
@@ -1172,9 +1176,10 @@ class MainActivity : ComponentActivity() {
                 } // else: 文件模式网格结束
             }
             // 多选操作条：浮层玻璃卡片（有选中弹出/无选中消失，交互逻辑不变），
-            // 效果与其他弹窗一致（32dp 模糊+同款着色/描边/阴影），底材=网格主内容
+            // 效果与其他弹窗一致（40dp 模糊+同款着色/描边），底材=网格主内容；
+            // 预览打开时收起（避免遮挡预览底部照片信息），退出预览自动弹回
             AnimatedVisibility(
-                visible = selCount > 0,
+                visible = selCount > 0 && !previewing,
                 // slide+fade：expandVertically 会裁剪内容（阴影在边缘外被裁掉，
                 // 动画结束瞬间阴影才出现，非常割裂）；slide 位移不裁剪，阴影全程跟随
                 enter = slideInVertically(tween(UiSpec.STANDARD)) { it } + fadeIn(tween(UiSpec.STANDARD)),
