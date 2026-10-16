@@ -3240,6 +3240,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         camStorage.value = null
         deletePlan.value = null
         deleteResult.value = null
+        deleteResultTitle.value = null
     }
 
     /* ---------- 机内删除（0x100B DeleteObject）+ 存储容量（0x1005）----------
@@ -3257,11 +3258,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     data class DeletePlan(val total: Int, val protectedCount: Int, val rows: List<PhotoRow>)
     val deletePlan = mutableStateOf<DeletePlan?>(null)
 
-    /** 删除结果汇总（单次 AlertDialog 展示；null=不显示） */
+    /** 删除结果汇总（单次 AlertDialog 展示；null=不显示）。
+     *  全部删除成功时保持 null（静默不弹窗），仅受保护跳过/失败/中断才提示。 */
     val deleteResult = mutableStateOf<String?>(null)
+    /** 结果框标题（与 deleteResult 成对出现）："无法删除"/"删除失败"/"删除中断"/"删除未完成" */
+    val deleteResultTitle = mutableStateOf<String?>(null)
+    /** 删除成功气泡事件（一次性）：Pair(序列 id, 成功张数)。UI 消费后置 null。
+     *  id 递增保证「连续删 1 张再删 1 张」也能各自触发气泡（值相同 key 不同）。 */
+    val deleteOkEvent = mutableStateOf<Pair<Int, Int>?>(null)
+    private var deleteOkSeq = 0
     val deleteBusy = mutableStateOf(false)
 
-    fun dismissDeleteResult() { deleteResult.value = null }
+    fun dismissDeleteResult() { deleteResult.value = null; deleteResultTitle.value = null }
+    fun consumeDeleteOk() { deleteOkEvent.value = null }
     fun cancelDeletePlan() { deletePlan.value = null }
 
     /** 后台刷新存储容量（双通道分发；失败静默留空，不影响主流程） */
@@ -3449,14 +3458,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             deleteBusy.value = false
-            deleteResult.value = buildString {
-                append("已删除 ").append(ok).append(" 张")
-                if (prot > 0) append("；").append(prot)
-                    .append(" 张受保护已跳过（需在机身上取消「保护」后才能删除）")
-                if (fail > 0) append("；").append(fail).append(" 张失败（").append(codes.toString().trim()).append("）")
-                if (ok + prot + fail < plan.rows.size) append("；连接已中断，剩余未处理")
+            val interrupted = ok + prot + fail < plan.rows.size
+            if (prot == 0 && fail == 0 && !interrupted) {
+                // 全部删除成功：不弹结果框，改由 UI 弹底部小气泡（删除成功 N 张）后自动消失
+                deleteResult.value = null
+                deleteResultTitle.value = null
+                deleteOkEvent.value = Pair(++deleteOkSeq, ok)
+                Log.i("GPhoto2", "机内删除完成: ok=$ok / 共${plan.rows.size}（成功静默，气泡提示）")
+            } else {
+                deleteResultTitle.value = when {
+                    ok == 0 && fail == 0 && !interrupted -> "无法删除"      // 全是受保护
+                    ok == 0 && fail == 0 -> "删除中断"
+                    fail > 0 && ok == 0 -> "删除失败"
+                    else -> "删除未完成"
+                }
+                deleteResult.value = buildString {
+                    if (ok > 0) append("已删除 ").append(ok).append(" 张")
+                    if (prot > 0) {
+                        if (ok > 0) append("；")
+                        append(prot).append(" 张受保护已跳过（需在机身上取消「保护」后才能删除）")
+                    }
+                    if (fail > 0) {
+                        if (ok > 0 || prot > 0) append("；")
+                        append(fail).append(" 张失败（").append(codes.toString().trim()).append("）")
+                    }
+                    if (interrupted) append("；连接已中断，剩余未处理")
+                }
+                Log.i("GPhoto2", "机内删除完成: ok=$ok prot=$prot fail=$fail / 共${plan.rows.size}（弹结果框）")
             }
-            Log.i("GPhoto2", "机内删除完成: ok=$ok prot=$prot fail=$fail / 共${plan.rows.size}")
             if (ok > 0) refreshCamStorage()
         }.start()
     }

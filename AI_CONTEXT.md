@@ -137,7 +137,7 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 
 ZENCHE 五端均无机内删除，本功能为对标增量。双通道分发（USB = `UsbPtpSession.deleteObject/storageInfo/objectProtected`；Wi-Fi = `nativeDeleteNative/nativeStorageInfoNative/nativeObjectProtectedNative`）。
 
-- **流程**：`requestDelete(rows)`（IO 线程）→ ① demo/未连接拦截 → ② **下载队列冲突前置拦截**（选中含 QUEUED/RUNNING 即整体拒绝并提示——删了正在读的句柄会让该次下载半路失败；不静默删一部分）→ ③ 写保护预检（0x1008 ProtectionStatus；查询失败不阻塞）→ `deletePlan` 弹确认框 → `confirmDelete()` 逐句柄执行（串行 camMutex）→ `deleteResult` 单次汇总框（已删除/受保护跳过/失败响应码/连接中断）。
+- **流程**：`requestDelete(rows)`（IO 线程）→ ① demo/未连接拦截 → ② **下载队列冲突前置拦截**（选中含 QUEUED/RUNNING 即整体拒绝并提示——删了正在读的句柄会让该次下载半路失败；不静默删一部分）→ ③ 写保护预检（0x1008 ProtectionStatus，仅 USB 通道可用，见下；查询失败不阻塞）→ `deletePlan` 弹确认框 → `confirmDelete()` 逐句柄执行（串行 camMutex）→ **结果反馈分级**：全部成功 → 静默不弹窗，底部滑入小气泡「✓ 删除成功 N 张」1.6s 自动消失（`deleteOkEvent = Pair<seqId, count>` 一次性事件，MainActivity 根 Box 末尾 AnimatedVisibility，z 序高于全屏预览，预览单张删除同样可见）；仅受保护跳过/失败/连接中断才弹结果框，标题分「无法删除 / 删除失败 / 删除中断 / 删除未完成」四档（`deleteResultTitle` 与 `deleteResult` 成对）。
 - **入口**：多选操作条「删除所选（N）」（OutlinedButton，`UiSpec.error` 色）；全屏预览顶栏垃圾桶（合并对 = JPG+NEF 一并删）。**删除后预览停留**：rows 快照缩短、currentPage 不变 → Pager 自然落到下一张；删到末尾越界才关（Pager 内 `LaunchedEffect(rows.size)` + 内容 `getOrNull(page) ?: return@HorizontalPager` 兜底，见 §9#14）。
 - **成功后本地处理**：`removePhotoRow` 移除 photoRows 行 + rowByHandle 索引 + selectedCount 同步 + `refreshPairRows()` 重建配对缓存 + pairSelection 键清理；**不碰已下载标记（downloadedNames）与本地文件**——"已下载副本不受影响"。⚠️ removePhotoRow **必须 post 主线程**执行（SnapshotStateList IO 线程写 = CME，见 §9#13）。
 - **容量展示**：连接详情浮层第二行（`vm.camStorage`，连接成功后 `refreshCamStorage()` 拉取，删除成功后刷新）；Wi-Fi 侧字符串格式 `"capacity|free|freeImages|label"`（Kotlin 侧 `parseCamStorage` 解析）。

@@ -71,6 +71,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -134,6 +135,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asComposeRenderEffect
@@ -1395,11 +1397,11 @@ class MainActivity : ComponentActivity() {
                     }
                 )
             }
-            // 机内删除结果汇总（单次展示，点「好」消散）
+            // 机内删除结果汇总（仅受保护/失败/中断时弹出；全部成功静默不弹）
             vm.deleteResult.value?.let { msg ->
                 AlertDialog(
                     onDismissRequest = { vm.dismissDeleteResult() },
-                    title = { Text("删除完成") },
+                    title = { Text(vm.deleteResultTitle.value ?: "删除结果") },
                     text = { Text(msg) },
                     confirmButton = {
                         TextButton(onClick = { vm.dismissDeleteResult() }) { Text("好") }
@@ -1508,6 +1510,51 @@ class MainActivity : ComponentActivity() {
                         shadowElevation = 8.dp
                     ) {
                         DownloadsScreen(onBack = { showDownloads = false })
+                    }
+                }
+            }
+            // 删除成功气泡：底部深色小条（✓ 删除成功 N 张），滑入 1.6s 后滑出，替代成功结果弹窗。
+            // 声明在根 Box 末尾 → z 序高于全屏预览，预览页单张删除同样可见。
+            val okEv = vm.deleteOkEvent.value
+            val okShow = remember { mutableStateOf(false) }
+            LaunchedEffect(okEv?.first) {
+                if (okEv != null) {
+                    okShow.value = true
+                    delay(1600)
+                    okShow.value = false
+                    vm.consumeDeleteOk()
+                }
+            }
+            AnimatedVisibility(
+                visible = okShow.value,
+                enter = slideInVertically(tween(UiSpec.STANDARD)) { it } + fadeIn(tween(UiSpec.QUICK)),
+                exit = slideOutVertically(tween(UiSpec.QUICK)) { it } + fadeOut(tween(UiSpec.QUICK)),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 36.dp)
+            ) {
+                okEv?.let { ev ->
+                    Row(
+                        Modifier
+                            .shadow(8.dp, RoundedCornerShape(UiSpec.ROUND_LARGE))
+                            .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
+                            .background(Color(0xE6141414))
+                            .padding(horizontal = 18.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Filled.Check,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(UiSpec.ICON_STD)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "删除成功 ${ev.second} 张",
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
                     }
                 }
             }
