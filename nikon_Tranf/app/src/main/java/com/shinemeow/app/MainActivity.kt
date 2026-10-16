@@ -529,7 +529,7 @@ class MainActivity : ComponentActivity() {
         glassSourcePreview = if (previewing) previewLayer else null
         val glassLayer = rememberGraphicsLayer()
         if (Build.VERSION.SDK_INT >= 31) {
-            glassLayer.renderEffect = BlurEffect(24f, 24f, TileMode.Clamp)
+            glassLayer.renderEffect = BlurEffect(UiSpec.GLASS_BLUR_SOFT, UiSpec.GLASS_BLUR_SOFT, TileMode.Clamp)
         }
         Box(
             Modifier
@@ -545,7 +545,7 @@ class MainActivity : ComponentActivity() {
                     .graphicsLayer {
                         if (previewing && Build.VERSION.SDK_INT >= 31) {
                             renderEffect = android.graphics.RenderEffect
-                                .createBlurEffect(24f, 24f, android.graphics.Shader.TileMode.CLAMP)
+                                .createBlurEffect(UiSpec.GLASS_BLUR_SOFT, UiSpec.GLASS_BLUR_SOFT, android.graphics.Shader.TileMode.CLAMP)
                                 .asComposeRenderEffect()
                         } else {
                             renderEffect = null
@@ -1191,9 +1191,9 @@ class MainActivity : ComponentActivity() {
                         .then(
                             glassBackdropModifier(
                                 shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
-                                tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
-                                border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
-                                blur = 40f
+                                tint = UiSpec.glassTint(vm.darkModeOn),
+                                border = UiSpec.glassBorder(vm.darkModeOn),
+                                blur = UiSpec.GLASS_BLUR
                             )
                         ),
                     shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
@@ -1448,10 +1448,10 @@ class MainActivity : ComponentActivity() {
                     ),
                     modifier = glassBackdropModifier(
                         shape = MaterialTheme.shapes.extraLarge,
-                        tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
-                        border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
-                        blur = 40f,
-                        shadow = 8.dp
+                        tint = UiSpec.glassTint(vm.darkModeOn),
+                        border = UiSpec.glassBorder(vm.darkModeOn),
+                        blur = UiSpec.GLASS_BLUR,
+                        shadow = UiSpec.GLASS_SHADOW
                     ),
                     containerColor = Color.Transparent,
                     onDismissRequest = { vm.cancelDeletePlan() },
@@ -1497,10 +1497,10 @@ class MainActivity : ComponentActivity() {
                     ),
                     modifier = glassBackdropModifier(
                         shape = MaterialTheme.shapes.extraLarge,
-                        tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
-                        border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
-                        blur = 40f,
-                        shadow = 8.dp
+                        tint = UiSpec.glassTint(vm.darkModeOn),
+                        border = UiSpec.glassBorder(vm.darkModeOn),
+                        blur = UiSpec.GLASS_BLUR,
+                        shadow = UiSpec.GLASS_SHADOW
                     ),
                     containerColor = Color.Transparent,
                     onDismissRequest = { vm.dismissDeleteResult() },
@@ -1520,10 +1520,10 @@ class MainActivity : ComponentActivity() {
                     ),
                     modifier = glassBackdropModifier(
                         shape = MaterialTheme.shapes.extraLarge,
-                        tint = if (vm.darkModeOn) Color(0x7A000000) else Color(0xB3FFFFFF),
-                        border = if (vm.darkModeOn) Color(0x24FFFFFF) else Color(0x1A000000),
-                        blur = 40f,
-                        shadow = 8.dp
+                        tint = UiSpec.glassTint(vm.darkModeOn),
+                        border = UiSpec.glassBorder(vm.darkModeOn),
+                        blur = UiSpec.GLASS_BLUR,
+                        shadow = UiSpec.GLASS_SHADOW
                     ),
                     containerColor = Color.Transparent,
                     onDismissRequest = { hotspotHint = false },
@@ -1669,8 +1669,8 @@ class MainActivity : ComponentActivity() {
                     // 毛玻璃配色随明暗模式：深色压黑提亮边、浅色罩白压深边；
                     // 模糊底材 = bubbleGlass（主内容实时模糊回绘），API<31 自动退化为纯半透明
                     val dark = vm.darkModeOn
-                    val glassTint = if (dark) Color(0x54000000) else Color(0x8CFFFFFF)
-                    val glassBorder = if (dark) Color(0x24FFFFFF) else Color(0x1A000000)
+                    val glassTint = UiSpec.bubbleTint(dark)
+                    val glassBorder = UiSpec.glassBorder(dark)
                     val fg = if (dark) Color.White else Color(0xFF1C1C1E)
                     Row(
                         Modifier
@@ -1863,7 +1863,7 @@ class MainActivity : ComponentActivity() {
         shape: Shape? = null,
         tint: Color? = null,
         border: Color? = null,
-        blur: Float = 24f,
+        blur: Float = UiSpec.GLASS_BLUR,
         shadow: Dp? = null
     ): Modifier =
         Modifier.composed {

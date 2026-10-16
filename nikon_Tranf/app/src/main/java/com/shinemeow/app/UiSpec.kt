@@ -125,6 +125,7 @@ val UI_THEMES: Map<ThemeKey, UiTheme> = mapOf(
  *  ▍颜色分两类
  *    函数型：浅/深两套配色按 dark 参数取值（调用处传 vm.darkModeOn）
  *    常量型：不随深色模式变化的固定色（蒙层/徽章/占位符等）
+ *  ▍毛玻璃（GLASS_*）：弹层模糊/着色/描边/阴影统一规格，调观感只动这一区
  * ===================================================================== */
 
 object UiSpec {
@@ -233,6 +234,22 @@ object UiSpec {
     val PILL_DIM = 0.55f         // 信息胶囊折叠/淡化态底透明度
     val PILL_TINT = 0.14f        // 状态胶囊淡底强度（已完成绿/总数量amber/排队中primary 的浅色填充）
     val DONE_FILL_ALPHA = 0.20f  // 队列行/总览卡下载完成绿色填充
+
+    /* ---------- 毛玻璃（弹层玻璃统一规格，glassBackdropModifier / 删除气泡 / 预览背景消费） ----------
+     *  调玻璃观感只动这一区：模糊半径、着色、描边、阴影。
+     *  结构 = 模糊像（主内容离屏录制 + BlurEffect）→ outline 裁剪 → 着色 → 描边 → 系统阴影。 */
+    /** 模糊半径 px（BlurEffect 横纵同值）：弹窗/筛选面板/多选卡片标准档。调大更雾、文字更稳 */
+    const val GLASS_BLUR = 40f
+    /** 模糊半径轻档：删除成功气泡 / 预览页背景虚化（小面积、需保留内容轮廓辨识） */
+    const val GLASS_BLUR_SOFT = 24f
+    /** 弹层着色（叠在模糊像上的半透明色，统一明暗保证文字对比）：深=黑48%，浅=白70% */
+    fun glassTint(dark: Boolean) = if (dark) Color(0x7A000000) else Color(0xB3FFFFFF)
+    /** 弹层描边（边缘 1dp 一圈，玻璃边界的视觉暗示）：深=白14%，浅=黑10% */
+    fun glassBorder(dark: Boolean) = if (dark) Color(0x24FFFFFF) else Color(0x1A000000)
+    /** 弹层投影高度（Modifier.shadow，玻璃卡片悬浮感；多选浮层卡片按用户要求不带阴影） */
+    val GLASS_SHADOW = 8.dp
+    /** 删除成功气泡着色（小面积轻一档：深=黑33%，浅=白55%） */
+    fun bubbleTint(dark: Boolean) = if (dark) Color(0x54000000) else Color(0x8CFFFFFF)
 
     /* ---------- 迷你徽章字号 ---------- */
     val BADGE_FONT = 8.sp        // 文字徽章：顶栏「短⇆长」反转徽章 / 设置页类型小徽章
