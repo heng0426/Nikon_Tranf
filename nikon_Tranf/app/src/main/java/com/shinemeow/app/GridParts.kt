@@ -99,6 +99,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDefaults
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -707,12 +708,19 @@ internal fun MainActivity.DateHeaderPill(
         }
     }
 
-    /** 筛选卡片：文件类型(单选) / 下载状态(单选：全部/未下载/已下载) / 拍摄日期(起止)。
-     *  实时生效，右上角重置；样式对照用户提供的参考图（去掉连拍与保护）。 */
+    /** 筛选卡片（毛玻璃底部弹层）：文件类型(单选) / 下载状态(单选：全部/未下载/已下载) / 拍摄日期(起止)。
+     *  实时生效，右上角重置；样式对照用户提供的参考图（去掉连拍与保护）。
+     *  玻璃面：显示期间主内容背景模糊，弹层半透明 surface 透出。 */
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
 internal fun MainActivity.FilterSheet(onDismiss: () -> Unit) {
-        ModalBottomSheet(onDismissRequest = onDismiss) {
+        DisposableEffect(Unit) {
+            vm.glassAcquire(); onDispose { vm.glassRelease() }
+        }
+        ModalBottomSheet(
+            onDismissRequest = onDismiss,
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+        ) {
             Column(
                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 28.dp)
             ) {
@@ -873,8 +881,14 @@ internal fun MainActivity.DateField(
         if (open) {
             val init = value?.let { keyToMillis(it) }
             val st = rememberDatePickerState(initialSelectedDateMillis = init)
+            DisposableEffect(Unit) {
+                vm.glassAcquire(); onDispose { vm.glassRelease() }
+            }
             DatePickerDialog(
                 onDismissRequest = { open = false },
+                colors = DatePickerDefaults.colors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                ),
                 confirmButton = {
                     TextButton(onClick = {
                         st.selectedDateMillis?.let { onSet(millisToKey(it)) }

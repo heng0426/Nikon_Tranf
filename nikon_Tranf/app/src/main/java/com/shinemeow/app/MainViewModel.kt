@@ -3254,6 +3254,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         deleteResultTitle.value = null
     }
 
+    /** 毛玻璃叠层计数：设置/下载/筛选/弹窗等玻璃面显示期间 >0 → 主内容背景模糊。
+     *  各玻璃面用 DisposableEffect acquire/release 配对（进组合 +1，离组合 -1），
+     *  计数式而非布尔式，多层面叠开（如弹窗叠在侧板上）不互相踩。 */
+    val glassOverlay = mutableStateOf(0)
+    fun glassAcquire() { glassOverlay.value++ }
+    fun glassRelease() { glassOverlay.value = (glassOverlay.value - 1).coerceAtLeast(0) }
+
     /* ---------- 机内删除（0x100B DeleteObject）+ 存储容量（0x1005）----------
      * ZENCHE 五端均无机内删除，对标落地任务 7。双通道分发：
      *   USB   → UsbPtpSession.deleteObject / storageInfo / objectProtected

@@ -40,6 +40,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -481,8 +482,10 @@ class MainActivity : ComponentActivity() {
         // 机内删除后预览停留：rows 快照缩短 → Pager 当前页不变、自然落到下一张
         // （用户要求的行为）；删到末尾越界时由 Pager 内 LaunchedEffect(rows.size) 负责关闭
 
-        // 毛玻璃：预览打开时主界面内容实时模糊（API31+，低版本自动退化为半透明黑）
+        // 毛玻璃：预览/设置/下载/筛选/弹窗任一玻璃面打开时，主界面内容实时模糊
+        //（API31+，低版本自动退化为半透明黑）
         val previewing = (mergeOn && pairPreviewIndex >= 0) || (!mergeOn && previewIndex >= 0)
+        val overlaying = previewing || vm.glassOverlay.value > 0
         // 删除成功气泡的毛玻璃底材：主内容每帧录进离屏层（contentLayer，不带模糊，
         // 正常显示走它），气泡内再把它平移回绘进 glassLayer 并施加 24dp 模糊 ——
         // 模糊只作用于气泡区域，不能设在 contentLayer 上（否则整屏跟着糊）。
@@ -501,7 +504,7 @@ class MainActivity : ComponentActivity() {
                         drawLayer(contentLayer)                // 正常显示走离屏层（无模糊）
                     }
                     .graphicsLayer {
-                        if (previewing && Build.VERSION.SDK_INT >= 31) {
+                        if (overlaying && Build.VERSION.SDK_INT >= 31) {
                             renderEffect = android.graphics.RenderEffect
                                 .createBlurEffect(24f, 24f, android.graphics.Shader.TileMode.CLAMP)
                                 .asComposeRenderEffect()
@@ -1369,7 +1372,11 @@ class MainActivity : ComponentActivity() {
             //   无保护     → 正常确认。
             vm.deletePlan.value?.let { plan ->
                 val allProt = plan.protectedCount > 0 && plan.protectedCount >= plan.total
+                DisposableEffect(Unit) {
+                    vm.glassAcquire(); onDispose { vm.glassRelease() }
+                }
                 AlertDialog(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
                     onDismissRequest = { vm.cancelDeletePlan() },
                     title = { Text(if (allProt) "无法删除" else "删除相机中的 ${plan.total} 张照片？") },
                     text = {
@@ -1406,7 +1413,11 @@ class MainActivity : ComponentActivity() {
             }
             // 机内删除结果汇总（仅受保护/失败/中断时弹出；全部成功静默不弹）
             vm.deleteResult.value?.let { msg ->
+                DisposableEffect(Unit) {
+                    vm.glassAcquire(); onDispose { vm.glassRelease() }
+                }
                 AlertDialog(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
                     onDismissRequest = { vm.dismissDeleteResult() },
                     title = { Text(vm.deleteResultTitle.value ?: "删除结果") },
                     text = { Text(msg) },
@@ -1417,7 +1428,11 @@ class MainActivity : ComponentActivity() {
             }
             // 热点未开启提醒（本 App 主拓扑 = 相机连手机热点）
             if (hotspotHint) {
+                DisposableEffect(Unit) {
+                    vm.glassAcquire(); onDispose { vm.glassRelease() }
+                }
                 AlertDialog(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
                     onDismissRequest = { hotspotHint = false },
                     title = { Text("手机热点未开启") },
                     text = {
@@ -1443,13 +1458,17 @@ class MainActivity : ComponentActivity() {
                     }
                 )
             }
-            // 设置：从左侧滑出的卡片式面板（蒙层点击关闭，主界面保留在底下）
+            // 设置：从左侧滑出的卡片式玻璃面板（蒙层点击关闭，主界面模糊透底）
             AnimatedVisibility(
                 visible = showSettings,
                 enter = fadeIn(tween(UiSpec.QUICK)),
                 exit = fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier.matchParentSize()
             ) {
+                // 玻璃面存活期：主内容背景模糊（离组合自动释放）
+                DisposableEffect(Unit) {
+                    vm.glassAcquire(); onDispose { vm.glassRelease() }
+                }
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -1473,6 +1492,12 @@ class MainActivity : ComponentActivity() {
                             .fillMaxHeight()
                             .fillMaxWidth(0.88f),
                         shape = RoundedCornerShape(topEnd = 20.dp, bottomEnd = 20.dp),
+                        // 毛玻璃面板：半透明 surface 让模糊后的主界面透出
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f),
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+                        ),
                         shadowElevation = 8.dp
                     ) {
                         SettingsScreen(
@@ -1484,13 +1509,16 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            // 下载队列：从右侧滑出的卡片面板（样式同设置侧板）
+            // 下载队列：从右侧滑出的卡片玻璃面板（样式同设置侧板）
             AnimatedVisibility(
                 visible = showDownloads,
                 enter = fadeIn(tween(UiSpec.QUICK)),
                 exit = fadeOut(tween(UiSpec.QUICK)),
                 modifier = Modifier.matchParentSize()
             ) {
+                DisposableEffect(Unit) {
+                    vm.glassAcquire(); onDispose { vm.glassRelease() }
+                }
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -1514,6 +1542,11 @@ class MainActivity : ComponentActivity() {
                             .fillMaxHeight()
                             .fillMaxWidth(0.88f),
                         shape = RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f),
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+                        ),
                         shadowElevation = 8.dp
                     ) {
                         DownloadsScreen(onBack = { showDownloads = false })

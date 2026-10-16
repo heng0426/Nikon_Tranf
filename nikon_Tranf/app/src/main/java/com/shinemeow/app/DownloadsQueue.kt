@@ -740,7 +740,11 @@ internal fun MainActivity.DownloadStateSlot(
                     Text("已下载")
                 }
                 if (confirmRedownload) {
+                    DisposableEffect(Unit) {
+                        vm.glassAcquire(); onDispose { vm.glassRelease() }
+                    }
                     AlertDialog(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
                         onDismissRequest = { confirmRedownload = false },
                         title = { Text("已下载") },
                         text = { Text("该照片已下载，可打开相册查看，或重新下载。") },
