@@ -746,8 +746,11 @@ internal fun MainActivity.DownloadStateSlot(
                             usePlatformDefaultWidth = false,
                             decorFitsSystemWindows = false
                         ),
-                        modifier = glassBackdropModifier(),
-                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                        modifier = glassBackdropModifier(
+                            shape = MaterialTheme.shapes.extraLarge,
+                            tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                        ),
+                        containerColor = Color.Transparent,
                         onDismissRequest = { confirmRedownload = false },
                         title = { Text("已下载") },
                         text = { Text("该照片已下载，可打开相册查看，或重新下载。") },

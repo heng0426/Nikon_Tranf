@@ -95,8 +95,7 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDefaults
@@ -719,17 +718,25 @@ internal fun MainActivity.DateHeaderPill(
 internal fun MainActivity.FilterSheet(onDismiss: () -> Unit) {
         ModalBottomSheet(
             onDismissRequest = onDismiss,
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+            containerColor = Color.Transparent,
+            dragHandle = null
         ) {
             Box(Modifier.fillMaxWidth()) {
                 Box(
                     Modifier
                         .matchParentSize()
-                        .then(glassBackdropModifier())
+                        .then(
+                            glassBackdropModifier(
+                                tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                            )
+                        )
                 )
                 Column(
                     Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 28.dp)
                 ) {
+                    // 自绘拖拽把手：替代 M3 dragHandle（把手区也要被毛玻璃覆盖，
+                    // 否则把手条与内容区上下两截观感割裂）
+                    BottomSheetDefaults.DragHandle()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     FunnelIcon(MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
@@ -895,10 +902,11 @@ internal fun MainActivity.DateField(
                     usePlatformDefaultWidth = false,
                     decorFitsSystemWindows = false
                 ),
-                modifier = glassBackdropModifier(),
-                colors = DatePickerDefaults.colors(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                modifier = glassBackdropModifier(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
                 ),
+                colors = DatePickerDefaults.colors(containerColor = Color.Transparent),
                 confirmButton = {
                     TextButton(onClick = {
                         st.selectedDateMillis?.let { onSet(millisToKey(it)) }

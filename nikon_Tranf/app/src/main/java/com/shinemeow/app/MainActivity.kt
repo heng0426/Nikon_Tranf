@@ -145,6 +145,10 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.addOutline
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -1400,8 +1404,11 @@ class MainActivity : ComponentActivity() {
                         usePlatformDefaultWidth = false,
                         decorFitsSystemWindows = false
                     ),
-                    modifier = glassBackdropModifier(),
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                    modifier = glassBackdropModifier(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                    ),
+                    containerColor = Color.Transparent,
                     onDismissRequest = { vm.cancelDeletePlan() },
                     title = { Text(if (allProt) "无法删除" else "删除相机中的 ${plan.total} 张照片？") },
                     text = {
@@ -1443,8 +1450,11 @@ class MainActivity : ComponentActivity() {
                         usePlatformDefaultWidth = false,
                         decorFitsSystemWindows = false
                     ),
-                    modifier = glassBackdropModifier(),
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                    modifier = glassBackdropModifier(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                    ),
+                    containerColor = Color.Transparent,
                     onDismissRequest = { vm.dismissDeleteResult() },
                     title = { Text(vm.deleteResultTitle.value ?: "删除结果") },
                     text = { Text(msg) },
@@ -1460,8 +1470,11 @@ class MainActivity : ComponentActivity() {
                         usePlatformDefaultWidth = false,
                         decorFitsSystemWindows = false
                     ),
-                    modifier = glassBackdropModifier(),
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                    modifier = glassBackdropModifier(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        tint = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                    ),
+                    containerColor = Color.Transparent,
                     onDismissRequest = { hotspotHint = false },
                     title = { Text("手机热点未开启") },
                     text = {
@@ -1786,6 +1799,9 @@ class MainActivity : ComponentActivity() {
      *  API<31 无模糊，仅剩调用方自己的半透明底。
      *  ⚠️ record 的画布不会自动裁剪到图层尺寸，必须 clipRect 显式裁到本面范围，
      *  否则主内容会溢出到玻璃面之外（边缘外的模糊竖条/半屏模糊就是这么来的）。
+     *  shape：玻璃面有圆角轮廓时传入（如弹窗的 extraLarge）——底材按轮廓裁剪，
+     *  否则方形底材会从圆角外露出一角模糊。
+     *  tint：毛玻璃着色（在模糊像上叠加一层半透明 surface 色，统一明暗观感）。
      *  位置换算：玻璃面可能被 graphicsLayer 动画（侧板滑入）或放在独立窗口
      *  （弹窗/底部弹层）—— positionInRoot 前者不含 graphicsLayer 位移、后者是
      *  窗口内相对坐标，都不能直接用。统一换算成屏幕坐标：
@@ -1793,7 +1809,7 @@ class MainActivity : ComponentActivity() {
      *    独立窗口 → positionInRoot + 本窗口 decorView 的屏幕位置。
      *  并用每帧循环持续重算（ drawBehind 只在读到的状态变化时才重绘）。 */
     @Composable
-    internal fun glassBackdropModifier(): Modifier {
+    internal fun glassBackdropModifier(shape: Shape? = null, tint: Color? = null): Modifier {
         val glass = rememberGraphicsLayer()
         if (Build.VERSION.SDK_INT >= 31) {
             glass.renderEffect = BlurEffect(24f, 24f, TileMode.Clamp)
@@ -1816,14 +1832,25 @@ class MainActivity : ComponentActivity() {
             .drawBehind {
                 val src = glassSource ?: return@drawBehind
                 glass.record {
-                    clipRect(0f, 0f, size.width, size.height) {
+                    clipGlassBounds(shape) {
                         translate(-pos.value.x, -pos.value.y) { drawLayer(src) }
                     }
                 }
-                clipRect(0f, 0f, size.width, size.height) {
+                clipGlassBounds(shape) {
                     drawLayer(glass)
                 }
+                tint?.let { drawRect(it) }
             }
+    }
+
+    /** 毛玻璃底材的裁剪：有 shape（圆角轮廓）按轮廓裁，否则按矩形边界裁 */
+    private fun DrawScope.clipGlassBounds(shape: Shape?, block: DrawScope.() -> Unit) {
+        if (shape == null) {
+            clipRect(0f, 0f, size.width, size.height, block = block)
+        } else {
+            val outline = shape.createOutline(size, layoutDirection, this)
+            clipPath(Path().apply { addOutline(outline) }, block = block)
+        }
     }
 
     /** 玻璃面节点在屏幕坐标系中的位置（与 contentLayer 录制坐标系对齐） */
