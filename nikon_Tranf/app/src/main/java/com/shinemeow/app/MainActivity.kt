@@ -135,11 +135,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.Path
@@ -474,9 +483,23 @@ class MainActivity : ComponentActivity() {
 
         // 毛玻璃：预览打开时主界面内容实时模糊（API31+，低版本自动退化为半透明黑）
         val previewing = (mergeOn && pairPreviewIndex >= 0) || (!mergeOn && previewIndex >= 0)
+        // 删除成功气泡的毛玻璃底材：主内容每帧录进离屏层（contentLayer，不带模糊，
+        // 正常显示走它），气泡内再把它平移回绘进 glassLayer 并施加 24dp 模糊 ——
+        // 模糊只作用于气泡区域，不能设在 contentLayer 上（否则整屏跟着糊）。
+        // 网格/全屏预览都在这个 Column 里 → 气泡背后无论是什么都能截到（API31+；
+        // 低版本 renderEffect 不生效，气泡自动退化为纯半透明底）
+        val contentLayer = rememberGraphicsLayer()
+        val glassLayer = rememberGraphicsLayer()
+        if (Build.VERSION.SDK_INT >= 31) {
+            glassLayer.renderEffect = BlurEffect(24f, 24f, TileMode.Clamp)
+        }
         Box(Modifier.fillMaxSize()) {
             Column(
                 Modifier.fillMaxSize()
+                    .drawWithContent {
+                        contentLayer.record { this@drawWithContent.drawContent() }   // 录制本帧内容（不重复上屏）
+                        drawLayer(contentLayer)                // 正常显示走离屏层（无模糊）
+                    }
                     .graphicsLayer {
                         if (previewing && Build.VERSION.SDK_INT >= 31) {
                             renderEffect = android.graphics.RenderEffect
@@ -1501,6 +1524,8 @@ class MainActivity : ComponentActivity() {
             // 声明在根 Box 末尾 → z 序高于全屏预览，预览页单张删除同样可见。
             val okEv = vm.deleteOkEvent.value
             val okShow = remember { mutableStateOf(false) }
+            // 气泡在根坐标系的布局位置（滑入/滑出用 graphicsLayer 位移，不影响布局位置）
+            var bubblePos by remember { mutableStateOf(Offset.Zero) }
             LaunchedEffect(okEv?.first) {
                 if (okEv != null) {
                     okShow.value = true
@@ -1519,24 +1544,42 @@ class MainActivity : ComponentActivity() {
                     .padding(bottom = 36.dp)
             ) {
                 okEv?.let { ev ->
+                    // 毛玻璃配色随明暗模式：深色压黑提亮边、浅色罩白压深边；
+                    // 模糊底材 = bubbleGlass（主内容实时模糊回绘），API<31 自动退化为纯半透明
+                    val dark = vm.darkModeOn
+                    val glassTint = if (dark) Color(0x54000000) else Color(0x8CFFFFFF)
+                    val glassBorder = if (dark) Color(0x24FFFFFF) else Color(0x1A000000)
+                    val fg = if (dark) Color.White else Color(0xFF1C1C1E)
                     Row(
                         Modifier
                             .shadow(8.dp, RoundedCornerShape(UiSpec.ROUND_LARGE))
                             .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
-                            .background(Color(0xE6141414))
+                            .onGloballyPositioned { bubblePos = it.positionInRoot() }
+                            .drawBehind {
+                                // 毛玻璃底材：主内容层按气泡位置反向平移录进 glassLayer
+                                //（renderEffect 模糊挂在该层上），再回绘 —— 模糊仅限气泡区域
+                                glassLayer.record {
+                                    translate(-bubblePos.x, -bubblePos.y) {
+                                        drawLayer(contentLayer)
+                                    }
+                                }
+                                drawLayer(glassLayer)
+                            }
+                            .background(glassTint)
+                            .border(1.dp, glassBorder, RoundedCornerShape(UiSpec.ROUND_LARGE))
                             .padding(horizontal = 18.dp, vertical = 11.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
                             Icons.Filled.Check,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = UiSpec.accent(dark),
                             modifier = Modifier.size(UiSpec.ICON_STD)
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
                             "删除成功 ${ev.second} 张",
-                            color = Color.White,
+                            color = fg,
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
