@@ -7,8 +7,8 @@
 ## 功能
 
 ### 双通道连接
-- **USB 直连**（推荐）：数据线插上即自动发现相机（vendor 0x04B0），系统弹窗授权后连接；枚举走尼康专有 0x9434 全量表（886 张 ~1 秒），表不支持时自动回退逐对象枚举
-- **Wi-Fi（PTP/IP）**：连接相机热点后自动发现相机——上次 IP 直探 → **mDNS 服务发现**（秒级）→ 网段扫描兜底；尼康配对握手；探测/扫描阶段可随时取消或直接切换 USB
+- **USB 直连**（推荐）：**数据线插上自动拉起 App 并请求授权**（`device_filter` 20 款尼康 PID + class 兜底，`NikonRegistry` 识别机型）；枚举走尼康专有 0x9434 全量表（886 张 ~1 秒），表不支持时自动回退逐对象枚举；**进程被杀后重开会话自动 USB 级 Reset 自愈**（无需拔线）
+- **Wi-Fi（PTP/IP）**：连接相机热点后自动发现相机——上次 IP 直探 → **mDNS 服务发现**（秒级，命中即提前进入下一步）→ 网段扫描兜底；尼康配对握手；探测/发现/扫描阶段可随时取消（亚秒级响应）或直接切换 USB
 - 连接状态、失败原因、扫描进度统一显示在双卡下方信息卡片
 
 ### 浏览与选择
@@ -32,7 +32,7 @@
 ## 技术要点
 
 - **Wi-Fi 通道 — libgphoto2（PTP/IP）**：预编译库 `app/libs/gphoto2/arm64-v8a/`；camlib/iolib（`ptp2.so`、`ptpip.so`）随 assets 分发，首运行解包后 dlopen；JNI 封装配对探针、递归枚举、偏移读下载
-- **USB 通道 — 自研 PTP over USB bulk**（`UsbPtpSession.kt`）：UsbManager → bulk 端点 → PTP 容器，支持 0x101B 尼康专有部分读取、ZLP 吸收、会话级管道自愈
+- **USB 通道 — 自研 PTP over USB bulk**（`UsbPtpSession.kt`）：UsbManager → bulk 端点 → PTP 容器，支持 0x101B 尼康专有部分读取、ZLP 吸收、会话级管道自愈；**OpenSession 三段自愈**（直接开 → 已开会话 Close 重开 → USB 级 Reset 0x66 强制清相机端残留状态后重开——进程被杀未 CloseSession 的场景无需拔线）；`NikonRegistry.kt` 20 款机型档案（名称/代际/ISO 范围，任务 5 预留）
 - **机内删除 + 存储容量**：0x100B DeleteObject / 0x1005 GetStorageInfo 双通道实现；删除前写保护预检（0x1008 ProtectionStatus）与下载队列冲突拦截；受保护照片由相机端 **0x200D（ReadOnlyObject）** 拒绝码兜底（0x2009 实为 InvalidObjectHandle，Z6 II 实测）；多卡槽机型遍历全部 StorageID 聚合可用存储
 - **Wi-Fi 发现与路由**：mDNS（NsdManager `_ptp._tcp`/`_nikon._tcp`）为主路径；网络策略分层——相机连手机热点（非受管网络）走内核热点直连路由**不绑定**，手机连相机热点才 `bindProcessToNetwork`
 - **枚举**：双通道统一采用 **递归文件夹（BFS ≤3 层）∪ 尼康 0x9434 全量表**（句柄+时间戳，16 字节/条）排序去重；文件类型按尼康句柄位段判断（hi16 高 8 位 `0x2a`=JPG / `0x0a`=NEF）

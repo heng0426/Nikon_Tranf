@@ -31,6 +31,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.ShineMeow"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -38,6 +39,16 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 插线自动拉起（任务 8）：尼康相机插 USB 时系统弹「用拾影喵打开」，
+                 匹配清单见 @xml/device_filter（20 款精确 PID + class 6/1/1 兜底）。
+                 singleTask：插线拉起复用已开实例（onNewIntent 送 intent），
+                 否则会在已打开的 App 之上再叠一个新实例（实测双实例抢设备卡死） -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
         </activity>
 
         <service

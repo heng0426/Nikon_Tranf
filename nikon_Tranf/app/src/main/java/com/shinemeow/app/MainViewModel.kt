@@ -15,6 +15,7 @@ import android.net.LinkAddress
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
+import android.os.SystemClock
 import android.net.nsd.NsdServiceInfo
 import android.provider.MediaStore
 import android.util.Log
@@ -167,6 +168,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // receiver 字段声明之后才能注册（init 块按源码顺序执行，提前注册会拿到未初始化的 receiver → NPE）
     init { registerUsbReceiver() }
 
+    // 插线拉起场景（device_filter + USB_DEVICE_ATTACHED intent-filter）：相机插线拉起
+    // 本 app 时 ATTACHED 广播已经发过、不会重播——启动后主动扫一次已插相机，走与
+    // 广播相同的 onUsbAttached 路径（已授权直接连 / 未授权弹权限，连失败落失败 UI）。
+    // 延迟 800ms：等 Activity 前台就绪再弹权限框；用户手动开着 app 时此扫描幂等无害。
+    init {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (!connected && !connecting) {
+                UsbPtpSession.findCamera(usbManager)?.let { onUsbAttached(it) }
+            }
+        }, 800)
+    }
+
+    /** 插线拉起入口（MainActivity onCreate/onNewIntent 调用）：launch intent 携带
+     *  USB 设备时走与 ATTACHED 广播相同的 onUsbAttached；无设备（普通启动）无操作。
+     *  与 800ms 扫描/广播三路并发安全：onUsbAttached 的 connecting 守卫 +
+     *  tryConnectUsbCore 的 synchronized 保证只连一次。 */
+    fun handleUsbLaunchIntent(intent: Intent?) {
+        val dev: UsbDevice? = intent?.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        if (dev?.vendorId == UsbPtpSession.VENDOR_NIKON) onUsbAttached(dev)
+    }
+
     private fun onUsbAttached(dev: UsbDevice) {
         if (connecting) return
         if (usbManager.hasPermission(dev)) {
@@ -195,8 +217,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pendingChannel.value = null
     }
 
-    /** USB 连接核心：成功返回 true（connPhase/connText/listFiles 全部就位） */
-    private fun tryConnectUsbCore(dev: UsbDevice, auto: Boolean): Boolean {
+    /** USB 连接核心：成功返回 true（connPhase/connText/listFiles 全部就位）。
+     *  ⚠️ synchronized(this)：广播 / onNewIntent / 800ms 扫描三路都可能并发进入——
+     *  connecting 检查到赋值非原子，不加锁会双线程同时 openDevice 抢同一台相机
+     *  （实测表现为连接转圈直到 bulk 超时）。锁对象 = VM 实例，仅此方法使用。 */
+    private fun tryConnectUsbCore(dev: UsbDevice, auto: Boolean): Boolean = synchronized(this) {
         if (connecting) return false
         // Wi-Fi 已连接时先干净断开（USB 优先切换）
         if (connected && usbSession == null) {
@@ -1015,11 +1040,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 Log.w("GPhoto2", "发现: mDNS 启动异常($svc) ${t.message}")
             }
         }
-        try { Thread.sleep(timeoutMs) } catch (_: InterruptedException) {}
+        // 睡眠窗口改为分段轮询（原 Thread.sleep(8000) 硬睡满：点取消后要等 8s 才退出，
+        // 且命中相机后也傻等满窗）：
+        //  · 每 200ms 查一次 wifiCancelRequested → 点取消亚秒级退出
+        //  · 提前命中相机（found 非空）→ 多留 600ms 收尾 resolve 回调即返回，
+        //    正常路径也不再等满 8s
+        val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs
+        var earlyExitAt = 0L
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (wifiCancelRequested) break
+            if (found.isNotEmpty()) {
+                if (earlyExitAt == 0L) earlyExitAt = SystemClock.elapsedRealtime() + 600
+                if (SystemClock.elapsedRealtime() >= earlyExitAt) break
+            }
+            val remain = deadline - SystemClock.elapsedRealtime()
+            try { Thread.sleep(minOf(200L, remain.coerceAtLeast(1L))) } catch (_: InterruptedException) {}
+        }
         for (l in listeners) try { nsd.stopServiceDiscovery(l) } catch (_: Throwable) {}
         Thread.sleep(300)   // 给最后的 resolve 回调留收尾时间
         val out = found.toList()
-        Log.i("GPhoto2", "发现: mDNS 结果 $out")
+        Log.i("GPhoto2", "发现: mDNS 结果 $out (cancel=$wifiCancelRequested)")
         return out
     }
 

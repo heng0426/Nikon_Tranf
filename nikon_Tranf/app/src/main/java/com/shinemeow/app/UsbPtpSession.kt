@@ -6,6 +6,7 @@ import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
+import android.os.SystemClock
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
@@ -137,19 +138,41 @@ class UsbPtpSession(
         epIn = din
         conn.claimInterface(iface, true)
 
-        val model = device.productName?.ifBlank { "Nikon" } ?: "Nikon"
+        // 机型显示名：PID 档案命中 → 档案名（比 productName "NIKON DSC Z 6_2" 干净）；
+        // 未收录尼康 → 「未知尼康 (0xXXXX)」标注（宽容连接，见 NikonRegistry）
+        val model = NikonRegistry.modelLabel(device.productId, device.productName)
         val serial = try { device.serialNumber ?: "" } catch (_: Throwable) { "" }
         modelInfo = if (serial.isBlank()) model else "$model|$serial"
 
-        // OpenSession（Nikon 偶发 SessionAlreadyOpen：先 Close 再开）
-        var resp = transaction(OP_OPEN_SESSION, intArrayOf(1))
-        if (resp.code == RESP_SESSION_ALREADY_OPEN) {
-            transaction(OP_CLOSE_SESSION)
-            resp = transaction(OP_OPEN_SESSION, intArrayOf(1))
+        // OpenSession 三段自愈（解决"杀进程重开一直转圈"）：
+        //  ① 直接开（正常路径）
+        //  ② SessionAlreadyOpen → Close 再开（尼康偶发）
+        //  ③ 仍失败/传输异常 → **USB 级 Reset（0x66 class request，强制相机清
+        //     会话与端点状态）** → 600ms 后再开。典型场景 = 上个进程被划掉时没有
+        //     CloseSession，相机端会话残留、bulk 端点不响应（ZENCHE
+        //     openSessionWithRecovery 的同款手法，PtpCamera §2.3.3）。
+        fun openAttempt(): Resp? = try {
+            transaction(OP_OPEN_SESSION, intArrayOf(1))
+        } catch (t: Throwable) {
+            Log.w("UsbPtp", "OpenSession 传输异常: $t")
+            null
         }
-        if (resp.code != RESP_OK) {
+        var resp: Resp? = openAttempt()
+        if (resp?.code == RESP_SESSION_ALREADY_OPEN) {
+            transaction(OP_CLOSE_SESSION)
+            resp = openAttempt()
+        }
+        if (resp?.code != RESP_OK) {
+            Log.w("UsbPtp", "OpenSession 未就绪(${resp?.code?.let { "0x${(it and 0xFFFF).toString(16)}" } ?: "传输异常"})——USB 级 Reset 后重试")
+            usbReset(conn)
+            SystemClock.sleep(600)
+            resp = openAttempt()
+        }
+        if (resp == null || resp.code != RESP_OK) {
             conn.close()
-            throw IllegalStateException("OpenSession 失败: 0x${(resp.code and 0xFFFF).toString(16)}")
+            throw IllegalStateException(
+                "OpenSession 失败: " + (resp?.let { "0x${(it.code and 0xFFFF).toString(16)}" } ?: "传输超时")
+            )
         }
         // GetDeviceInfo：解析相机支持的操作码表（决定偏移读走哪条通道）
         try {
@@ -169,6 +192,18 @@ class UsbPtpSession(
         }
         open = true
         Log.i("UsbPtp", "会话建立: $modelInfo")
+    }
+
+    /** PTP class 级设备复位（USB control transfer requestType=0x21 / request=0x66）：
+     *  强制相机清会话与端点状态。场景 = 上个进程被划掉未 CloseSession、bulk 端点卡死。
+     *  失败仅记日志（Reset 本身不保证成功，后续 OpenSession 重试会给出最终结论）。 */
+    private fun usbReset(conn: UsbDeviceConnection) {
+        try {
+            val r = conn.controlTransfer(0x21, 0x66, 0, 0, null, 0, 500)
+            Log.i("UsbPtp", "USB Reset(0x66)=$r")
+        } catch (t: Throwable) {
+            Log.w("UsbPtp", "USB Reset 失败: $t")
+        }
     }
 
     /* ---------- 上层原语 ---------- */

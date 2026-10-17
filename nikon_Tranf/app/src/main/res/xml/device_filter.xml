@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    尼康 USB 相机兴趣清单（ZENCHE 对标任务 8）。
+    vendor-id / product-id 均为十进制（0x04b0 = 1200）。
+    20 个精确 PID = NikonRegistry.kt 的机型注册表（EXPEED 5×3 / 6×10 / 7×7）；
+    最后一条 class 6/subclass 1/protocol 1 = still-image 兜底（**带 vendor-id**，
+    仅匹配尼康——未来未收录的新机型插线也能拉起，别家相机不弹）。
+-->
+<resources>
+    <!-- EXPEED 5 -->
+    <usb-device vendor-id="1200" product-id="1082" />  <!-- D500   0x043a -->
+    <usb-device vendor-id="1200" product-id="1093" />  <!-- D7500  0x0445 -->
+    <usb-device vendor-id="1200" product-id="1098" />  <!-- D850   0x044a -->
+    <!-- EXPEED 6 -->
+    <usb-device vendor-id="1200" product-id="1090" />  <!-- Z7     0x0442 -->
+    <usb-device vendor-id="1200" product-id="1091" />  <!-- Z6     0x0443 -->
+    <usb-device vendor-id="1200" product-id="1092" />  <!-- Z50    0x0444 -->
+    <usb-device vendor-id="1200" product-id="1094" />  <!-- D780   0x0446 -->
+    <usb-device vendor-id="1200" product-id="1095" />  <!-- D6     0x0447 -->
+    <usb-device vendor-id="1200" product-id="1096" />  <!-- Z5     0x0448 -->
+    <usb-device vendor-id="1200" product-id="1099" />  <!-- Z7II   0x044b -->
+    <usb-device vendor-id="1200" product-id="1100" />  <!-- Z6II   0x044c -->
+    <usb-device vendor-id="1200" product-id="1103" />  <!-- Z fc   0x044f -->
+    <usb-device vendor-id="1200" product-id="1106" />  <!-- Z30    0x0452 -->
+    <!-- EXPEED 7 -->
+    <usb-device vendor-id="1200" product-id="1104" />  <!-- Z9     0x0450 -->
+    <usb-device vendor-id="1200" product-id="1105" />  <!-- Z8     0x0451 -->
+    <usb-device vendor-id="1200" product-id="1107" />  <!-- Z f    0x0453 -->
+    <usb-device vendor-id="1200" product-id="1108" />  <!-- Z6III  0x0454 -->
+    <usb-device vendor-id="1200" product-id="1109" />  <!-- Z50II  0x0455 -->
+    <usb-device vendor-id="1200" product-id="1110" />  <!-- Z5II   0x0456 -->
+    <usb-device vendor-id="1200" product-id="1111" />  <!-- ZR     0x0457 -->
+    <!-- 兜底：尼康新机型的 still-image 接口（vendor 锁定 0x04b0） -->
+    <usb-device vendor-id="1200" class="6" subclass="1" protocol="1" />
+</resources>

@@ -289,6 +289,9 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.getBooleanExtra("demo", false)) vm.setDemoMode(true)
+        // 插线拉起（singleTask 复用实例）：intent 携带 USB 设备时走与 ATTACHED 广播
+        // 相同的连接路径（VM 内 connecting/connected 守卫保证幂等，双触发只连一次）
+        vm.handleUsbLaunchIntent(intent)
     }
 
     /* ---------- 自动化性能测量入口（仅 debuggable 包注册，release 零影响）----------
@@ -366,6 +369,9 @@ class MainActivity : ComponentActivity() {
         glassMainDecor = window.decorView
         // 自动化入口：adb shell am start ... --ez demo true 直接进演示模式
         if (intent?.getBooleanExtra("demo", false) == true) vm.setDemoMode(true)
+        // 冷启动插线拉起：intent 携带 USB 设备时直接走连接路径（与 onNewIntent 同款幂等），
+        // 不依赖 VM init 的 800ms 扫描兜底
+        vm.handleUsbLaunchIntent(intent)
         // 请求最高刷新率：HyperOS「智能刷新率」把无帧率声明的应用归入 normal=60Hz 档，
         // 照片网格滑动会被锁 60fps（实测 framestats：janky≈0 但帧距被 vsync 节拍钉在 ~20ms）。
         // 显式投票同分辨率的最高刷新模式（120Hz），浏览照片属高频交互，值得这点功耗。
