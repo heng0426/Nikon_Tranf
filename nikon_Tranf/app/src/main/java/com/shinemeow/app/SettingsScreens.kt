@@ -422,6 +422,29 @@ internal fun MainActivity.SettingsScreen(
                     onChange = { vm.setUsbWholeTransfer(it) }
                 )
             }
+            // 拍摄（任务 5/6）：遥控拍摄 + 实时取景的行为开关
+            SettingsSection(title = "拍摄", icon = { RemoteIcon(MaterialTheme.colorScheme.primary, Modifier.size(16.dp)) }) {
+                SettingSwitch(
+                    title = "拍摄后自动刷新照片列表",
+                    subtitle = "遥控拍摄存卡后自动重新枚举（照片很多时可关，稍后手动刷新）",
+                    checked = vm.captureRefreshOn.value,
+                    onChange = { vm.setCaptureRefresh(it) }
+                )
+                SettingsDivider()
+                SettingSwitch(
+                    title = "实时取景省电模式",
+                    subtitle = "取景帧率降为约 5fps，延长相机与手机续航",
+                    checked = vm.lvEcoOn.value,
+                    onChange = { vm.setLvEco(it) }
+                )
+                SettingsDivider()
+                SettingSwitch(
+                    title = "拍摄结果气泡",
+                    subtitle = "拍摄/录像成功时弹底部气泡提示（失败提示不受影响）",
+                    checked = vm.captureBubbleOn.value,
+                    onChange = { vm.setCaptureBubble(it) }
+                )
+            }
             SettingsSection(title = "外观", icon = { SectionIcon("外观") }) {
                 SettingSwitch(
                     title = "深色模式",

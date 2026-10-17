@@ -71,6 +71,19 @@ object GPhoto2Bridge {
 
     // ---- 拍照控制（0x100E 快门 / 0x1015 读参 / 0x1016 写参；任务 5）----
     external fun nativeCaptureNative(): Int                    // 0x100E InitiateCapture [0,0]：0x2001=已触发，其他=相机拒绝码，-1=未连接，-2=传输失败
+    external fun nativeCapture2Native(af: Int, sdram: Int): Int // 0x9207 尼康 CaptureRecInSdram [af,sdram]：af=0 不对焦直拍、sdram=0 拍进卡；返回码同上
+    external fun nativeObjectInfoNative(handle: Int): String?   // 单对象行 "h:stamp:type"（0x1014→0x9434 兜底）；null=失败（上层回退全量枚举）
+    external fun nativeStampTableNative(): String?              // 0x9434 时间戳全表 "h:stamp|..."（拍后差集刷新）；null=失败
+    external fun nativePollObjectAddedNative(): IntArray?       // 0x90c7 事件轮询 → ObjectAdded(0x4002)/0xC101 句柄数组；null=通道不可用
     external fun nativeGetPropNative(prop: Int): ByteArray?    // 0x1015 GetDevicePropValue：原始 LE 字节（u16=2B / u32=4B），失败 NULL
     external fun nativeSetPropNative(prop: Int, value: ByteArray): Int  // 0x1016 SetDevicePropValue（data-out）：0x2001=OK，其他=相机拒绝码，-1/-2=未连接/传输失败
+
+    // ---- 实时取景 / 录像 / 对焦（0x9201/02/03、0x920a/b、0x9204/0x90c1；任务 6）----
+    external fun nativeStartLiveViewNative(): Int              // 0x2001=已开启，其他=拒绝码，-1/-2=未连接/传输失败
+    external fun nativeEndLiveViewNative(): Int
+    external fun nativeLiveViewFrameNative(): ByteArray?       // 0x9203 一帧原始字节（JPEG 截取在 Kotlin 侧）
+    external fun nativeStartMovieNative(): Int                 // 录像文件保存在相机卡内
+    external fun nativeEndMovieNative(): Int
+    external fun nativeFocusDriveNative(dir: Int, drive: Int): Int  // 0x9204：dir 1=近/2=远，drive 128/512/1024
+    external fun nativeAfDriveNative(): Int                    // 0x90c1 单次 AF
 }

@@ -1531,7 +1531,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 枚举耗时计入 PerfTrace（"枚举"），明细日志由 verbose 开关控制 */
-    fun listFiles(): String = PerfTrace.measure("枚举") { listFilesInner() }
+    fun listFiles(): String = withLvPaused { PerfTrace.measure("枚举") { listFilesInner() } }
 
     private fun listFilesInner(): String = synchronized(camMutex) {
         if (demoMode.value) return "演示模式：共 ${photoRows.size} 个文件"
@@ -1571,9 +1571,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         )
         syncDownloadedNames()                          // 本地删除过的照片不再标记已下载
         parsed.forEach { it.downloaded.value = it.name in downloadedNames.value }
-        photoRows.clear()
-        photoRows.addAll(parsed)
+        // 原子快照提交（与 appendNewObjects 同理：多步结构写须防并发交错产生重复）
+        androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+            photoRows.clear()
+            photoRows.addAll(parsed)
+        }
         rebuildRowIndex()
+        dedupePhotoRows()
         refreshPairRows()                 // 枚举线程上预构建配对缓存（滑动主线程零重算）
         startProtectionScan(parsed)       // 后台渐进采集保护状态（网格徽标 + 删除预警）
         displayLimit.value = if (chunkedLoad.value) chunkSize.value else Int.MAX_VALUE   // 重新枚举 → 分块进度重置
@@ -2608,7 +2612,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
         override fun entryRemoved(evicted: Boolean, key: String, old: Bitmap?, new: Bitmap?) {
             thumbFast.remove(key)
-            if (evicted) thumbRowByKey.remove(key)?.preview?.value = null
+            // 逐出时行若仍在屏上则不清 preview——列表从新到旧加载时，在屏格子恰是
+            // 最早放入 LRU 的一批，刷新触发全量重载必然把它们逐出 → 屏上格子
+            // 集体变白（划出划回才恢复的元凶）。位图由行 preview 继续持有，出屏
+            // 后的下一次逐出（onScreen=false）才真正释放。
+            if (evicted) {
+                val row = thumbRowByKey.remove(key)
+                if (row != null && !row.onScreen) row.preview.value = null
+            }
         }
     }
 
@@ -3298,6 +3309,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         paramsReadOnly.value = false
         paramHint.value = null
         paramsPanelOpen.value = false
+        lvThreadRunning = false
+        lvActive.value = false
+        lvFrame.value = null
+        lvSupported.value = null
+        lvText.value = ""
+        movieRecording.value = false
+        remoteOpen.value = false
     }
 
     /* ---------- 机内删除（0x100B DeleteObject）+ 存储容量（0x1005）----------
@@ -3527,6 +3545,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /* ---------- 快门触发 ---------- */
+    /** 拍摄模式：true=自动对焦后拍摄（0x100E，实测相机先 AF 合焦后释放）；
+     *  false=直接拍摄（0x9207 [0xFFFFFFFF,0]，不对焦立即拍，照片仍进卡）。 */
+    val shootAf = mutableStateOf(true)
+
+    /** 拍摄后写卡等待 + 列表刷新专用单线程（连拍多张排队执行，不阻塞快门） */
+    private val refreshExec = java.util.concurrent.Executors.newSingleThreadExecutor()
+
     fun capturePhoto() {
         if (shutterBusy.value) return
         if (demoMode.value) {
@@ -3535,23 +3560,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (!connected) return
         shutterBusy.value = true
+        val af = shootAf.value
         Thread {
             var ok = false
             var msg: String
             var code = 0
+            fun fire(): Int = if (af) {
+                usbSession?.initiateCapture() ?: GPhoto2Bridge.nativeCaptureNative()
+            } else {
+                usbSession?.captureDirect() ?: GPhoto2Bridge.nativeCapture2Native(-1, 0)
+            }
             try {
-                code = synchronized(camMutex) {
-                    usbSession?.initiateCapture() ?: GPhoto2Bridge.nativeCaptureNative()
+                code = synchronized(camMutex) { fire() }
+                // 取景中失败：暂停拉帧重试一次（部分固件取景态拒拍；ZENCHE 同款拆流思路的轻量版）
+                if (code != 0x2001 && lvThreadRunning) {
+                    lvPause = true
+                    try {
+                        Thread.sleep(300)
+                        code = synchronized(camMutex) { fire() }
+                    } finally { lvPause = false }
+                    Log.i("GPhoto2", "取景态拒拍 → 暂停取景重试: code=0x${(code and 0xFFFF).toString(16)}")
                 }
                 if (code == 0x2001) {
                     ok = true
-                    val seen = if (usbSession != null) waitForCaptureWritten() else false
-                    if (!seen) Thread.sleep(if (usbSession != null) 4000 else 3000)
-                    msg = "拍摄成功 · 已存入存储卡，正在刷新列表…"
+                    msg = if (captureRefreshOn.value) "拍摄成功 · 已存入存储卡，正在刷新列表…"
+                          else "拍摄成功 · 已存入存储卡"
                 } else {
                     msg = when {
                         code == 0x2019 -> "相机正忙，请稍后再拍"
                         code == 0x2005 -> "当前模式不支持遥控快门"
+                        // 0x2002=GeneralError：AF 模式下实测为对焦未合焦被相机拒绝
+                        code == 0x2002 && af -> "自动对焦未合焦，拍摄取消（可切直拍模式）"
+                        code == 0x201D -> "直拍指令被相机拒绝 (0x201D)"
                         code == -1 || code == -2 -> "拍摄失败：连接已中断"
                         else -> "拍摄失败 (0x${(code and 0xFFFF).toString(16)})"
                     }
@@ -3559,33 +3599,133 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } catch (t: Throwable) {
                 msg = "拍摄失败：${t.message ?: "传输异常"}"
             }
-            if (ok) {
-                try { listFiles() } catch (t: Throwable) {
-                    Log.w("GPhoto2", "拍摄后刷新失败: ${t.message}")
-                }
-            }
-            val ev = Pair(++captureSeq, msg)
-            mainHandler.post {
-                shutterBusy.value = false
-                captureEvent.value = ev
+            mainHandler.post { shutterBusy.value = false }   // 快门指令返回即解锁：连拍不等写卡/刷新
+            if (!ok || captureBubbleOn.value) {
+                val ev = Pair(++captureSeq, msg)
+                mainHandler.post { captureEvent.value = ev }
             }
             Log.i("GPhoto2", "遥控拍摄: ok=$ok code=0x${(code and 0xFFFF).toString(16)}")
+            if (ok) {
+                // 后台单线程排队：先试增量（只拉新对象），失败/通道不可用再回退全量枚举。
+                // Wi-Fi 事件由原生缓冲统一汇总（0x941c 保活与 0x90c7 谁消费都入缓冲），无需挂起保活。
+                refreshExec.execute {
+                    try {
+                        // Wi-Fi 事件的 ObjectAdded 在拍进卡模式下多为 SDRAM 临时 id
+                        // （0x1014 查无此对象），不可作差集依据 → 统一走 0x9434 全表差集：
+                        // 表由相机在写卡完成时维护，差集即真新照片，天然等写完。
+                        val handles: List<Int>? = if (usbSession != null) waitForCaptureHandles() else wifiDiffRefresh()
+                        Log.i("GPhoto2", "拍后刷新: handles=${handles?.size ?: "null(通道不可用)"}")
+                        if (handles.isNullOrEmpty() || !appendNewObjects(handles)) {
+                            Log.i("GPhoto2", "增量不可用 → 回退全量枚举")
+                            Thread.sleep(if (usbSession != null) 4000 else 3000)
+                            if (captureRefreshOn.value) {
+                                try { listFiles() } catch (t: Throwable) {
+                                    Log.w("GPhoto2", "拍摄后刷新失败: ${t.message}")
+                                }
+                            }
+                        }
+                    } catch (_: Throwable) {}
+                }
+            }
         }.start()
     }
 
-    /** 轮询 GetEvent 等 ObjectAdded（0x4002 标准 / 0xC101 尼康 SDRAM），返回是否命中。
-     *  通道不支持事件（首次即 null）→ 立即返回 false，上层固定延时兜底。 */
-    private fun waitForCaptureWritten(): Boolean {
+    /** 轮询 GetEvent 收集新对象句柄（0x4002 ObjectAdded / 0xC101 尼康 SDRAM）。
+     *  ⚠️ 同一对象可能同时发 0x4002 与 0xC101 两条事件 → LinkedHashSet 去重
+     *  （曾因重复句柄进列表触发 LazyGrid key 重复闪退）。命中后留 1.2s 静默窗
+     *  收集连拍余量；空列表 = 超时或通道不支持（调用方回退全量）。 */
+    private fun waitForCaptureHandles(): List<Int> {
         val deadline = System.currentTimeMillis() + 15_000
+        var lastHit = 0L
+        val got = LinkedHashSet<Int>()
         while (System.currentTimeMillis() < deadline) {
-            val evs = usbSession?.getEvents() ?: return false
-            if (evs.any { it.first == 0x4002 || it.first == 0xC101 }) {
-                Thread.sleep(1500)     // 命中后留卡写尾（RAW 可能还在写）
-                return true
-            }
+            if (lastHit > 0 && System.currentTimeMillis() - lastHit > 1200) break
+            val evs = synchronized(camMutex) { usbSession?.getEvents() } ?: return got.toList()
+            var hit = false
+            for ((c, p) in evs) if (c == 0x4002 || c == 0xC101) { got.add(p); hit = true }
+            if (hit) { lastHit = System.currentTimeMillis(); continue }
             Thread.sleep(400)
         }
-        return false
+        return got.toList()
+    }
+
+    /** Wi-Fi 拍后差集刷新：0x9434 全表 ∖ rowByHandle = 新照片句柄（写卡完成才入表）。
+     *  返回 null = 表拉取失败（回退全量）；空列表 = 窗口内没等到新照片（回退全量兜底）。 */
+    private fun wifiDiffRefresh(): List<Int>? {
+        try { Thread.sleep(1500) } catch (_: InterruptedException) { return null }   // 写卡起步
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline && connected) {
+            val table = synchronized(camMutex) { GPhoto2Bridge.nativeStampTableNative() }
+                ?: return null
+            val fresh = ArrayList<Int>()
+            for (tok in table.split('|')) {
+                if (tok.isBlank()) continue
+                val h = tok.substringBefore(':').trim().toIntOrNull() ?: continue
+                if (!rowByHandle.containsKey(h)) fresh.add(h)
+            }
+            if (fresh.isNotEmpty()) return fresh
+            try { Thread.sleep(1200) } catch (_: InterruptedException) { return null }
+        }
+        return emptyList()
+    }
+
+    /** 拍摄后增量刷新：ObjectAdded 句柄 → 单对象信息行 → 追加进列表（不全量枚举）。
+     *  行格式与 listFilesInner 解析同源（"h:stamp:type[:fname]"）；新行内存重排序，
+     *  与全量枚举的排序规则一致。返回 false = 拉取失败（调用方回退全量）。 */
+    private fun appendNewObjects(handles: List<Int>): Boolean = synchronized(camMutex) {
+        val lines = ArrayList<String>(handles.size)
+        val seen = HashSet<Int>()                              // 局部去重：handles 本身可能含重复事件
+        for (h in handles) {
+            if (!seen.add(h)) continue
+            if (rowByHandle.containsKey(h)) continue           // 重复事件/上次已入列
+            val line = usbSession?.objectInfoLine(h) ?: GPhoto2Bridge.nativeObjectInfoNative(h)
+            if (line == null) { Log.w("GPhoto2", "增量 info($h) 失败 → 回退全量"); return false }
+            lines.add(line)
+        }
+        if (lines.isEmpty()) return true
+        val parsed = lines.mapNotNull { row ->
+            val p = row.split(':', limit = 4)
+            if (p.size < 3) return@mapNotNull null
+            val handle = p[0].toIntOrNull() ?: return@mapNotNull null
+            if (rowByHandle.containsKey(handle)) return@mapNotNull null   // 双保险去重
+            val stamp = p[1]
+            val type = p[2].uppercase()
+            val fileNo = p.getOrNull(3)?.substringBeforeLast('.')
+            val name = "IMG_${stamp}_${p[0].takeLast(4).padStart(4, '0')}.${type.lowercase()}"
+            PhotoRow(name, handle, type, stamp, fileNo)
+        }
+        if (parsed.isEmpty()) return true
+        // 原子快照提交：addAll+sort 是多步结构写，与主线程并发修改交错时
+        // SnapshotStateList 可能出现重复元素（LazyGrid key 重复闪退的根源）
+        androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+            photoRows.addAll(parsed)
+            photoRows.sortWith(
+                compareByDescending<PhotoRow> { it.stamp }
+                    .thenByDescending { it.captureSeq() }
+                    .thenBy { if (it.type.equals("NEF", true)) 1 else 0 }
+            )
+        }
+        dedupePhotoRows()
+        rebuildRowIndex()
+        refreshPairRows()
+        startPreviewLoading(parsed)
+        startProtectionScan(parsed)
+        if (chunkedLoad.value) displayLimit.value += parsed.size
+        Log.i("GPhoto2", "增量刷新 +${parsed.size}（总 ${photoRows.size}）")
+        true
+    }
+
+    /** 防御性全表句柄去重：任何写入路径的并发交错都可能在 photoRows 留下重复
+     *  句柄 → LazyGrid key 重复直接闪退。发现重复时保留首条、剔除其余并落日志。 */
+    private fun dedupePhotoRows() {
+        val dedup = photoRows.distinctBy { it.handle }
+        if (dedup.size == photoRows.size) return
+        val dupKeys = photoRows.groupBy { it.handle }.filter { it.value.size > 1 }.keys
+        Log.w("GPhoto2", "photoRows 重复句柄 ${photoRows.size - dedup.size} 条（$dupKeys）→ 去重")
+        androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+            photoRows.clear()
+            photoRows.addAll(dedup)
+        }
     }
 
     private val ISO_LADDER = intArrayOf(
@@ -3625,6 +3765,195 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ShutterStep(1, 2500, "1/2500"), ShutterStep(1, 3200, "1/3200"), ShutterStep(1, 4000, "1/4000"),
         ShutterStep(1, 5000, "1/5000"), ShutterStep(1, 6400, "1/6400"), ShutterStep(1, 8000, "1/8000")
     )
+
+    /* =====================================================================
+     *  实时取景 / 遥控拍摄（任务 6；grilling A/A/A + B门移出，2026-10-17）
+     *  取景流：0x9201 开启 → 循环 0x9203 拉帧（只保留最新帧）→ 0x9202 关闭。
+     *  Wi-Fi 0x9203 可用性未实证 → 首启探针，被拒则遥控页降级提示。
+     *  独占操作经 withLvPaused 暂停拉帧（相机保持取景态，ZENCHE 同款护栏；
+     *  camMutex 保证事务级互斥，暂停只为抢带宽）。录像 0x920a/b 文件留卡。
+     * ===================================================================== */
+    val remoteOpen = mutableStateOf(false)
+    val lvSupported = mutableStateOf<Boolean?>(null)   // null=探测中；false=通道不支持（页内降级提示）
+    val lvActive = mutableStateOf(false)
+    val lvFrame = mutableStateOf<android.graphics.Bitmap?>(null)
+    val lvText = mutableStateOf("")
+    val movieRecording = mutableStateOf(false)
+    val focusStep = mutableStateOf(2)                  // 对焦步长档 1/2/3 → 128/512/1024
+    @Volatile private var lvPause = false
+    @Volatile private var lvThreadRunning = false
+    private var lvThread: Thread? = null
+
+    /* ---------- 拍摄设置（设置页「拍摄」分区） ---------- */
+    val captureRefreshOn = mutableStateOf(prefs.getBoolean("set_capture_refresh", true))
+    val lvEcoOn = mutableStateOf(prefs.getBoolean("set_lv_eco", false))
+    val captureBubbleOn = mutableStateOf(prefs.getBoolean("set_capture_bubble", true))
+    fun setCaptureRefresh(on: Boolean) { captureRefreshOn.value = on; prefs.edit().putBoolean("set_capture_refresh", on).apply() }
+    fun setLvEco(on: Boolean) { lvEcoOn.value = on; prefs.edit().putBoolean("set_lv_eco", on).apply() }
+    fun setCaptureBubble(on: Boolean) { captureBubbleOn.value = on; prefs.edit().putBoolean("set_capture_bubble", on).apply() }
+
+    /** 独占操作期间暂停取景拉帧（相机保持取景态；try/finally 保证恢复） */
+    private fun <T> withLvPaused(block: () -> T): T {
+        val was = lvThreadRunning
+        if (was) lvPause = true
+        try { return block() } finally { if (was) lvPause = false }
+    }
+
+    fun openRemote() {
+        remoteOpen.value = true
+        if (connected) ensureLiveView()
+    }
+
+    fun closeRemote() {
+        remoteOpen.value = false
+        lvThreadRunning = false    // 循环自行退出并 EndLiveView
+        lvThread = null
+    }
+
+    private fun ensureLiveView() {
+        if (demoMode.value) {
+            lvSupported.value = false
+            lvText.value = "演示模式不支持实时取景"
+            return
+        }
+        if (lvThreadRunning) return
+        lvThreadRunning = true
+        val th = Thread {
+            var opened = false
+            try {
+                synchronized(camMutex) {
+                    opened = (usbSession?.startLiveView()
+                        ?: GPhoto2Bridge.nativeStartLiveViewNative()) == 0x2001
+                }
+            } catch (t: Throwable) { Log.w("GPhoto2", "StartLiveView 异常: ${t.message}") }
+            mainHandler.post {
+                lvSupported.value = opened
+                lvActive.value = opened
+                lvText.value = if (opened) "正在连接取景…" else "当前连接通道不支持实时取景"
+            }
+            Log.i("GPhoto2", "StartLiveView opened=$opened")
+            if (!opened) { lvThreadRunning = false; return@Thread }
+            mainHandler.post { lvFrame.value = null }
+            var failStreak = 0
+            var decFailStreak = 0
+            while (lvThreadRunning && connected) {
+                if (lvPause) { try { Thread.sleep(150) } catch (_: InterruptedException) {}; continue }
+                val jpeg = try {
+                    synchronized(camMutex) {
+                        usbSession?.getLiveViewFrame() ?: wifiLvFrame()
+                    }
+                } catch (t: Throwable) { null }
+                if (jpeg != null) {
+                    failStreak = 0
+                    val bmp = android.graphics.BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+                    if (bmp != null) {
+                        decFailStreak = 0
+                        mainHandler.post { if (lvThreadRunning) lvFrame.value = bmp }
+                    } else {
+                        // 截出了 JPEG 但解码失败：数据半截/格式异常，计入连败防止无限刷
+                        if (++decFailStreak >= 40) { Log.w("GPhoto2", "LV 解码连败 40 帧退出"); break }
+                        if (decFailStreak % 10 == 0) Log.w("GPhoto2", "LV 解码失败 jpegLen=${jpeg.size}")
+                        try { Thread.sleep(200) } catch (_: InterruptedException) {}
+                    }
+                    if (lvEcoOn.value) try { Thread.sleep(100) } catch (_: InterruptedException) {}
+                } else {
+                    if (++failStreak > 40) break   // 连续丢帧 ~10s：通道异常，退出收尾
+                    try { Thread.sleep(200) } catch (_: InterruptedException) {}
+                }
+            }
+            try {
+                synchronized(camMutex) {
+                    usbSession?.endLiveView() ?: GPhoto2Bridge.nativeEndLiveViewNative()
+                }
+            } catch (_: Throwable) {}
+            lvThreadRunning = false
+            mainHandler.post { lvActive.value = false; lvFrame.value = null }
+        }
+        lvThread = th
+        th.start()
+    }
+
+    /** Wi-Fi 取景帧：nativeLiveViewFrameNative 返回原始字节，须先截 JPEG（FFD8…FFD9）。
+     *  USB 路径已在 UsbPtpSession.getLiveViewFrame 内截取；此前 Wi-Fi 漏了这一步，
+     *  原始数据（可能带封装头/尾）直接解码恒败 → 黑屏只有转圈占位。
+     *  截取失败时打前 16 字节 hex 供下一轮定位数据格式。 */
+    private fun wifiLvFrame(): ByteArray? {
+        val raw = GPhoto2Bridge.nativeLiveViewFrameNative() ?: return null
+        val jpeg = extractJpegFrame(raw)
+        if (jpeg == null) {
+            val head = raw.take(16).joinToString("") { "%02x".format(it) }
+            Log.w("GPhoto2", "Wi-Fi LV 帧截取失败 len=${raw.size} head=$head")
+        }
+        return jpeg
+    }
+
+    /** JPEG 流截取（与 UsbPtpSession.extractJpeg 同款）：向前找首个 FFD8（SOI），
+     *  从尾向前找最后一个 FFD9（EOI，避免误中缩略图内嵌标记）。 */
+    private fun extractJpegFrame(d: ByteArray): ByteArray? {
+        var start = -1
+        val n = d.size
+        for (i in 0 until n - 1) {
+            if (d[i] == 0xFF.toByte() && d[i + 1] == 0xD8.toByte()) { start = i; break }
+        }
+        if (start < 0) return null
+        for (i in n - 2 downTo start + 1) {
+            if (d[i] == 0xFF.toByte() && d[i + 1] == 0xD9.toByte()) {
+                return d.copyOfRange(start, i + 2)
+            }
+        }
+        return null
+    }
+
+    /** 单次 AF（0x90c1，仅取景态） */
+    fun autoFocusDrive() {
+        if (!lvActive.value || demoMode.value || !connected) return
+        Thread {
+            val rc = synchronized(camMutex) {
+                usbSession?.autoFocusDrive() ?: GPhoto2Bridge.nativeAfDriveNative()
+            }
+            Log.i("GPhoto2", "AF rc=0x${(rc and 0xFFFF).toString(16)}")
+            if (rc != 0x2001) mainHandler.post {
+                lvText.value = if (rc == 0x2019) "相机正忙，AF 稍后再试" else "AF 失败 (0x${(rc and 0xFFFF).toString(16)})"
+            }
+        }.start()
+    }
+
+    /** 手动对焦驱动（0x9204）：dir 1=近 / 2=远，步长档 focusStep 1..3 */
+    fun stepFocus(dir: Int) {
+        if (!lvActive.value || demoMode.value || !connected) return
+        Thread {
+            val drive = intArrayOf(128, 512, 1024)[focusStep.value.coerceIn(1, 3) - 1]
+            val rc = synchronized(camMutex) {
+                usbSession?.manualFocusDrive(dir, focusStep.value)
+                    ?: GPhoto2Bridge.nativeFocusDriveNative(dir, drive)
+            }
+            Log.i("GPhoto2", "MF dir=$dir drive=$drive rc=0x${(rc and 0xFFFF).toString(16)}")
+        }.start()
+    }
+
+    /** 录像开关（0x920a/b）。文件保存在相机卡内，App 不落盘。
+     *  VIDEO-SEALED（2026-10-17 用户要求暂撤：协议链路可用，UI 入口已撤，
+     *  加回时恢复 MainActivity 底条 VIDEO-SEALED 块即可）。 */
+    fun toggleMovie() {
+        if (demoMode.value || !connected) return
+        Thread {
+            synchronized(camMutex) {
+                if (!movieRecording.value) {
+                    val rc = usbSession?.startMovie() ?: GPhoto2Bridge.nativeStartMovieNative()
+                    if (rc == 0x2001) mainHandler.post {
+                        movieRecording.value = true
+                        if (captureBubbleOn.value) captureEvent.value = Pair(++captureSeq, "已开始录像 · 影像保存在相机卡内")
+                    } else mainHandler.post { lvText.value = "录像启动失败 (0x${(rc and 0xFFFF).toString(16)})" }
+                } else {
+                    val rc = usbSession?.endMovie() ?: GPhoto2Bridge.nativeEndMovieNative()
+                    if (rc == 0x2001) mainHandler.post {
+                        movieRecording.value = false
+                        if (captureBubbleOn.value) captureEvent.value = Pair(++captureSeq, "录像已结束 · 影像保存在相机卡内")
+                    } else mainHandler.post { lvText.value = "录像结束失败 (0x${(rc and 0xFFFF).toString(16)})" }
+                }
+            }
+        }.start()
+    }
 
     /** 后台刷新存储容量（双通道分发；失败静默留空，不影响主流程）
      *  演示模式：假容量（64GB 卡），剩余 = 基数 43GB + 已删张数 × 24MB（单张口径与假下载一致），
@@ -3682,6 +4011,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun startProtectionScan(rows: List<PhotoRow>) {
         if (demoMode.value || !connected) return
+        if (usbSession == null) {
+            // Wi-Fi 会话 0x1008 已实测被拒（§6.4）：扫描必以 6 次失败告终，纯浪费；
+            // 且曾在此路径触发 native 空指针崩溃 → 直接跳过，保护知识走删除预检 + 0x2009 学习兜底。
+            protScanState.value = "unsupported"
+            return
+        }
         val gen = protScanGen.incrementAndGet()          // 重新枚举/断开 → 旧扫描自行退出
         protScanState.value = "running"
         val ch = if (usbSession != null) "usb" else "wifi"
@@ -3949,6 +4284,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         deletePlan.value = null      // 删除中失联：撤下确认框，confirmDelete 循环自行中断
         paramsReadOnly.value = false
         paramHint.value = null
+        lvThreadRunning = false
+        lvActive.value = false
+        lvFrame.value = null
+        lvSupported.value = null
+        movieRecording.value = false
+        remoteOpen.value = false
         Log.i("GPhoto2", "markSessionLost: $reason")
         stopKeepAlive()
     }

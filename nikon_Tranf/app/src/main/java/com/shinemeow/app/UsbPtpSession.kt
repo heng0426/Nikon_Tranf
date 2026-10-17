@@ -77,6 +77,7 @@ class UsbPtpSession(
         private const val OP_GET_THUMB = 0x100A
         private const val OP_DELETE_OBJECT = 0x100B
         private const val OP_INITIATE_CAPTURE = 0x100E    // 标准 InitiateCapture：拍进存储卡（非 SDRAM）
+        private const val OP_NIKON_CAPTURE_SDRAM = 0x9207 // 尼康 CaptureRecInSdram：[af, sdram]；af=0 不对焦直拍、sdram=0 拍进卡
         private const val OP_GET_PARTIAL_OBJECT = 0x1014  // ⚠️ 本项目实测当 GetPartialObject 用；ZENCHE 口径为 GetDevicePropDesc——属性族以 0x1015/0x1016 为准
         private const val OP_GET_DEVICE_PROP_VALUE = 0x1015
         private const val OP_SET_DEVICE_PROP_VALUE = 0x1016
@@ -87,6 +88,13 @@ class UsbPtpSession(
         // 尼康专有：对象清单表（句柄+时间戳一次拿全，免逐对象 0x1008；PTP-IP/USB 均可用）
         private const val OP_NIKON_OBJ_TABLE = 0x9434
         private const val OP_GET_EVENT = 0x90C7           // 尼康：取事件（ObjectAdded 等）
+        private const val OP_START_LIVE_VIEW = 0x9201     // 尼康：开启实时取景
+        private const val OP_END_LIVE_VIEW = 0x9202       // 尼康：关闭实时取景
+        private const val OP_GET_LIVE_VIEW_IMAGE = 0x9203 // 尼康：取一帧取景 JPEG
+        private const val OP_START_MOVIE = 0x920A         // 尼康：开始录像（文件存相机卡）
+        private const val OP_END_MOVIE = 0x920B           // 尼康：结束录像
+        private const val OP_MANUAL_FOCUS_DRIVE = 0x9204  // 尼康：手动对焦驱动（仅取景态）
+        private const val OP_AF_DRIVE = 0x90C1            // 尼康：单次 AF 驱动（仅取景态）
         // 尼康文件句柄位段：hi16 高 8 位 0x2a=JPG、0x0a=NEF，低 8 位是文件夹段
         // （Z7=0x1c，新款固件跨文件夹 0x1c/0x1d——硬编码低字节会丢整段照片）
         private const val HI_GROUP_JPG = 0x2a00
@@ -412,7 +420,7 @@ class UsbPtpSession(
      *  任务 5 决策：USB 不走 ZENCHE 的 0x9207 SDRAM 路径（拍进卡与"传输工具"
      *  心智一致——网格刷新即见新照片，可立即下载/删除，省掉 SDRAM 下载恢复链）。
      *  返回 PTP 响应码：0x2001=已触发；其他=相机拒绝（如 0x2005 不支持/
-     *  0x2019 DeviceBusy）；-1=传输失败。 */
+     *  0x2019 DeviceBusy）；-1=传输失败。实测行为：相机先 AF 合焦后才释放快门。 */
     fun initiateCapture(): Int = try {
         val resp = transaction(OP_INITIATE_CAPTURE, intArrayOf(0, 0))
         if (resp.code != RESP_OK) {
@@ -421,6 +429,21 @@ class UsbPtpSession(
         resp.code
     } catch (t: Throwable) {
         Log.w("UsbPtp", "InitiateCapture 传输失败: ${t.message}")
+        -1
+    }
+
+    /** 直接快门（0x9207 尼康 CaptureRecInSdram）：照片进存储卡（第二参数 sdram=0）。
+     *  第一参数 0xFFFFFFFF（ZENCHE PtpCamera.java:607 实证取值，拍 SDRAM 用 [0xFFFFFFFF,1]）；
+     *  ⚠️ [0,0] 会被 Z6 II 拒 0x201D InvalidParameter——第一参数 0 不在合法值域。
+     *  AF 后拍摄仍走 0x100E。返回 PTP 响应码，口径同 initiateCapture。 */
+    fun captureDirect(): Int = try {
+        val resp = transaction(OP_NIKON_CAPTURE_SDRAM, intArrayOf(-1, 0))
+        if (resp.code != RESP_OK) {
+            Log.w("UsbPtp", "CaptureRecInSdram=0x${(resp.code and 0xFFFF).toString(16)}")
+        }
+        resp.code
+    } catch (t: Throwable) {
+        Log.w("UsbPtp", "CaptureRecInSdram 传输失败: ${t.message}")
         -1
     }
 
@@ -448,6 +471,65 @@ class UsbPtpSession(
     } catch (t: Throwable) {
         Log.w("UsbPtp", "GetEvent 传输失败: ${t.message}")
         null
+    }
+
+    /* ---------- 实时取景 / 录像 / 对焦（任务 6；ZENCHE §5.3/§5.4 蓝本）---------- */
+
+    /** 开启取景（0x9201）。返回 0x2001=已开启；其他=拒绝（Wi-Fi 会话可能不支持）。 */
+    fun startLiveView(): Int = try { transaction(OP_START_LIVE_VIEW).code } catch (t: Throwable) {
+        Log.w("UsbPtp", "StartLiveView 传输失败: ${t.message}"); -1
+    }
+
+    /** 关闭取景（0x9202；ZENCHE 口径：失败吞掉只置状态）。 */
+    fun endLiveView(): Int = try { transaction(OP_END_LIVE_VIEW).code } catch (t: Throwable) {
+        Log.w("UsbPtp", "EndLiveView 传输失败: ${t.message}"); -1
+    }
+
+    /** 取一帧取景图（0x9203 data-in）。返回截取后的 JPEG 字节（FFD8…FFD9）；
+     *  null = 失败/忙。每帧一个事务，不套 withRecovery（恢复重建会话远慢于丢一帧）。 */
+    fun getLiveViewFrame(): ByteArray? = try {
+        val r = transaction(OP_GET_LIVE_VIEW_IMAGE)
+        if (r.code != RESP_OK) null else extractJpeg(r.data)
+    } catch (t: Throwable) { null }
+
+    /** 开始录像（0x920a）。未在取景态需先 0x9201（上层保证）。文件保存在相机卡内。 */
+    fun startMovie(): Int = try { transaction(OP_START_MOVIE).code } catch (t: Throwable) {
+        Log.w("UsbPtp", "StartMovie 传输失败: ${t.message}"); -1
+    }
+
+    /** 结束录像（0x920b）。 */
+    fun endMovie(): Int = try { transaction(OP_END_MOVIE).code } catch (t: Throwable) {
+        Log.w("UsbPtp", "EndMovie 传输失败: ${t.message}"); -1
+    }
+
+    /** 手动对焦驱动（0x9204，仅取景态可用）。dir: 1=近 / 2=远；stepSize 1..3 → 128/512/1024。 */
+    fun manualFocusDrive(dir: Int, stepSize: Int): Int = try {
+        val drive = intArrayOf(128, 512, 1024)[stepSize.coerceIn(1, 3) - 1]
+        transaction(OP_MANUAL_FOCUS_DRIVE, intArrayOf(dir, drive)).code
+    } catch (t: Throwable) {
+        Log.w("UsbPtp", "ManualFocusDrive 传输失败: ${t.message}"); -1
+    }
+
+    /** 单次 AF（0x90c1，仅取景态可用；ZENCHE 建议先切单次 AF 模式，此处直发）。 */
+    fun autoFocusDrive(): Int = try { transaction(OP_AF_DRIVE).code } catch (t: Throwable) {
+        Log.w("UsbPtp", "AfDrive 传输失败: ${t.message}"); -1
+    }
+
+    /** JPEG 流截取（ZENCHE extractJpeg 同款）：向前找首个 FFD8（SOI），
+     *  从尾向前找最后一个 FFD9（EOI，避免误中缩略图内嵌标记）。 */
+    private fun extractJpeg(d: ByteArray): ByteArray? {
+        var start = -1
+        val n = d.size
+        for (i in 0 until n - 1) {
+            if (d[i] == 0xFF.toByte() && d[i + 1] == 0xD8.toByte()) { start = i; break }
+        }
+        if (start < 0) return null
+        for (i in n - 2 downTo start + 1) {
+            if (d[i] == 0xFF.toByte() && d[i + 1] == 0xD9.toByte()) {
+                return d.copyOfRange(start, i + 2)
+            }
+        }
+        return null
     }
 
     /** 读设备属性（0x1015 GetDevicePropValue，ZENCHE 实测口径）。
@@ -822,6 +904,17 @@ class UsbPtpSession(
         return ObjInfo(handle, fname, stamp, size, isAssociation = false, protected = protection != 0)
     }
     private var infoFailDetail = ""
+
+    /** 单对象信息行 "handle:stamp:type:fname"（拍摄后增量刷新用），
+     *  与 enumerate() 行格式兼容（第 4 段文件名，解析处 limit=4 兼容）。
+     *  null = 拉取失败/非文件对象（上层回退全量枚举）。 */
+    fun objectInfoLine(handle: Int): String? {
+        val info = fetchObjectInfo(handle) ?: return null
+        if (info.isAssociation) return null
+        val type = if (info.name.endsWith(".NEF", true)) "NEF" else "JPG"
+        val stamp = info.stamp.ifEmpty { "00000000-000000" }
+        return "$handle:$stamp:$type:${info.name}"
+    }
 
     /** PTP 字符串：u1 字符数 N（含 NUL）+ N×2 字节 UTF-16LE */
     private fun pstr(bb: ByteBuffer): String? = try {

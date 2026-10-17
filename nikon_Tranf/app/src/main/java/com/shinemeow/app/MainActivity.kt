@@ -59,6 +59,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -73,6 +74,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.safeDrawing
@@ -437,6 +439,7 @@ class MainActivity : ComponentActivity() {
         val scope = rememberCoroutineScope()
         var showSettings by remember { mutableStateOf(false) }
         var showDownloads by remember { mutableStateOf(false) }
+        var showRemote by remember { mutableStateOf(false) }   // 遥控拍摄页（任务 6）
         // 自动化测量入口：VM 下发"打开某页"的意图（计数器变化即触发一次）
         LaunchedEffect(vm.openSettingsRequest.value) {
             if (vm.openSettingsRequest.value > 0) showSettings = true
@@ -514,6 +517,7 @@ class MainActivity : ComponentActivity() {
         BackHandler(enabled = pairPreviewIndex >= 0) { pairPreviewIndex = -1 }
         BackHandler(enabled = previewIndex >= 0) { previewIndex = -1 }
         BackHandler(enabled = showDownloads) { showDownloads = false }
+        BackHandler(enabled = showRemote) { vm.closeRemote(); showRemote = false }
         BackHandler(enabled = showSettings) { showSettings = false }
 
         // 机内删除后预览停留：rows 快照缩短 → Pager 当前页不变、自然落到下一张
@@ -738,6 +742,19 @@ class MainActivity : ComponentActivity() {
                             TypeBadge("NEF", badgeColor("NEF"), Modifier.offset(x = offX, y = -offY))
                             TypeBadge("JPG", badgeColor("JPG"), Modifier.offset(x = -offX, y = offY))
                         }
+                        Spacer(Modifier.width(UiSpec.TOPBAR_BTN_GAP))
+                        // 遥控拍摄入口（任务 6）：相机图标，进入全屏遥控页（取景+快门+对焦+录像）
+                        Box(
+                            Modifier
+                                .size(UiSpec.TOPBAR_BTN)
+                                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable {
+                                    vm.openRemote()
+                                    showRemote = true
+                                },
+                            contentAlignment = Alignment.Center
+                        ) { RemoteIcon(MaterialTheme.colorScheme.onSurfaceVariant) }
                         Spacer(Modifier.width(UiSpec.TOPBAR_BTN_GAP))
                         // 下载队列按钮：无任务=下载图标；有任务=数字直接替换图标（青绿底白字，99+ 封顶）
                         TopBarDownloadButton(onClick = { showDownloads = true })
@@ -1750,8 +1767,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            /* ---------- 遥控拍摄页（任务 6）：全屏取景 + 控制条 ---------- */
+            if (showRemote) {
+                RemoteScreen(vm = vm, onBack = { vm.closeRemote(); showRemote = false })
+            }
+
             /* ---------- 拍照控制（任务 5）：悬浮快门球 + 长按参数面板 ---------- */
-            if (vm.connPhase.value == "connected" && selCount == 0 && !showDownloads && !showSettings) {
+            if (vm.connPhase.value == "connected" && selCount == 0 && !showDownloads && !showSettings && !showRemote) {
                 if (vm.paramsPanelOpen.value) {
                     // 全屏点击捕获层：点空白收起参数面板
                     Box(
@@ -1999,6 +2021,200 @@ class MainActivity : ComponentActivity() {
                 sym,
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.4f)
+            )
+        }
+    }
+
+    /** 遥控拍摄页（任务 6）：全屏取景画面 + 底部控制条（AF / 对焦−+ / 大快门 / 录像）。
+     *  通道不支持取景（0x9201 探针被拒）→ 居中降级提示。BackHandler 退出即关取景。 */
+    @Composable
+    private fun RemoteScreen(vm: MainViewModel, onBack: () -> Unit) {
+        val dark = vm.darkModeOn
+        Surface(Modifier.fillMaxSize(), color = Color.Black) {
+            Column(Modifier.fillMaxSize()) {
+                // 顶条：关闭 + 状态/错误文案（REC 红色警示）
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.Close, contentDescription = "关闭", tint = Color.White)
+                    }
+                    Text(
+                        when {
+                            vm.movieRecording.value -> "REC · 录像中（影像保存在相机卡内）"
+                            vm.lvActive.value -> "实时取景中"
+                            vm.lvSupported.value == false -> "取景不可用"
+                            else -> "正在开启取景…"
+                        },
+                        color = if (vm.movieRecording.value) Color(0xFFFF5252) else Color.White.copy(alpha = 0.85f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Spacer(Modifier.width(UiSpec.TOPBAR_BTN))
+                }
+                // 取景画面
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val bmp = vm.lvFrame.value
+                    when {
+                        vm.lvSupported.value == false -> Text(
+                            vm.lvText.value.ifEmpty { "当前连接通道不支持实时取景" },
+                            color = Color.White.copy(alpha = 0.8f),
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(horizontal = 30.dp)
+                        )
+                        bmp != null -> Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                vm.lvText.value,
+                                color = Color.White.copy(alpha = 0.7f),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+                // 底部控制条：AF / 焦− / 步长 / 焦+ / 大快门 / 录像
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RemoteCircleBtn("AF", UiSpec.REMOTE_BTN, vm.lvActive.value, dark) { vm.autoFocusDrive() }
+                    RemoteCircleBtn("−", UiSpec.REMOTE_BTN, vm.lvActive.value, dark) { vm.stepFocus(1) }
+                    // 步长档 chip：点击循环 1→2→3（协议驱动量 128/512/1024）
+                    Box(
+                        Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.16f))
+                            .clickable { vm.focusStep.value = vm.focusStep.value % 3 + 1 },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "${vm.focusStep.value}",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                    RemoteCircleBtn("+", UiSpec.REMOTE_BTN, vm.lvActive.value, dark) { vm.stepFocus(2) }
+                    // 拍摄模式 chip：AF=自动对焦后拍摄(0x100E) / 直拍=不对焦立即拍(0x9207)
+                    Box(
+                        Modifier
+                            .height(30.dp)
+                            .widthIn(min = 40.dp)
+                            .clip(RoundedCornerShape(15.dp))
+                            .background(
+                                if (vm.shootAf.value) Color.White.copy(alpha = 0.16f)
+                                else UiSpec.accent(dark)
+                            )
+                            .clickable { vm.shootAf.value = !vm.shootAf.value },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (vm.shootAf.value) "AF" else "直拍",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                    }
+                    // 大快门：复用任务 5 拍摄链路（取景态失败自动暂停重试）
+                    Box(
+                        Modifier
+                            .size(UiSpec.REMOTE_SHUTTER)
+                            .shadow(10.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(
+                                if (vm.shutterBusy.value) UiSpec.accent(dark).copy(alpha = 0.6f)
+                                else UiSpec.accent(dark)
+                            )
+                            .clickable(enabled = !vm.shutterBusy.value) { vm.capturePhoto() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (vm.shutterBusy.value) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(34.dp)
+                            )
+                        } else {
+                            Canvas(Modifier.size(UiSpec.REMOTE_SHUTTER * 0.55f)) {
+                                val r = size.minDimension / 2f
+                                drawCircle(Color.White, radius = r * 0.88f, style = Stroke(3.dp.toPx()))
+                                drawCircle(Color.White, radius = r * 0.32f)
+                            }
+                        }
+                    }
+                    /* VIDEO-SEALED（2026-10-17 用户要求暂撤录像功能，协议链路与 VM
+                     * 状态保留，加回时恢复此块 + MainViewModel.toggleMovie）：
+                    Box(
+                        Modifier
+                            .size(UiSpec.REMOTE_BTN)
+                            .clip(CircleShape)
+                            .background(
+                                if (vm.movieRecording.value) Color(0xFFE53935) else Color.White.copy(alpha = 0.16f)
+                            )
+                            .border(
+                                2.dp,
+                                if (vm.movieRecording.value) Color(0xFFE53935) else Color.White.copy(alpha = 0.7f),
+                                CircleShape
+                            )
+                            .clickable { vm.toggleMovie() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (vm.movieRecording.value) {
+                            Box(
+                                Modifier
+                                    .size(16.dp)
+                                    .background(Color.White, RoundedCornerShape(3.dp))
+                            )
+                        } else {
+                            Box(Modifier.size(18.dp).background(Color(0xFFE53935), CircleShape))
+                        }
+                    }
+                    VIDEO-SEALED */
+                }
+            }
+        }
+    }
+
+    /** 遥控页控制条圆形按钮（AF / 对焦 ±） */
+    @Composable
+    private fun RemoteCircleBtn(label: String, size: Dp, enabled: Boolean, dark: Boolean, onClick: () -> Unit) {
+        Box(
+            Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = if (enabled) 0.16f else 0.07f))
+                .clickable(enabled = enabled, onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White.copy(alpha = if (enabled) 1f else 0.35f)
             )
         }
     }

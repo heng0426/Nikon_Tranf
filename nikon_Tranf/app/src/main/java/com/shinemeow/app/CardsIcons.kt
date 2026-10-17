@@ -704,3 +704,36 @@ internal fun MainActivity.WifiChannelCard(
             }
         }
     }
+/** 遥控拍摄入口图标（相机造型：机身圆角矩形 + 顶部快门钮凸起 + 中央镜头双环） */
+@Composable
+internal fun RemoteIcon(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier.size(UiSpec.ICON_STD)) {
+        val w = size.width
+        val h = size.height
+        val stroke = w * 0.10f
+        // 顶部快门钮凸起
+        drawLine(
+            color,
+            start = Offset(w * 0.34f, h * 0.10f),
+            end = Offset(w * 0.34f, h * 0.24f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        // 机身圆角矩形
+        drawRoundRect(
+            color,
+            topLeft = Offset(w * 0.10f, h * 0.24f),
+            size = Size(w * 0.80f, h * 0.60f),
+            cornerRadius = CornerRadius(w * 0.14f, w * 0.14f),
+            style = Stroke(stroke)
+        )
+        // 镜头外环 + 内芯
+        drawCircle(
+            color,
+            radius = w * 0.19f,
+            center = Offset(w * 0.50f, h * 0.54f),
+            style = Stroke(stroke)
+        )
+        drawCircle(color, radius = w * 0.06f, center = Offset(w * 0.50f, h * 0.54f))
+    }
+}

@@ -233,6 +233,8 @@ object UiSpec {
     val SEL_BORDER_W = 3.dp      // 多选选中态/高亮描边宽
     val SHUTTER_BALL = 64.dp     // 悬浮快门球直径（任务 5；连接态常驻右下角）
     val PARAMS_PANEL_W = 300.dp  // 拍摄参数面板宽（ISO/光圈/快门三行毛玻璃卡）
+    val REMOTE_SHUTTER = 76.dp   // 遥控页大快门键直径（任务 6）
+    val REMOTE_BTN = 48.dp       // 遥控页控制条按钮尺寸（AF/对焦/录像）
 
     /* ---------- 透明度 ---------- */
     val OUTLINE_ALPHA = 0.45f    // 描边胶囊描边强度（ActionPill / 两段式确认未armed态）

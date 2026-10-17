@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <android/log.h>
@@ -927,6 +928,220 @@ Java_com_shinemeow_app_GPhoto2Bridge_nativeListNative(JNIEnv *env, jclass clz) {
     return js;
 }
 
+/* ==================== 拍摄后增量刷新（只拉新对象，不全量枚举） ==================== */
+
+/* ObjectAdded 句柄暂存：0x941c 保活与 0x90c7 轮询都会消费相机事件队列，
+ * 谁消费谁入缓冲，nativePollObjectAddedNative 汇总返回——句柄不因消费方
+ * 不同而丢失。camMutex 串行保护，无需加锁。 */
+#define PENDING_MAX 64
+static unsigned int g_pending[PENDING_MAX];
+static int g_pend_n = 0;
+static int pending_has(unsigned int h) {
+    for (int i = 0; i < g_pend_n; i++) if (g_pending[i] == h) return 1;
+    return 0;
+}
+static void pending_push(unsigned int h) {
+    if (pending_has(h)) return;
+    if (g_pend_n < PENDING_MAX) g_pending[g_pend_n++] = h;
+}
+/* 事件 dataset 防御性解析：0x90c7 = u16 count、0x941c 实测空事件为 4B
+ * （u32 count 布局推断）。两种布局都尝试，count 与长度不匹配即放弃；
+ * 只收 ObjectAdded(0x4002)/0xC101 白名单，错位顶多漏事件不会崩。 */
+static void pending_collect(const unsigned char *d, int dlen, int cnt_u32) {
+    int cnt, off;
+    if (cnt_u32) {
+        if (dlen < 4) return;
+        memcpy(&cnt, d, 4);
+        off = 4;
+    } else {
+        if (dlen < 2) return;
+        cnt = d[0] | (d[1] << 8);
+        off = 2;
+    }
+    if (cnt < 0 || cnt > 4096 || off + cnt * 6 > dlen) return;   /* 布局不符 → 放弃 */
+    for (int i = 0; i < cnt; i++, off += 6) {
+        unsigned code = (unsigned) d[off] | ((unsigned) d[off + 1] << 8);
+        unsigned param = (unsigned) d[off + 2] | ((unsigned) d[off + 3] << 8)
+                       | ((unsigned) d[off + 4] << 16) | ((unsigned) d[off + 5] << 24);
+        if (code == 0x4002 || code == 0xC101) pending_push(param);
+    }
+}
+
+/* UTF-16LE PSTR（u1 长度含 NUL + N×2 字节）在 off 处读出 ASCII；返回下一偏移，-1=无效 */
+static int pstr16_at(const unsigned char *d, int dlen, int off, char *out, int outsz) {
+    if (off < 0 || off >= dlen) return -1;
+    int n = d[off];
+    if (n <= 0 || off + 1 + n * 2 > dlen) return -1;
+    int w = 0;
+    for (int i = 0; i < n && w < outsz - 1; i++) {
+        unsigned short ch = (unsigned short) (d[off + 1 + i * 2] | (d[off + 2 + i * 2] << 8));
+        out[w++] = (char) ch;
+    }
+    out[w] = 0;
+    return off + 1 + n * 2;
+}
+
+/* 0x9434 全表兜底：单对象 0x1014 被拒/无日期时查表取 stamp。找到返回 1。 */
+static int table_stamp(unsigned int handle, char *stamp, size_t sz) {
+    for (int s = 0; s < g_nstorages && s < 4; s++) {
+        unsigned int sp[3] = { g_storages[s], 0, 0 };
+        unsigned char *sd = NULL; int sdlen = 0;
+        if (pp_data_in2(g_tfd, 0x9434, g_ttid++, sp, 3, &sd, &sdlen, NULL) != 0) continue;
+        if (sdlen >= 8) {
+            int cnt = 0; memcpy(&cnt, sd + 4, 4);
+            for (int i = 0; i < cnt && sdlen >= 8 + (i + 1) * 16; i++) {
+                unsigned int h, t1, t2;
+                memcpy(&h,  sd + 8 + i * 16 + 0, 4);
+                memcpy(&t1, sd + 8 + i * 16 + 8, 4);
+                memcpy(&t2, sd + 8 + i * 16 + 12, 4);
+                if (h != handle) continue;
+                unsigned int sec  = (t1 >> 8) & 0xff, min = (t1 >> 16) & 0xff, hour = (t1 >> 24) & 0xff;
+                unsigned int day  = t2 & 0xff, mon = (t2 >> 8) & 0xff, year = (t2 >> 16) & 0xffff;
+                snprintf(stamp, sz, "%04u%02u%02u-%02u%02u%02u", year, mon, day, hour, min, sec);
+                free(sd);
+                return 1;
+            }
+        }
+        free(sd);
+    }
+    return 0;
+}
+
+/* 单对象信息行 "h:stamp:type"（拍摄后增量刷新）。
+ * ⚠️ 不做句柄位段预判：Z6 II 新建拍摄文件夹后 JPG 段基址会漂移
+ * （实测新拍 JPG = 0x2453xxxx，旧白名单 0x2a00 会误拒）。
+ * 主路径 0x1014 GetObjectInfo：文件名后缀判 type、CaptureDate 取 stamp；
+ * 0x1014 失败时 0x9434 表兜底 stamp + 旧位段白名单猜 type（猜不出 → NULL
+ * 回退全量枚举）。 */
+JNIEXPORT jstring JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeObjectInfoNative(
+        JNIEnv *env, jclass clz, jint handle) {
+    (void) clz;
+    if (g_tfd < 0) return NULL;
+    unsigned int h = (unsigned int) handle;
+    char stamp[24] = "00000000-000000";
+    char type[4] = "";
+    unsigned char *d = NULL; int dlen = 0;
+    unsigned int p[1] = { h };
+    if (pp_data_in2(g_tfd, 0x1014, g_ttid++, p, 1, &d, &dlen, NULL) == 0 && d) {
+        /* 尼康固件 ObjectInfo 头部偶有 ±字节差异：44..96 窗口找 ".JPG/.NEF"
+         * 结尾的文件名 PSTR，其后紧跟 CaptureDate（"YYYYMMDDTHHMMSS"） */
+        for (int off = 44; off <= 96 && off + 2 < dlen; off++) {
+            char fname[128], cap[40];
+            int next = pstr16_at(d, dlen, off, fname, sizeof(fname));
+            if (next < 0) continue;
+            int fl = (int) strlen(fname);
+            if (fl < 4) continue;
+            const char *ext = fname + fl - 4;
+            if (!strcasecmp(ext, ".JPG")) snprintf(type, sizeof(type), "JPG");
+            else if (!strcasecmp(ext, ".NEF")) snprintf(type, sizeof(type), "NEF");
+            else continue;
+            int next2 = pstr16_at(d, dlen, next, cap, sizeof(cap));
+            if (next2 >= 0 && (int) strlen(cap) == 15 && cap[8] == 'T')
+                snprintf(stamp, sizeof(stamp), "%.8s-%.6s", cap, cap + 9);
+            break;
+        }
+        free(d);
+    } else {
+        free(d);
+    }
+    if (!type[0]) {
+        if (!table_stamp(h, stamp, sizeof(stamp))) return NULL;
+        unsigned int hi16 = (h >> 16) & 0xffff;
+        if (HI_IS_JPG(hi16)) snprintf(type, sizeof(type), "JPG");
+        else if (HI_IS_NEF(hi16)) snprintf(type, sizeof(type), "NEF");
+        else return NULL;                     /* 段位漂移且 0x1014 也失败 → 放弃 */
+    }
+    char line[64];
+    snprintf(line, sizeof(line), "%u:%s:%s", h, stamp, type);
+    LOGI("objinfo: %s", line);
+    return (*env)->NewStringUTF(env, line);
+}
+
+/* 0x9434 时间戳全表："h:YYYYMMDD-HHMMSS|..."（拍后增量差集刷新用）。
+ * 单事务拉全表（千张 ~14KB），远轻于全量 list 的多事务 BFS 递归。
+ * 0x9434 表是相机维护的权威清单——新照片写卡完成才入表，差集即真新照片
+ * （事件 ObjectAdded 在拍进卡模式下多为 SDRAM 临时 id，0x1014 查无此对象，
+ * 不可作差集依据）。NULL = 拉取失败（上层回退全量枚举）。 */
+JNIEXPORT jstring JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeStampTableNative(JNIEnv *env, jclass clz) {
+    (void) clz;
+    if (g_tfd < 0) return NULL;
+    const size_t cap = (size_t) 4096 * 32 + 64;
+    char *out = (char *) malloc(cap);
+    if (!out) return NULL;
+    size_t o = 0; out[0] = 0;
+    for (int s = 0; s < g_nstorages && s < 4; s++) {
+        unsigned int sp[3] = { g_storages[s], 0, 0 };
+        unsigned char *sd = NULL; int sdlen = 0;
+        if (pp_data_in2(g_tfd, 0x9434, g_ttid++, sp, 3, &sd, &sdlen, NULL) != 0) continue;
+        if (sdlen >= 8) {
+            int cnt = 0; memcpy(&cnt, sd + 4, 4);
+            for (int i = 0; i < cnt && sdlen >= 8 + (i + 1) * 16; i++) {
+                unsigned int h, t1, t2;
+                memcpy(&h,  sd + 8 + i * 16 + 0, 4);
+                memcpy(&t1, sd + 8 + i * 16 + 8, 4);
+                memcpy(&t2, sd + 8 + i * 16 + 12, 4);
+                unsigned int sec  = (t1 >> 8) & 0xff, min = (t1 >> 16) & 0xff, hour = (t1 >> 24) & 0xff;
+                unsigned int day  = t2 & 0xff, mon = (t2 >> 8) & 0xff, year = (t2 >> 16) & 0xffff;
+                if (year < 2000 || year > 2100 || mon < 1 || mon > 12 || day < 1 || day > 31) continue;
+                char stamp[24];
+                snprintf(stamp, sizeof(stamp), "%04u%02u%02u-%02u%02u%02u", year, mon, day, hour, min, sec);
+                int w = snprintf(out + o, cap - o, "%s%u:%s", o ? "|" : "", h, stamp);
+                if (w < 0 || (size_t) w >= cap - o) break;
+                o += (size_t) w;
+            }
+        }
+        free(sd);
+    }
+    if (o == 0) { free(out); return NULL; }
+    jstring js = (*env)->NewStringUTF(env, out);
+    free(out);
+    return js;
+}
+
+/* 事件轮询（0x90c7 GetEvent）：返回 ObjectAdded(0x4002)/SDRAM(0xC101) 的对象句柄数组，
+ * 先取缓冲（0x941c 保活消费进来的）再发 0x90c7 补充，合并去重。
+ * dataset = u16 count + N×(u16 code + u32 param)。NULL = 通道拒绝/传输失败。 */
+JNIEXPORT jintArray JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativePollObjectAddedNative(JNIEnv *env, jclass clz) {
+    (void) clz;
+    if (g_tfd < 0) return NULL;
+    jint tmp[PENDING_MAX + 256];
+    int n = 0;
+    int cap = (int) (sizeof(tmp) / sizeof(tmp[0]));
+    for (int i = 0; i < g_pend_n && n < cap; i++) tmp[n++] = (jint) g_pending[i];
+    g_pend_n = 0;
+    /* tmp 去重（缓冲本身无重复，但与 0x90c7 结果可能重叠） */
+    int w = 0;
+    for (int i = 0; i < n; i++) {
+        int dup = 0;
+        for (int j = 0; j < w; j++) if (tmp[j] == tmp[i]) { dup = 1; break; }
+        if (!dup) tmp[w++] = tmp[i];
+    }
+    n = w;
+    unsigned char *d = NULL; int dlen = 0;
+    int r = pp_data_in2(g_tfd, 0x90C7, g_ttid++, NULL, 0, &d, &dlen, NULL);
+    if (r == 0 && d) {
+        pending_collect(d, dlen, 0);          /* 本轮收的入缓冲，再整体并入返回 */
+        for (int i = 0; i < g_pend_n && n < cap; i++) tmp[n++] = (jint) g_pending[i];
+        g_pend_n = 0;
+    }
+    free(d);
+    if (r != 0 && n == 0) return NULL;        /* 通道失败且无存量 → 上层回退 */
+    /* 最终去重 */
+    w = 0;
+    for (int i = 0; i < n; i++) {
+        int dup = 0;
+        for (int j = 0; j < w; j++) if (tmp[j] == tmp[i]) { dup = 1; break; }
+        if (!dup) tmp[w++] = tmp[i];
+    }
+    jintArray out = (*env)->NewIntArray(env, w);
+    if (!out) return NULL;
+    (*env)->SetIntArrayRegion(env, out, 0, w, tmp);
+    return out;
+}
+
 /* 下载：0x9421 取总大小 → 0x9431 按 64KB 分块循环 → 完整字节数组 */
 JNIEXPORT jbyteArray JNICALL
 Java_com_shinemeow_app_GPhoto2Bridge_nativeDownloadNative(
@@ -989,6 +1204,7 @@ Java_com_shinemeow_app_GPhoto2Bridge_nativeEventPollNative(JNIEnv *env, jclass c
     if (g_tfd < 0) return -1;
     unsigned char *d = NULL; int dlen = 0;
     int r = pp_data_in2(g_tfd, 0x941c, g_ttid++, NULL, 0, &d, &dlen, NULL);
+    if (r == 0 && d) pending_collect(d, dlen, 1);   /* 保活消费的事件不丢：ObjectAdded 入缓冲 */
     free(d);
     return (r == 0) ? 0 : -2;
 }
@@ -1248,6 +1464,23 @@ Java_com_shinemeow_app_GPhoto2Bridge_nativeCaptureNative(
     return (int) rc;
 }
 
+/* 直接快门（0x9207 尼康 CaptureRecInSdram，参数 [af, sdram]）：
+ * af=0 不做 AF 直接释放快门；sdram=0 照片进存储卡。af=1 时相机先 AF 合焦后拍。
+ * 返回：0x2001=已触发；其他=相机拒绝码；-1=未连接；-2=传输失败。 */
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeCapture2Native(
+        JNIEnv *env, jclass clz, jint jAf, jint jSdram) {
+    (void) clz;
+    if (g_tfd < 0) return -1;
+    unsigned int p[2] = {(unsigned int) jAf, (unsigned int) jSdram};
+    unsigned int rc = 0;
+    int r = pp_cmd_in_rc(g_tfd, 0x9207, g_ttid++, p, 2, &rc);
+    LOGI("capture2: 0x9207 af=%d sdram=%d r=%d rc=0x%04x", jAf, jSdram, r, rc);
+    if (r == -2 || r == -5) return -2;
+    if (r != 0) return (r == -6) ? (int) rc : -2;
+    return (int) rc;
+}
+
 /* 读设备属性（0x1015 GetDevicePropValue）：原始 LE 字节。
  * 返回 jbyteArray（u16 属性 2 字节 / u32 属性 4 字节）；失败 NULL（相机拒绝码打日志）。 */
 JNIEXPORT jbyteArray JNICALL
@@ -1289,4 +1522,66 @@ Java_com_shinemeow_app_GPhoto2Bridge_nativeSetPropNative(
     if (r == -1 || r == -2 || r == -5) return -2;
     if (r != 0) return (r == -6) ? (int) rc : -2;
     return (int) rc;
+}
+
+/* ==================== 实时取景 / 录像 / 对焦（任务 6） ==================== */
+
+/* 无数据指令的通用封装：返回 0x2001=OK，其他=相机拒绝码，-1=未连接，-2=传输失败 */
+static jint cmd_rc_jni(JNIEnv *env, unsigned short op, unsigned int *params, int nparams) {
+    (void) env;
+    if (g_tfd < 0) return -1;
+    unsigned int rc = 0;
+    int r = pp_cmd_in_rc(g_tfd, op, g_ttid++, params, nparams, &rc);
+    if (r == -1 || r == -2) return -2;
+    if (r != 0) return (r == -6) ? (int) rc : -2;
+    return (int) rc;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeStartLiveViewNative(JNIEnv *env, jclass clz) {
+    return cmd_rc_jni(env, 0x9201, NULL, 0);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeEndLiveViewNative(JNIEnv *env, jclass clz) {
+    return cmd_rc_jni(env, 0x9202, NULL, 0);
+}
+
+/* 取一帧取景图（0x9203 data-in）：返回原始字节（JPEG 截取在 Kotlin 侧做） */
+JNIEXPORT jbyteArray JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeLiveViewFrameNative(JNIEnv *env, jclass clz) {
+    (void) clz;
+    if (g_tfd < 0) return NULL;
+    unsigned char *d = NULL; int dlen = 0;
+    int r = pp_data_in2(g_tfd, 0x9203, g_ttid++, NULL, 0, &d, &dlen, NULL);
+    if (r != 0 || dlen < 2) { free(d); return NULL; }
+    jbyteArray out = (*env)->NewByteArray(env, dlen);
+    if (!out) { free(d); return NULL; }
+    (*env)->SetByteArrayRegion(env, out, 0, dlen, (const jbyte *) d);
+    free(d);
+    return out;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeStartMovieNative(JNIEnv *env, jclass clz) {
+    return cmd_rc_jni(env, 0x920A, NULL, 0);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeEndMovieNative(JNIEnv *env, jclass clz) {
+    return cmd_rc_jni(env, 0x920B, NULL, 0);
+}
+
+/* 手动对焦驱动（0x9204 [方向, 驱动量]）：dir 1=近 / 2=远；drive 128/512/1024 */
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeFocusDriveNative(
+        JNIEnv *env, jclass clz, jint jDir, jint jDrive) {
+    unsigned int p[2] = {(unsigned int) jDir, (unsigned int) jDrive};
+    return cmd_rc_jni(env, 0x9204, p, 2);
+}
+
+/* 单次 AF（0x90c1，仅取景态） */
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeAfDriveNative(JNIEnv *env, jclass clz) {
+    return cmd_rc_jni(env, 0x90C1, NULL, 0);
 }
