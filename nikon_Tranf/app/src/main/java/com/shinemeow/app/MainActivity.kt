@@ -1749,6 +1749,257 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+
+            /* ---------- 拍照控制（任务 5）：悬浮快门球 + 长按参数面板 ---------- */
+            if (vm.connPhase.value == "connected" && selCount == 0 && !showDownloads && !showSettings) {
+                if (vm.paramsPanelOpen.value) {
+                    // 全屏点击捕获层：点空白收起参数面板
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) { vm.paramsPanelOpen.value = false }
+                    )
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .navigationBarsPadding()
+                            .padding(end = 16.dp, bottom = 108.dp)
+                    ) { ShutterParamPanel(vm) }
+                }
+                Box(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(end = 18.dp, bottom = 26.dp)
+                ) { ShutterBall(vm) }
+            }
+
+            // 拍摄结果气泡：样式与删除成功气泡一致（纯文本），1.8s 自动消失
+            val capEv = vm.captureEvent.value
+            val capShow = remember { mutableStateOf(false) }
+            var capPos by remember { mutableStateOf(Offset.Zero) }
+            LaunchedEffect(capEv?.first) {
+                if (capEv != null) {
+                    capShow.value = true
+                    delay(1800)
+                    capShow.value = false
+                    vm.consumeCapture()
+                }
+            }
+            AnimatedVisibility(
+                visible = capShow.value,
+                enter = slideInVertically(tween(UiSpec.STANDARD)) { it } + fadeIn(tween(UiSpec.QUICK)),
+                exit = slideOutVertically(tween(UiSpec.QUICK)) { it } + fadeOut(tween(UiSpec.QUICK)),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 36.dp)
+            ) {
+                capEv?.let { ev ->
+                    val dark = vm.darkModeOn
+                    val capTint = UiSpec.bubbleTint(dark)
+                    val capBorder = UiSpec.glassBorder(dark)
+                    val capFg = if (dark) Color.White else Color(0xFF1C1C1E)
+                    Row(
+                        Modifier
+                            .shadow(8.dp, RoundedCornerShape(UiSpec.ROUND_LARGE))
+                            .clip(RoundedCornerShape(UiSpec.ROUND_LARGE))
+                            .onGloballyPositioned { capPos = it.positionInRoot() }
+                            .drawBehind {
+                                glassLayer.record {
+                                    clipRect(0f, 0f, size.width, size.height) {
+                                        translate(-capPos.x, -capPos.y) {
+                                            drawLayer(contentLayer)
+                                        }
+                                    }
+                                }
+                                drawLayer(glassLayer)
+                            }
+                            .background(capTint)
+                            .border(1.dp, capBorder, RoundedCornerShape(UiSpec.ROUND_LARGE))
+                            .padding(horizontal = 18.dp, vertical = 11.dp)
+                    ) {
+                        Text(ev.second, color = capFg, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
+    }
+
+    /** 悬浮快门球（任务 5）：连接态右下角常驻。点按 = 0x100E 快门（照片进卡后自动刷新
+     *  网格）；长按 = 展开参数面板（ISO/光圈/快门步进）。拍摄中转圈。 */
+    @OptIn(ExperimentalFoundationApi::class)
+    @Composable
+    private fun ShutterBall(vm: MainViewModel) {
+        Box(
+            Modifier
+                .size(UiSpec.SHUTTER_BALL)
+                .shadow(10.dp, CircleShape)
+                .clip(CircleShape)
+                .background(UiSpec.accent(vm.darkModeOn))
+                .combinedClickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = { vm.capturePhoto() },
+                    onLongClick = {
+                        vm.paramsPanelOpen.value = true
+                        vm.refreshCamParams()
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (vm.shutterBusy.value) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    strokeWidth = 3.dp,
+                    modifier = Modifier.size(UiSpec.ICON_STD)
+                )
+            } else {
+                Canvas(Modifier.size(34.dp)) {
+                    val r = size.minDimension / 2f
+                    drawCircle(Color.White, radius = r * 0.88f, style = Stroke(3.dp.toPx()))
+                    drawCircle(Color.White, radius = r * 0.32f)
+                }
+            }
+        }
+    }
+
+    /** 拍摄参数面板：三行步进（ISO/光圈/快门）；面板打开期间每 2s 轮询刷新
+     *  （相机侧转盘变化实时同步，无需关开面板）；通道不支持降级为提示文案。 */
+    @Composable
+    private fun ShutterParamPanel(vm: MainViewModel) {
+        val dark = vm.darkModeOn
+        LaunchedEffect(Unit) {
+            while (true) {
+                vm.refreshCamParams()
+                delay(2000)
+            }
+        }
+        Surface(
+            Modifier
+                .width(UiSpec.PARAMS_PANEL_W)
+                .then(
+                    glassBackdropModifier(
+                        shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
+                        tint = UiSpec.glassTint(dark),
+                        border = UiSpec.glassBorder(dark),
+                        blur = UiSpec.GLASS_BLUR,
+                        shadow = UiSpec.GLASS_SHADOW
+                    )
+                ),
+            shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
+            color = Color.Transparent
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    "拍摄参数",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (dark) Color.White.copy(alpha = 0.65f) else Color.Black.copy(alpha = 0.55f)
+                )
+                when (vm.paramsSupported.value) {
+                    null -> Text(
+                        "参数读取中…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (dark) Color.White else Color(0xFF1C1C1E),
+                        modifier = Modifier.padding(vertical = 18.dp)
+                    )
+                    false -> Text(
+                        "当前连接通道不支持参数读写",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (dark) Color.White else Color(0xFF1C1C1E),
+                        modifier = Modifier.padding(vertical = 18.dp)
+                    )
+                    else -> {
+                        val pfg = if (dark) Color.White else Color(0xFF1C1C1E)
+                        val ro = vm.paramsReadOnly.value
+                        ShutterParamRow(
+                            "ISO",
+                            vm.paramIso.value?.toString() ?: "—",
+                            pfg, !ro,
+                            { vm.stepCamParam(0, -1) }, { vm.stepCamParam(0, 1) }
+                        )
+                        ShutterParamRow(
+                            "光圈",
+                            vm.paramAperture.value?.let {
+                                if (it % 100 == 0) "f/${it / 100}" else "f/${it / 100.0}"
+                            } ?: "—",
+                            pfg, !ro,
+                            { vm.stepCamParam(1, -1) }, { vm.stepCamParam(1, 1) }
+                        )
+                        ShutterParamRow(
+                            "快门",
+                            vm.paramShutter.value?.let { vm.shutterLabel(it) } ?: "—",
+                            pfg, !ro,
+                            { vm.stepCamParam(2, -1) }, { vm.stepCamParam(2, 1) }
+                        )
+                        // 提示行：步进失败原因 / Wi-Fi 只读说明
+                        val hint = vm.paramHint.value
+                            ?: if (ro) "Wi-Fi 连接下相机参数只读，请用 USB 连接调节" else null
+                        if (hint != null) {
+                            Text(
+                                hint,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = UiSpec.error(dark),
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** 参数行：标签 + − 值 +（enabled=false 时按钮灰置） */
+    @Composable
+    private fun ShutterParamRow(
+        label: String, value: String, fg: Color, enabled: Boolean,
+        onMinus: () -> Unit, onPlus: () -> Unit
+    ) {
+        Row(
+            Modifier.fillMaxWidth().height(44.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                label,
+                Modifier.weight(0.8f),
+                style = MaterialTheme.typography.bodyMedium,
+                color = fg.copy(alpha = if (enabled) 1f else 0.55f)
+            )
+            ShutterStepBtn("−", enabled, onMinus)
+            Text(
+                value,
+                Modifier.weight(1.4f),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                style = MaterialTheme.typography.titleMedium,
+                color = fg.copy(alpha = if (enabled) 1f else 0.55f)
+            )
+            ShutterStepBtn("+", enabled, onPlus)
+        }
+    }
+
+    @Composable
+    private fun ShutterStepBtn(sym: String, enabled: Boolean, onClick: () -> Unit) {
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (enabled) 1f else 0.4f)
+                )
+                .clickable(enabled = enabled, onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                sym,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.4f)
+            )
         }
     }
 

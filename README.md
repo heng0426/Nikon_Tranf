@@ -27,13 +27,15 @@
 
 ### 机内管理
 - **机内删除**（0x100B DeleteObject，Wi-Fi/USB 双通道）：多选操作条或全屏预览页发起，删除前弹确认框（标注其中受保护张数——相机端设保护的照片会被跳过）；正在下载/排队的照片会先行拦截，避免删掉正在读取的句柄；**全部成功只弹底部小气泡（自动消失），仅受保护/失败/中断才弹结果框**
+- **遥控拍摄**（0x100E InitiateCapture，Wi-Fi/USB 双通道）：连接态右下角悬浮快门球，点按即拍——照片存入存储卡后自动刷新网格，可立即下载/删除；拍摄中转圈、结果气泡提示
+- **拍摄参数调节**（0x1015 读 / 0x1016 写）：快门球长按展开参数面板，ISO（64–102400）/ 光圈（f/1.2–f/32）/ 快门（30″–1/8000，挡位与机身实测一致）步进调节，写后读回相机实际值，相机侧转盘变化 2s 内自动同步，调节失败显示具体原因
 - **存储容量**（0x1005 GetStorageInfo）：连接详情浮层展示"剩余 / 总容量 + 约剩余张数"，删除成功后自动刷新；**双卡槽机型自动聚合全部可用存储**（空槽返回 0x2013 自动跳过）
 
 ## 技术要点
 
 - **Wi-Fi 通道 — libgphoto2（PTP/IP）**：预编译库 `app/libs/gphoto2/arm64-v8a/`；camlib/iolib（`ptp2.so`、`ptpip.so`）随 assets 分发，首运行解包后 dlopen；JNI 封装配对探针、递归枚举、偏移读下载
 - **USB 通道 — 自研 PTP over USB bulk**（`UsbPtpSession.kt`）：UsbManager → bulk 端点 → PTP 容器，支持 0x101B 尼康专有部分读取、ZLP 吸收、会话级管道自愈；**OpenSession 三段自愈**（直接开 → 已开会话 Close 重开 → USB 级 Reset 0x66 强制清相机端残留状态后重开——进程被杀未 CloseSession 的场景无需拔线）；`NikonRegistry.kt` 20 款机型档案（名称/代际/ISO 范围，任务 5 预留）
-- **机内删除 + 存储容量**：0x100B DeleteObject / 0x1005 GetStorageInfo 双通道实现；删除前写保护预检（0x1008 ProtectionStatus）与下载队列冲突拦截；受保护照片由相机端 **0x200D（ReadOnlyObject）** 拒绝码兜底（0x2009 实为 InvalidObjectHandle，Z6 II 实测）；多卡槽机型遍历全部 StorageID 聚合可用存储
+- **机内删除 + 存储容量**：0x100B DeleteObject / 0x1005 GetStorageInfo 双通道实现；删除前写保护预检（0x1008 ProtectionStatus）与下载队列冲突拦截；受保护照片由相机端 **0x200D（ReadOnlyObject）** 拒绝码兜底（0x2009 实为 InvalidObjectHandle，Z6 II 实测）；多卡槽机型遍历全部 StorageID 聚合可用存储；**遥控拍摄 + 参数调节**：0x100E / 0x1015 / 0x1016 双通道实现（含 PTP/IP data-out 事务、0x90c7 事件轮询、0xd100 尼康快门编码）
 - **Wi-Fi 发现与路由**：mDNS（NsdManager `_ptp._tcp`/`_nikon._tcp`）为主路径；网络策略分层——相机连手机热点（非受管网络）走内核热点直连路由**不绑定**，手机连相机热点才 `bindProcessToNetwork`
 - **枚举**：双通道统一采用 **递归文件夹（BFS ≤3 层）∪ 尼康 0x9434 全量表**（句柄+时间戳，16 字节/条）排序去重；文件类型按尼康句柄位段判断（hi16 高 8 位 `0x2a`=JPG / `0x0a`=NEF）
 - **性能**：合并配对结果缓存、下载进度读取下沉绘制阶段（线性补间零重组）、网格语义子树清空（无障碍免疫）、启动时请求设备最高刷新率（规避 HyperOS 类别限频 60Hz）、内置 `PerfTrace` 帧率采样（相机连着无 adb 时的性能尺子，读数在设置·性能/诊断）

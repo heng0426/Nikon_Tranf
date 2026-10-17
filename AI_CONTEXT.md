@@ -49,21 +49,21 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `MainActivity.kt` | ~2027 | Activity 本体 + `MainScreen`（全屏双卡连接/紧凑重连条/双模式网格骨架/筛选/多选+选当天/日期折叠）+ 顶栏（齿轮/筛选/合并快捷开关/反转徽章/下载按钮/连接状态，TOPBAR_GAP 自适应状态栏）+ TopBarDownloadButton/ConnInfoCard/RollingText；PerfTrace.attach 与强制 120Hz 在 onCreate；机内删除确认框/结果框（`vm.deletePlan`/`vm.deleteResult`）也在本文件；**毛玻璃底材系统 `glassBackdropModifier`**（contentLayer 离屏录制 + BlurEffect + 轮廓裁剪 + tint/描边/阴影，shape/tint/border/blur/shadow 参数化，全部弹层共用；坑见 §9#17-21）；多选操作条 = 根 Box 浮层玻璃卡片；**删除成功气泡**（根 Box 末尾 AnimatedVisibility，`deleteOkEvent` 一次性事件）；**`followGrid` 网格跟随预览**（单行步长分段平滑滚动，250ms，见 §9#24）；**onCreate/onNewIntent 调 `vm.handleUsbLaunchIntent`**（插线拉起接线，singleTask 复用实例） |
-| `UiSpec.kt` | ~269 | **设计令牌中心**：动画三档（QUICK/STANDARD/EMPHASIS）、圆角双档（ROUND_SMALL/LARGE）、浅深成对主题色（accent/accentDeep/error/amber/usbBlue/connChip/卡片面/选中遮罩/已下载标/徽章/蒙层/占位灰）、布局尺寸（TOPBAR_GAP/PAGE_PAD/TOPBAR_BTN/TOPBAR_BTN_GAP/ICON_STD·SM/PILL_*/ACTION_*/PILL_SLOT/CONN_INFO_H/QUEUE_ROW_H/PREVIEW_SLOT_H/CHECK_ICON/QUEUE_THUMB/DRAG_STRIP_W/SEL_BORDER_W/SCROLLBAR_THICKNESS/SEL_CARD_OVERHANG）、透明度/字号令牌、行为参数（CHUNK_TRIGGER）、**毛玻璃统一规格**（GLASS_BLUR/GLASS_BLUR_SOFT/glassTint/glassBorder/GLASS_SHADOW/bubbleTint——弹层模糊/着色/描边/阴影全在此调）、**FOLLOW_SCROLL=250**（跟随预览翻页滚动动画，2026-10-17 用户定）。**新代码一律取令牌，不写散值**（已两轮收敛，替换 ~110 处散值）；**⚠️ UI 参数约定（2026-10-17 用户定）：所有新增 UI 参数必须入 UiSpec，修改参数时同步更新 UiSpec 与本文档** |
+| `MainActivity.kt` | ~2278 | Activity 本体 + `MainScreen`（全屏双卡连接/紧凑重连条/双模式网格骨架/筛选/多选+选当天/日期折叠）+ 顶栏（齿轮/筛选/合并快捷开关/反转徽章/下载按钮/连接状态，TOPBAR_GAP 自适应状态栏）+ TopBarDownloadButton/ConnInfoCard/RollingText；PerfTrace.attach 与强制 120Hz 在 onCreate；机内删除确认框/结果框（`vm.deletePlan`/`vm.deleteResult`）也在本文件；**毛玻璃底材系统 `glassBackdropModifier`**（contentLayer 离屏录制 + BlurEffect + 轮廓裁剪 + tint/描边/阴影，shape/tint/border/blur/shadow 参数化，全部弹层共用；坑见 §9#17-21）；多选操作条 = 根 Box 浮层玻璃卡片；**删除成功气泡**（根 Box 末尾 AnimatedVisibility，`deleteOkEvent` 一次性事件）；**`followGrid` 网格跟随预览**（单行步长分段平滑滚动，250ms，见 §9#24）；**onCreate/onNewIntent 调 `vm.handleUsbLaunchIntent`**（插线拉起接线，singleTask 复用实例）；**拍照控制 UI**：`ShutterBall` 悬浮快门球（点按拍摄/长按展开）、`ShutterParamPanel` 参数面板（2s 轮询同步）、拍摄结果气泡（`captureEvent`） |
+| `UiSpec.kt` | ~271 | **设计令牌中心**：动画三档（QUICK/STANDARD/EMPHASIS）、圆角双档（ROUND_SMALL/LARGE）、浅深成对主题色（accent/accentDeep/error/amber/usbBlue/connChip/卡片面/选中遮罩/已下载标/徽章/蒙层/占位灰）、布局尺寸（TOPBAR_GAP/PAGE_PAD/TOPBAR_BTN/TOPBAR_BTN_GAP/ICON_STD·SM/PILL_*/ACTION_*/PILL_SLOT/CONN_INFO_H/QUEUE_ROW_H/PREVIEW_SLOT_H/CHECK_ICON/QUEUE_THUMB/DRAG_STRIP_W/SEL_BORDER_W/SCROLLBAR_THICKNESS/SEL_CARD_OVERHANG）、透明度/字号令牌、行为参数（CHUNK_TRIGGER）、**毛玻璃统一规格**（GLASS_BLUR/GLASS_BLUR_SOFT/glassTint/glassBorder/GLASS_SHADOW/bubbleTint——弹层模糊/着色/描边/阴影全在此调）、**FOLLOW_SCROLL=250**（跟随预览翻页滚动动画，2026-10-17 用户定）。**新代码一律取令牌，不写散值**（已两轮收敛，替换 ~110 处散值）；**⚠️ UI 参数约定（2026-10-17 用户定）：所有新增 UI 参数必须入 UiSpec，修改参数时同步更新 UiSpec 与本文档** |
 | `GridParts.kt` | ~991 | 双格 PairCell/单格 GridCell/格式徽章/已下载标、置顶日期胶囊与槽位、日期节头胶囊、筛选面板 FilterSheet（下载状态单选三按钮、自绘把手 fillMaxWidth 居中、玻璃参数随弹窗）；**日期选择框 = Popup 承载**（attached window 恒在面板之上 + 全屏点击捕获层 requiredSize 强制铺满 + 居中玻璃卡片 + 自排确定/取消行，见 §9#20）；滚动条覆盖层 GridScrollbarOverlay 已封存（SCROLLBAR-SEALED 注释） |
 | `PreviewPagers.kt` | ~802 | 合并/单格式全屏预览 Pager、PreviewZoomState 缩放状态与手势、EXIF/下载槽位；两页顶栏均有垃圾桶删除入口（onDelete → VM 预检） |
 | `SettingsScreens.kt` | ~943 | 设置页 + 全部设置组件（SettingsSection/SettingSwitch/ChannelChip/ActionPill/两个选择器）；分组含**存储**（存储目录+已下载照片统计 JPG/RAW 计数与占用）与**性能/诊断**（PerfTrace 读数） |
 | `DownloadsQueue.kt` | ~850 | 下载队列侧板 + 队列行（支持左右滑动移出）/缩略图/下载槽位、**总览卡**（恒定计数胶囊+阶段化速率排+字节权重进度）、两段式全部取消 |
 | `CardsIcons.kt` | ~674 | USB/Wi-Fi 连接卡（双卡与紧凑条共用）+ 全部 Canvas 自绘图标（含 TrashIcon 删除桶）+ 连接指示详情浮层 |
-| `MainViewModel.kt` | ~3528 | **业务核心**：连接状态机（Wi-Fi 取消+USB 接力）、Wi-Fi 发现与分层网络策略（§5）、缩略图管线、高清预览管线、配对缓存 pairRowsCache、分块加载、筛选/折叠/多选状态；下载队列已抽到 DownloadManager（本类保留传输 IO runQueueItem：USB 偏移读分块/整包、Wi-Fi 0x9431 分块）；**机内删除 + 存储容量**（0x100B/0x1005，requestDelete→deletePlan→confirmDelete→deleteResult，见 §6.5） |
+| `MainViewModel.kt` | ~4016 | **业务核心**：连接状态机（Wi-Fi 取消+USB 接力）、Wi-Fi 发现与分层网络策略（§5）、缩略图管线、高清预览管线、配对缓存 pairRowsCache、分块加载、筛选/折叠/多选状态；下载队列已抽到 DownloadManager（本类保留传输 IO runQueueItem：USB 偏移读分块/整包、Wi-Fi 0x9431 分块）；**机内删除 + 存储容量**（0x100B/0x1005，requestDelete→deletePlan→confirmDelete→deleteResult，见 §6.5） |
 | `DownloadManager.kt` | ~179 | 下载队列状态与串行调度（QueueItem/QStatus/入队去重/取消/worker）；传输 IO 由 VM 注入 `runItem` 回调，收尾 `onWorkerExit` 回调做批量提醒 |
-| `UsbPtpSession.kt` | ~743 | **USB 通道**：自研 PTP over USB bulk（0x9434 快路径枚举），见 §6；机内删除 0x100B / 存储容量 0x1005（多卡槽聚合）/ 写保护预检（ProtectionStatus）；**OpenSession 三段自愈**（直接开 → AlreadyOpen Close 重开 → USB 级 Reset 0x66 后重开，见 §9#26）；机型名走 `NikonRegistry.modelLabel` |
+| `UsbPtpSession.kt` | ~845 | **USB 通道**：自研 PTP over USB bulk（0x9434 快路径枚举），见 §6；机内删除 0x100B / 存储容量 0x1005（多卡槽聚合）/ 写保护预检（ProtectionStatus）；**拍照控制**：0x100E 快门 / 0x90c7 GetEvent / 0x1015·0x1016 参数读写（`transactionDataOut` data-out 相位，见 §6.6）；**OpenSession 三段自愈**（直接开 → AlreadyOpen Close 重开 → USB 级 Reset 0x66 后重开，见 §9#26）；机型名走 `NikonRegistry.modelLabel` |
 | `NikonRegistry.kt` | ~50 | **尼康 USB 机型注册表（20 款）**：EXPEED 5×3 / 6×10 / 7×7，字段 = 名称/代际/minISO/maxISO（ISO 为任务 5 预留）；`modelLabel` = 档案命中用档案名、未知尼康「未知尼康 (0xXXXX)」标注（**宽容连接不拒绝**，2026-10-17 用户确认，与 ZENCHE 硬报错策略不同——传输工具能连就有价值）；数据源 ZENCHE README:201-232 |
 | `GPhoto2Bridge.kt` | 70 | Wi-Fi 通道的 JNI 声明（native 实现在 `cpp/gphoto2_jni.c`；含 nativeDeleteNative/nativeObjectProtectedNative/nativeStorageInfoNative） |
 | `CameraKeepAliveService.kt` | 101 | 前台服务 + WifiLock（仅 Wi-Fi 连接用，USB 不需要） |
 | `PerfTrace.kt` | ~167 | **App 内帧率采样**（Choreographer 环形窗口 1000 帧 + 关键路径埋点）：相机连着时无 adb 通道（USB 占口/热点断外网），只能把尺子做进 App，读数在设置·性能/诊断分区看；注意 tag 用 "PerfTrace" 别用 "Perf" |
-| `cpp/gphoto2_jni.c` | ~1117 | JNI 封装：`nativeConnect("ptpip:IP")`、尼康配对探针、递归+0x9434 并集枚举、句柄式下载/偏移读（0x9431 单次上限 1MB，C 层校验）、机内删除/写保护预检/存储容量（0x100B/0x1008/0x1005） |
+| `cpp/gphoto2_jni.c` | ~1291 | JNI 封装：`nativeConnect("ptpip:IP")`、尼康配对探针、递归+0x9434 并集枚举、句柄式下载/偏移读（0x9431 单次上限 1MB，C 层校验）、机内删除/写保护预检/存储容量（0x100B/0x1008/0x1005）；**拍照控制**（0x100E 快门 / 0x1015 读参 / 0x1016 写参含 `pp_data_out` data-out 事务） |
 | `AndroidManifest.xml` | — | 权限 + `uses-feature usb.host (required=false)` |
 
 ## 4. 双通道架构（核心设计）
@@ -104,7 +104,7 @@ D:/Android/Sdk/platform-tools/adb.exe install -r E:/Code/GitHub/Nikon_Tranf/niko
   - netId 探针分层判定：先判网段归属（热点=直连免绑 / 受管=绑定），不再把"绑定失败"一律当黑洞超时。
 - 连接：`nativePairingProbe(ip)` 尼康配对握手（抓包逆向，出处记录见 doc/ 专项整理文档）→ 成功后常驻传输会话；连接后 `startEventPolling()`（0x941c 心跳）+ `startKeepAlive()`（前台服务防冻结）。
 - **Wi-Fi 下载管线（runQueueItem Wi-Fi 分支）**：0x9421 取大小 → **0x9431 偏移读 1MB 块**（C 层校验单次上限 1MB；原 128KB 块 PTP-IP 往返多吞吐低，加大到 1MB 显著提速；末块长度必须精确到文件尾——尼康对超界 GetPartialObject 直接报错，gphoto2 例外）→ 失败回退整对象。250ms 节流刷 UI 速度，通知栏 1s 节流。
-- 数据原语（JNI）：`nativeListNative()` / `nativeObjectSizeNative(handle)` / `nativePreviewNative(handle, offset, len)`（**偏移读**，gphoto2 自动截断越界块）/ `nativeDownloadNative(handle)` / `nativeDeleteNative(handle)`（0x100B 机内删除）/ `nativeObjectProtectedNative(handle)`（0x1008 写保护预检）/ `nativeStorageInfoNative()`（0x1005 存储容量，返回 `"capacity|free|freeImages|label"`）。
+- 数据原语（JNI）：`nativeListNative()` / `nativeObjectSizeNative(handle)` / `nativePreviewNative(handle, offset, len)`（**偏移读**，gphoto2 自动截断越界块）/ `nativeDownloadNative(handle)` / `nativeDeleteNative(handle)`（0x100B 机内删除）/ `nativeObjectProtectedNative(handle)`（0x1008 写保护预检）/ `nativeStorageInfoNative()`（0x1005 存储容量，返回 `"capacity|free|freeImages|label"`）/ `nativeCaptureNative()`（0x100E 快门）/ `nativeGetPropNative(prop)`（0x1015 读参）/ `nativeSetPropNative(prop, value)`（0x1016 写参）。
 - **枚举（nativeListNative 已重写）**：不能假设 GetObjectHandles(根层) 一次返回全部（实测只回当前文件夹 82/886 张）。现方案 = 递归文件夹 BFS（≤3 层，非 JPG/NEF 位段句柄视为文件夹下钻）**∪ 0x9434 尼康专有全量表**（每条 16 字节小端：句柄+保留+时间+日期，时间戳表 4096 项）排序去重；输出格式不变 `"句柄:YYYYMMDD-HHMMSS:类型|..."`。诊断日志：`list: 时间戳表 %d 项`、`list: 最终文件 %d 个（根层 %d…）`。
 - **USB 模式全部跳过**：配对、心跳、保活、网络绑定（USB 会话本身稳定）。
 
@@ -150,6 +150,19 @@ ZENCHE 五端均无机内删除，本功能为对标增量。双通道分发（U
 - ⚠️ **0x1008 GetObjectInfo 在 Wi-Fi PTP/IP 传输会话被拒**（实测 `r=-6`，有响应但响应码非 OK）：所以 Wi-Fi 通道**无法事前探测保护状态**——枚举只用 0x9434(专有时间戳表)/0x1007，文件大小走 0x9421，全程不解析 ObjectInfo，这条路径此前从未被验证。USB 通道 0x1008 正常（fetchObjectInfo 拿到的 size 正确），事前预检可用。**两条通道能力不对等：新增原语必须在两侧都实证。**
 - **保护状态三来源**（2026-10-16 用户反馈"受保护照片无显示/无预警/删除失败"后补）：① **后台渐进扫描** `startProtectionScan`（枚举完成后新→旧逐句柄 0x1008，命中回写 `row.isProtected`；连续 6 次查询失败即静默放弃——通道不支持时不阻塞；generation 守卫防重枚举竞态）② **删除预检回写**（选中即查，确认受保护置位）③ **0x2009 学习**（相机端拒绝后回写，预检漏检的兜底）。UI：网格格 TopEnd 红圆白锁 `ProtBadge`（GridParts.kt，Canvas 自绘——material-icons-core 无 Lock）；预览底栏名称行红色「受保护」chip；确认框**自适应**——全部受保护 → 「无法删除」阻断式告知（无删除按钮，引导去机身取消保护），部分受保护 → 正文标注"将被跳过"。
 - ⚠️ C 侧命名坑：`nativeStorageInfoNative` 内局部变量不能叫 `free`（遮蔽 libc `free()`，clang 报 "called object type 'unsigned long long' is not a function"）。
+
+### 6.6 拍照控制（0x100E 快门 / 0x1015·0x1016 参数，2026-10-17 任务 5）
+
+ZENCHE 有完整蓝本（§4.2/§5.6），但路径按本机决策调整。grilling 确认（A/B/A/A）：USB+Wi-Fi 双通道快门；**USB 不走 ZENCHE 的 0x9207 SDRAM 路径，改用标准 0x100E InitiateCapture 拍进存储卡**——拍完自动刷新枚举，网格即见新照片（与"传输工具"心智一致，省掉 SDRAM 下载+extractJpeg 恢复链）；B 门/录像/对焦留任务 6（依赖取景态）。
+
+- **双通道快门**：USB = `UsbPtpSession.initiateCapture`（0x100E [0,0]）；Wi-Fi = `nativeCaptureNative`。拍后写卡检测：USB 轮询 **0x90c7 GetEvent**（尼康扩展，dataset = u16 count + N×(u16 code + u32 param)）等 **0x4002 ObjectAdded**（0xC101 = 尼康 SDRAM 版）命中后 +1.5s；通道不支持事件（首次即 null）→ 固定 4s 兜底；Wi-Fi 固定 3s。随后全量 `listFiles()` 刷新。结果走 `captureEvent` 气泡（复用删除气泡毛玻璃样式）。
+- **参数读写**：0x1015 GetDevicePropValue（data-in）/ 0x1016 SetDevicePropValue（**data-out 相位**）。ISO `0x500f`(u16)、光圈 `0x5007`(u16=f×100)、快门回退链 `{0xd100, 0x500d}`（ZENCHE 照片链序）。**0x1015/0x1016 在 Wi-Fi 会话实测放行**（读写在 Wi-Fi 都可用——与被拒的 0x1008 不同，通道能力是逐指令的）。
+- **参数面板 UI**：悬浮快门球（`UiSpec.SHUTTER_BALL` 64dp，连接态右下角常驻，多选/下载面板打开时隐藏；点按拍摄 busy 转圈，长按展开）→ 毛玻璃 `ShutterParamPanel`（三行 −/值/+ 步进器）。面板打开期间**每 2s 轮询 `refreshCamParams`**（相机侧转盘变化实时同步）。步进失败原因显示面板底部红字（0x201F=Wi-Fi 拒写、0x2019=忙、0x201C=模式限制、其他响应码）。
+- **方向语义**：光圈「+」= 光圈开大 = **f 值变小**（`stepCamParam` 对 which==1 取反 dir）；快门「±」沿阶梯 idx±1（阶梯 [0]=30″ 最慢）。
+- **阶梯（Z6 II 机身实测挡位，2026-10-17 用户逐档确认）**：快门 54 档（`ShutterStep(num,den,label)`）——长曝段**无 3″/3.2″**（4″→2.5″ 直达）；亚秒段全 **1/x 标法**（1/1.3、1/1.6、1/2.5、1/3），非 0.8/0.6/0.4/0.3。光圈 f/1.2…f/32 29 档；ISO 64…102400 32 档。显示用 `vm.shutterLabel`（最近档映射机身原标法）。
+- ⚠️⚠️ **0xd100 小数挡编码：分母固定 10、不约分**（实测相机把 1.6″ 报告为 `0x0010000a = 16/10`）：1.3″=13/10、2.5″=25/10、1/1.3=10/13、1/1.6=10/16、1/2.5=10/25。数学约分形式（4/3、8/5）会被相机拒——1.3″ 档曾因此过不去。写后 sleep+读回显示相机实际值；0x500d 回退条件 = 任何非传输类失败（比 ZENCHE 的仅兼容错误更宽）。
+- ⚠️⚠️ **PTP/IP data-out 帧格式（`pp_data_out`）**：`OperationRequest(DataPhaseInfo=2) → StartData → EndData → OpResponse`。**StartData 载荷 = tid(u32) + 总长(u64) 共 12 字节紧跟 8 字节帧头（帧长 20）**——首版把 tid 放在帧偏移 12（载荷前多垫 4 个零），相机把 tid 当总长高位 → 写参数全部 0x201F（AccessDenied，**极具误导性的拒绝码**）；对照 ZENCHE `PtpIpCamera.sendCommandWithDataOut` 逐字节比对定位。EndData 载荷 = tid(u32)+数据。接收端解析布局不能直接当发送端布局用。
+- ⚠️ opcode 口径：ZENCHE 用 0x1014=GetDevicePropDesc，本项目 0x1014 一直当 GetPartialObject 用（`OP_NIKON_GET_PARTIAL=0x101B` 并存）——属性族只用 0x1015/0x1016，不碰 0x1014，避免踩双口径。
 
 ## 7. 数据模型与缓存体系（MainViewModel）
 
@@ -217,6 +230,9 @@ adb logcat -d | grep -E "UsbPtp|GPhoto2"
 25. **插线拉起必须 `launchMode="singleTask"` + 连接互斥要锁**（2026-10-17 实测）：Manifest 不设 launchMode 时插线拉起默认**新建实例**叠在已打开实例上（"重新打开 App 再连接"）；拔插重插时「系统 ATTACHED 广播」与「拉起新实例」双路径并发，两实例各自 openDevice 抢同一台相机 → 接口抢占卡死（"转圈"= bulk 15s 超时）。修复：`singleTask` 复用实例 + `handleUsbLaunchIntent` 统一三路入口 + `tryConnectUsbCore` `synchronized(this)`（⚠️ `connecting` 检查到赋值**非原子**，无锁时双线程都能通过检查）。
 26. **进程被杀遗留的相机端 USB 会话要用 0x66 Reset 清**（2026-10-17 实测）：USB 连接中划掉 App，CloseSession 没机会执行 → 相机端会话/bulk 端点状态残留 → 重开 App OpenSession 石沉大海（每事务 15s 超时叠加 = "一直转圈"），拔线才能恢复。修复 = openSession 第三段自愈：USB 级 Reset（`controlTransfer(0x21, 0x66, ...)`）强制相机清状态后重开。**这招同时是"上次会话异常退出"的通用解**。
 27. **可取消流程里的长 `Thread.sleep` 必须分段轮询取消标志**（2026-10-17 实测）：mDNS 发现阶段 `Thread.sleep(8000)` 硬睡满，点取消要等 8s 才生效。正解：每 200ms 查一次取消标志的循环睡眠 + **命中即提前退出**（本例 found 非空后多留 600ms 收尾回调）。取消响应性属于交互正确性，写阻塞循环时一律按可中断设计。
+28. **PTP/IP data-out 的 StartData 帧：载荷 = tid(u32)+总长(u64) 共 12 字节紧跟帧头（帧长 20）**（2026-10-17 实测，Wi-Fi 写参数全 0x201F 的根因）：首版把 tid 放帧偏移 12（载荷前多垫 4 个零），相机把 tid 当总长高位 → 语义全错。**接收端解析布局（`pl+4` 读 total）不能直接当发送端布局用**——发送帧头后载荷从偏移 8 开始；自研协议帧必须与既有可运行实现（ZENCHE `sendCommandWithDataOut`）逐字节对照。0x201F=AccessDenied 是极具误导性的拒绝码：先怀疑自己的帧，再怀疑权限。
+29. **尼康 0xd100 快门编码：小数挡分母固定 10、不约分**（2026-10-17 实测，1.3″ 档过不去的根因）：相机把 1.6″ 报告为 `0x0010000a=16/10`——写 1.3″ 必须 13/10（`0x000D000A`），数学约分形式 4/3 被拒。挡位表以**用户逐档实测**为准（长曝无 3″/3.2″，4″→2.5″ 直达；亚秒全 1/x 标法），显示用机身原标法。通用教训：**协议取值风格以设备上报原样为准，不要做"等价"变换**。
+30. **方向语义类 UI 陷阱——光圈「+」= 开大 = f 值变小**（2026-10-17 用户反馈）：数值型参数的 ± 不能一律沿数值增减，要按摄影惯例映射（光圈 + 变小 f 值、快门 ± 沿时间轴）。做步进 UI 前先确认每个参数"加"的物理含义。
 
 ## 10. 当前状态与待办（截至 2026-10-14）
 
@@ -233,6 +249,8 @@ adb logcat -d | grep -E "UsbPtp|GPhoto2"
 **2026-10-17 新增（跟随预览 + 容量双卡槽 + 高清缓存）**：①**网格跟随预览翻页**（用户需求"预览滑动超出网格显示范围自动跟随"）：Pager 新增 `onFollow` 回调传**当前内容标识**（pair.key/row.handle，⚠️ 不传页号——删除收缩时页号不变内容已换页），`LaunchedEffect(currentPage, rows.size)` 触发；MainActivity `followGrid(state, idx)` 单行步长分段平滑滚动（250ms `UiSpec.FOLLOW_SCROLL`，方向感知，§9#22/24）。②**删除后缩放重置**：HorizontalPager 加 `key`（照片唯一标识），页内容更换时组合重建 `PreviewZoomState` 归零（旧版同页复用残留移动/放大）。③**退出预览脉冲不溢出**：pulse `graphicsLayer` 从 modifier 链首移到 `clip` 之后（内容在格子圆角内呼吸放大被自身裁剪，边缘列不再溢出网格容器；border 静态）。④**存储容量双卡槽修复**（Wi-Fi/USB 全空 → 可用）：遍历全部 StorageID 聚合（§9#22）。⑤**高清缓存预算修正**（往回翻必糊 → 2~3 页内全命中）：64~160MB（§9#23）。⑥**UI 参数约定**（用户定，见文档头部与 §3 UiSpec 行）。
 
 **2026-10-17 新增（任务 8：device_filter + 机型档案 + USB 自愈 + mDNS 取消）**：①**插线即用**：`device_filter.xml`（20 款精确 PID + 带 vendor-id 的 class 6/1/1 兜底）+ Manifest intent-filter + `singleTask`；插线 → 系统弹「用拾影喵打开」→ 授权 → 自动连接（三路入口统一，§9#25）。②**`NikonRegistry.kt` 20 款机型档案**（名称/代际/ISO 范围），USB 机型名显示档案名；未知尼康宽容连接 + 「未知尼康 (0xXXXX)」标注（用户确认，区别于 ZENCHE 硬报错）。③**OpenSession 三段自愈 + USB 级 Reset 0x66**（§9#26，杀进程重开无需拔线）。④**mDNS 发现阶段取消亚秒级响应 + 命中提前退出**（§9#27）。grilling 确认记录：Q1 加 intent-filter（A）／Q2 档案全字段（A）／Q3 未知设备宽容（A）／Q4 自动连接（A）。
+
+**2026-10-17 新增（任务 5：拍照控制）**：①**双通道快门 0x100E**（拍进存储卡，拍后 GetEvent 等 ObjectAdded → 自动刷新网格；不走 ZENCHE 0x9207 SDRAM 路径，用户确认 B）②**参数读写 0x1015/0x1016**（Wi-Fi 会话**读写在两侧都放行**——与被拒的 0x1008 不同；ISO/光圈/快门三阶梯步进 + 写后读回 + 失败原因红字提示；Wi-Fi 曾因 StartData 帧错全被 0x201F 拒，对照 ZENCHE 逐字节修正，§9#28）③**悬浮快门球 UI**（64dp，长按展开参数面板，面板每 2s 轮询同步相机侧变化）。快门 54 档/光圈 29 档/ISO 32 档均为 Z6 II 机身实测挡位（§9#29）。grilling 确认记录：Q1 双通道（A）／Q2 拍进卡（B）／Q3 带参数（A）／Q4 快门球（A）／Q5 B门·录像·对焦留任务 6（同意）。
 
 **已知取舍**：USB 缩略图用 GetThumb（~160px，网格上略糊）；USB 高清预览优先 0x101B 偏移读管线（仅失败回退整文件下载+内存切片）；下载耗时统计功能代码存在但入口已按用户要求移除；强制 120Hz 仅前台生效（后台系统自动回落）；筛选面板/下载侧板上再弹弹窗（日期选择/重下载确认）玻璃透出的是**主内容模糊像而非面板**——"玻璃面镜像栈"真机观感不可控已撤，如要"透面板"正解是改成面板内嵌展开区（不走独立弹窗）；多选浮层卡片会遮住网格最后一行部分区域（原占位条是挤开网格），滚动到底遮挡影响操作时再给网格加底部 contentPadding；预览翻页跟随以"可见但不完整"为界（完整可见不滚），行对齐后预览 Pager 与网格滚动各自独立；未知尼康机型宽容连接（机型名标"未知尼康"），ZENCHE 的硬报错策略未采用。
 

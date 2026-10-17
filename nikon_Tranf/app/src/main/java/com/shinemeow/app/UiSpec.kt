@@ -231,6 +231,8 @@ object UiSpec {
     val SCROLLBAR_THICKNESS = 9.dp // 滚动条拖块厚度
     [/SCROLLBAR-SEALED] */
     val SEL_BORDER_W = 3.dp      // 多选选中态/高亮描边宽
+    val SHUTTER_BALL = 64.dp     // 悬浮快门球直径（任务 5；连接态常驻右下角）
+    val PARAMS_PANEL_W = 300.dp  // 拍摄参数面板宽（ISO/光圈/快门三行毛玻璃卡）
 
     /* ---------- 透明度 ---------- */
     val OUTLINE_ALPHA = 0.45f    // 描边胶囊描边强度（ActionPill / 两段式确认未armed态）

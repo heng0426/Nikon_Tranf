@@ -3295,6 +3295,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         deletePlan.value = null
         deleteResult.value = null
         deleteResultTitle.value = null
+        paramsReadOnly.value = false
+        paramHint.value = null
+        paramsPanelOpen.value = false
     }
 
     /* ---------- 机内删除（0x100B DeleteObject）+ 存储容量（0x1005）----------
@@ -3326,6 +3329,302 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun dismissDeleteResult() { deleteResult.value = null; deleteResultTitle.value = null }
     fun consumeDeleteOk() { deleteOkEvent.value = null }
     fun cancelDeletePlan() { deletePlan.value = null }
+
+    /* =====================================================================
+     *  拍照控制（任务 5；grilling A/B/A/A 确认 2026-10-17）
+     *  - 快门：USB/Wi-Fi 同走 0x100E InitiateCapture（照片进存储卡，非 SDRAM
+     *    ——拍完网格刷新即见新照片，与"传输工具"心智一致）。写卡完成检测：
+     *    USB 轮询 0x90c7 GetEvent 等 0x4002 ObjectAdded（通道不支持则固定延时）。
+     *  - 参数：0x1015 读 / 0x1016 写（ZENCHE 实测口径）；ISO 0x500f(u16) /
+     *    光圈 0x5007(u16=f×100) / 快门回退链 {0xd100(u32=(num<<16)|den),
+     *    0x500d(u32=sec×10000)}。Wi-Fi 会话可用性未知（0x1008 曾被拒）——
+     *    首次读取即探针，全失败则 UI 降级隐藏参数面板。
+     * ===================================================================== */
+    val shutterBusy = mutableStateOf(false)
+    /** 拍摄结果气泡（一次性）：Pair(序列 id, 消息)；UI 消费后置 null */
+    val captureEvent = mutableStateOf<Pair<Int, String>?>(null)
+    private var captureSeq = 0
+    fun consumeCapture() { captureEvent.value = null }
+
+    /* ---------- 参数面板 ---------- */
+    val paramsPanelOpen = mutableStateOf(false)
+    /** null=未探测；true=通道可用；false=通道不支持参数读写（UI 隐藏参数条） */
+    val paramsSupported = mutableStateOf<Boolean?>(null)
+    /** Wi-Fi 会话写参数被拒（0x201F AccessDenied，Z6 II 实测）→ 参数只读，步进禁用 */
+    val paramsReadOnly = mutableStateOf(false)
+    /** 面板底部提示行（步进失败原因/只读说明；null=不显示） */
+    val paramHint = mutableStateOf<String?>(null)
+    val paramIso = mutableStateOf<Int?>(null)        // 原生 ISO（64..102400）
+    val paramAperture = mutableStateOf<Int?>(null)   // f×100（400 = f/4.0）
+    /** 快门秒值（由 0xd100 或 0x500d 换算），null=未读到 */
+    val paramShutter = mutableStateOf<Double?>(null)
+    @Volatile private var shutterProp = 0xD100       // 最近命中的快门属性（写优先用它）
+
+    private fun readPropRaw(prop: Int): ByteArray? =
+        usbSession?.getDeviceProp(prop) ?: GPhoto2Bridge.nativeGetPropNative(prop)
+
+    private fun writePropRaw(prop: Int, value: ByteArray): Int =
+        usbSession?.setDeviceProp(prop, value) ?: GPhoto2Bridge.nativeSetPropNative(prop, value)
+
+    private fun le16(d: ByteArray) = (d[0].toInt() and 0xFF) or ((d[1].toInt() and 0xFF) shl 8)
+    private fun le32(d: ByteArray) = (d[0].toLong() and 0xFF) or ((d[1].toLong() and 0xFF) shl 8) or
+        ((d[2].toLong() and 0xFF) shl 16) or ((d[3].toLong() and 0xFF) shl 24)
+    private fun le16b(v: Int) = byteArrayOf((v and 0xFF).toByte(), ((v shr 8) and 0xFF).toByte())
+    private fun le32b(v: Long) = byteArrayOf(
+        (v and 0xFF).toByte(), ((v shr 8) and 0xFF).toByte(),
+        ((v shr 16) and 0xFF).toByte(), ((v shr 24) and 0xFF).toByte()
+    )
+
+    /** 读快门（ZENCHE 照片链 {0xd100, 0x500d}），返回 秒值 to 命中属性。
+     *  加合理性校验：0xd100 解析出 sec ∉ (0,60] 视为编码误读（Z6 II 实测出现过
+     *  num=0 / 编码方向存疑），自动落到 0x500d；原始值全量打日志供取证。 */
+    private fun readShutterSec(): Pair<Double, Int>? {
+        readPropRaw(0xD100)?.let { if (it.size >= 4) {
+            val v = le32(it)
+            val num = (v ushr 16) and 0xFFFF; val den = v and 0xFFFF
+            Log.i("GPhoto2", "shutter 0xd100 raw=0x%08x num=%d den=%d".format(v, num, den))
+            if (den != 0L && num != 0L) {
+                val sec = num.toDouble() / den
+                if (sec in 0.0001..60.0) return sec to 0xD100
+            }
+        } }
+        readPropRaw(0x500D)?.let { if (it.size >= 4) {
+            val v = le32(it)
+            Log.i("GPhoto2", "shutter 0x500d raw=0x%08x (%d)".format(v, v))
+            if (v in 1..600000) return (v / 10000.0) to 0x500D
+        } }
+        return null
+    }
+
+    /** 后台刷新三参数（连接后/面板展开时调用；单属性失败不阻断其余） */
+    fun refreshCamParams() {
+        if (demoMode.value) { paramsSupported.value = false; return }
+        if (!connected) return
+        Thread {
+            var iso: Int? = null; var ap: Int? = null; var sh: Double? = null
+            try {
+                synchronized(camMutex) {
+                    readPropRaw(0x500F)?.let { if (it.size >= 2) iso = le16(it) }
+                    readPropRaw(0x5007)?.let { if (it.size >= 2) ap = le16(it) }
+                    readShutterSec()?.let { sh = it.first; shutterProp = it.second }
+                }
+            } catch (t: Throwable) {
+                Log.w("GPhoto2", "参数读取异常: ${t.message}")
+            }
+            val any = iso != null || ap != null || sh != null
+            mainHandler.post {
+                paramsSupported.value = any
+                iso?.let { paramIso.value = it }
+                ap?.let { paramAperture.value = it }
+                sh?.let { paramShutter.value = it }
+            }
+            Log.i("GPhoto2", "参数读取: iso=$iso aperture=$ap shutter=$sh any=$any")
+        }.start()
+    }
+
+    fun stepCamParam(which: Int, dir: Int) {
+        if (demoMode.value || !connected || shutterBusy.value || paramsReadOnly.value) return
+        Thread {
+            try {
+                synchronized(camMutex) {
+                    when (which) {
+                        0 -> stepIso(dir)
+                        // 光圈方向取反：UI「+」= 光圈开大 = f 值变小（数值越大光圈越小）
+                        1 -> stepAperture(-dir)
+                        2 -> stepShutter(dir)
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w("GPhoto2", "参数步进异常: ${t.message}")
+            }
+        }.start()
+    }
+
+    private fun stepIso(dir: Int) {
+        val cur = readPropRaw(0x500F)?.let { if (it.size >= 2) le16(it) else null } ?: return
+        val i = ISO_LADDER.indexOf(cur).let { idx -> if (idx < 0) ISO_LADDER.indexOfFirst { v -> v >= cur } else idx }
+        val next = (i + dir).takeIf { it in ISO_LADDER.indices } ?: return
+        val v = ISO_LADDER[next]
+        val rc = writePropRaw(0x500F, le16b(v))
+        if (rc == 0x2001) {
+            Thread.sleep(120)                       // 相机内部生效延迟
+            val back = readPropRaw(0x500F)?.let { if (it.size >= 2) le16(it) else null } ?: v
+            mainHandler.post { paramIso.value = back; paramHint.value = null }
+            Log.i("GPhoto2", "ISO → 目标 $v 实际 $back")
+        } else stepFailHint("ISO", rc)
+    }
+
+    private fun stepAperture(dir: Int) {
+        val cur = readPropRaw(0x5007)?.let { if (it.size >= 2) le16(it) else null } ?: return
+        val i = AP_LADDER.indexOf(cur).let { idx -> if (idx < 0) AP_LADDER.indexOfFirst { v -> v >= cur } else idx }
+        val next = (i + dir).takeIf { it in AP_LADDER.indices } ?: return
+        val v = AP_LADDER[next]
+        val rc = writePropRaw(0x5007, le16b(v))
+        if (rc == 0x2001) {
+            Thread.sleep(120)
+            val back = readPropRaw(0x5007)?.let { if (it.size >= 2) le16(it) else null } ?: v
+            mainHandler.post { paramAperture.value = back; paramHint.value = null }
+            Log.i("GPhoto2", "光圈 → 目标 f/${v / 100.0} 实际 f/${back / 100.0}")
+        } else stepFailHint("光圈", rc)
+    }
+
+    private fun stepShutter(dir: Int) {
+        val cur = readShutterSec()?.first ?: return
+        // 最近档匹配（相对误差最小者；相机值不在阶梯上时也能落到正确方向）
+        var idx = 0; var best = Double.MAX_VALUE
+        SHUTTER_LADDER.forEachIndexed { k, p ->
+            val d = Math.abs(p.sec - cur) / Math.max(cur, 1e-9)
+            if (d < best) { best = d; idx = k }
+        }
+        val next = SHUTTER_LADDER[(idx + dir).takeIf { it in SHUTTER_LADDER.indices } ?: return]
+        // 写：d100 = (num<<16)|den（小数挡分母 10，与相机上报风格一致）；
+        // 非 OK 且非传输失败 → 回退 0x500d = sec×10000（放宽自 ZENCHE 的仅兼容
+        // 错误回退——1.3″ 档 d100 编码被拒时靠它兜底）
+        val secMs = Math.round(next.sec * 10000.0)
+        var rc = writePropRaw(0xD100, le32b(((next.num.toLong() and 0xFFFF) shl 16) or (next.den.toLong() and 0xFFFF)))
+        var used = 0xD100
+        if (rc != 0x2001 && rc != -1 && rc != -2) {
+            rc = writePropRaw(0x500D, le32b(secMs.toLong()))
+            used = 0x500D
+        }
+        if (rc == 0x2001) {
+            Thread.sleep(150)
+            val back = readShutterSec()            // 读回相机实际值（编码方向取证以它为准）
+            val shown = back?.first ?: next.sec
+            if (back != null) shutterProp = back.second
+            mainHandler.post { paramShutter.value = shown; paramHint.value = null }
+            Log.i("GPhoto2", "快门 → 目标 ${next.label} 实际 ${shown}s (写 0x%04x)".format(used))
+        } else stepFailHint("快门", rc)
+    }
+
+    /** 步进失败 → 面板底部提示（0x201F 额外置只读态，禁用全部步进） */
+    private fun stepFailHint(name: String, rc: Int) {
+        Log.w("GPhoto2", "$name 设置失败 rc=0x${(rc and 0xFFFF).toString(16)}")
+        val hint = when {
+            rc == 0x201F -> {
+                paramsReadOnly.value = true
+                "Wi-Fi 连接下相机拒绝写参数（AccessDenied），请用 USB 连接调节"
+            }
+            rc == 0x2019 -> "相机正忙，请稍后再试"
+            isPropCompatError(rc) -> "当前拍摄模式不允许调$name（请检查模式转盘/镜头光圈环）"
+            else -> "$name 设置失败 (0x${(rc and 0xFFFF).toString(16)})"
+        }
+        mainHandler.post { paramHint.value = hint }
+    }
+
+    /** 属性不兼容类错误（ZENCHE 同款集合）：快门回退链才允许换下一个属性 */
+    private fun isPropCompatError(rc: Int) = rc in intArrayOf(0x2005, 0x200A, 0x200F, 0x201C, 0x201D)
+
+    /** 秒值 → 机身原标法（最近档匹配；相机值不在阶梯上时退回通用格式化） */
+    fun shutterLabel(sec: Double): String {
+        var best: ShutterStep? = null; var bd = Double.MAX_VALUE
+        for (s in SHUTTER_LADDER) {
+            val d = Math.abs(s.sec - sec) / sec
+            if (d < bd) { bd = d; best = s }
+        }
+        if (best != null && bd < 0.05) return best.label
+        return if (sec >= 1.0) "%.1f″".format(sec) else "1/${Math.round(1.0 / sec)}"
+    }
+
+    /* ---------- 快门触发 ---------- */
+    fun capturePhoto() {
+        if (shutterBusy.value) return
+        if (demoMode.value) {
+            captureEvent.value = Pair(++captureSeq, "演示模式：快门已模拟")
+            return
+        }
+        if (!connected) return
+        shutterBusy.value = true
+        Thread {
+            var ok = false
+            var msg: String
+            var code = 0
+            try {
+                code = synchronized(camMutex) {
+                    usbSession?.initiateCapture() ?: GPhoto2Bridge.nativeCaptureNative()
+                }
+                if (code == 0x2001) {
+                    ok = true
+                    val seen = if (usbSession != null) waitForCaptureWritten() else false
+                    if (!seen) Thread.sleep(if (usbSession != null) 4000 else 3000)
+                    msg = "拍摄成功 · 已存入存储卡，正在刷新列表…"
+                } else {
+                    msg = when {
+                        code == 0x2019 -> "相机正忙，请稍后再拍"
+                        code == 0x2005 -> "当前模式不支持遥控快门"
+                        code == -1 || code == -2 -> "拍摄失败：连接已中断"
+                        else -> "拍摄失败 (0x${(code and 0xFFFF).toString(16)})"
+                    }
+                }
+            } catch (t: Throwable) {
+                msg = "拍摄失败：${t.message ?: "传输异常"}"
+            }
+            if (ok) {
+                try { listFiles() } catch (t: Throwable) {
+                    Log.w("GPhoto2", "拍摄后刷新失败: ${t.message}")
+                }
+            }
+            val ev = Pair(++captureSeq, msg)
+            mainHandler.post {
+                shutterBusy.value = false
+                captureEvent.value = ev
+            }
+            Log.i("GPhoto2", "遥控拍摄: ok=$ok code=0x${(code and 0xFFFF).toString(16)}")
+        }.start()
+    }
+
+    /** 轮询 GetEvent 等 ObjectAdded（0x4002 标准 / 0xC101 尼康 SDRAM），返回是否命中。
+     *  通道不支持事件（首次即 null）→ 立即返回 false，上层固定延时兜底。 */
+    private fun waitForCaptureWritten(): Boolean {
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline) {
+            val evs = usbSession?.getEvents() ?: return false
+            if (evs.any { it.first == 0x4002 || it.first == 0xC101 }) {
+                Thread.sleep(1500)     // 命中后留卡写尾（RAW 可能还在写）
+                return true
+            }
+            Thread.sleep(400)
+        }
+        return false
+    }
+
+    private val ISO_LADDER = intArrayOf(
+        64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000,
+        2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 16000, 20000, 25600, 32000,
+        40000, 51200, 64000, 102400
+    )
+    private val AP_LADDER = intArrayOf(   // f×100，1/3 档（f/1.2 … f/32）
+        120, 140, 160, 180, 200, 220, 250, 280, 320, 350, 400, 450, 500, 560, 630, 710,
+        800, 900, 1000, 1100, 1300, 1400, 1600, 1800, 2000, 2200, 2500, 2800, 3200
+    )
+    /** 快门阶梯：Z6 II 机身实测挡位（2026-10-17 用户逐档确认）。
+     *  长曝段无 3/3.2s（4″→2.5″ 直达）；亚秒段全为 1/x 标法（1/1.3、1/1.6、
+     *  1/2.5、1/3），非 0.8/0.6/0.4/0.3。label = 机身原标法。
+     *  ⚠️ 0xd100 编码实证：相机把 1.6″ 报告为 0x0010000a=16/10——**小数挡
+     *  分母固定 10**（1.3″=13/10、2.5″=25/10、1/1.3=10/13），不约分。 */
+    private class ShutterStep(val num: Int, val den: Int, val label: String) {
+        val sec: Double get() = num.toDouble() / den
+    }
+    private val SHUTTER_LADDER = listOf(
+        ShutterStep(30, 1, "30″"), ShutterStep(25, 1, "25″"), ShutterStep(20, 1, "20″"),
+        ShutterStep(15, 1, "15″"), ShutterStep(13, 1, "13″"), ShutterStep(10, 1, "10″"),
+        ShutterStep(8, 1, "8″"), ShutterStep(6, 1, "6″"), ShutterStep(5, 1, "5″"),
+        ShutterStep(4, 1, "4″"), ShutterStep(25, 10, "2.5″"), ShutterStep(2, 1, "2″"),
+        ShutterStep(16, 10, "1.6″"), ShutterStep(13, 10, "1.3″"), ShutterStep(1, 1, "1″"),
+        ShutterStep(10, 13, "1/1.3"), ShutterStep(10, 16, "1/1.6"), ShutterStep(1, 2, "1/2"),
+        ShutterStep(10, 25, "1/2.5"), ShutterStep(1, 3, "1/3"), ShutterStep(1, 4, "1/4"),
+        ShutterStep(1, 5, "1/5"), ShutterStep(1, 6, "1/6"), ShutterStep(1, 8, "1/8"),
+        ShutterStep(1, 10, "1/10"), ShutterStep(1, 13, "1/13"), ShutterStep(1, 15, "1/15"),
+        ShutterStep(1, 20, "1/20"), ShutterStep(1, 25, "1/25"), ShutterStep(1, 30, "1/30"),
+        ShutterStep(1, 40, "1/40"), ShutterStep(1, 50, "1/50"), ShutterStep(1, 60, "1/60"),
+        ShutterStep(1, 80, "1/80"), ShutterStep(1, 100, "1/100"), ShutterStep(1, 125, "1/125"),
+        ShutterStep(1, 160, "1/160"), ShutterStep(1, 200, "1/200"), ShutterStep(1, 250, "1/250"),
+        ShutterStep(1, 320, "1/320"), ShutterStep(1, 400, "1/400"), ShutterStep(1, 500, "1/500"),
+        ShutterStep(1, 640, "1/640"), ShutterStep(1, 800, "1/800"), ShutterStep(1, 1000, "1/1000"),
+        ShutterStep(1, 1250, "1/1250"), ShutterStep(1, 1600, "1/1600"), ShutterStep(1, 2000, "1/2000"),
+        ShutterStep(1, 2500, "1/2500"), ShutterStep(1, 3200, "1/3200"), ShutterStep(1, 4000, "1/4000"),
+        ShutterStep(1, 5000, "1/5000"), ShutterStep(1, 6400, "1/6400"), ShutterStep(1, 8000, "1/8000")
+    )
 
     /** 后台刷新存储容量（双通道分发；失败静默留空，不影响主流程）
      *  演示模式：假容量（64GB 卡），剩余 = 基数 43GB + 已删张数 × 24MB（单张口径与假下载一致），
@@ -3648,6 +3947,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         uiLog = "相机连接已断开（$reason）"
         camStorage.value = null
         deletePlan.value = null      // 删除中失联：撤下确认框，confirmDelete 循环自行中断
+        paramsReadOnly.value = false
+        paramHint.value = null
         Log.i("GPhoto2", "markSessionLost: $reason")
         stopKeepAlive()
     }

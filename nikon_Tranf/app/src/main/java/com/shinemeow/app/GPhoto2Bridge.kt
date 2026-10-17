@@ -68,4 +68,9 @@ object GPhoto2Bridge {
     external fun nativeDeleteNative(handle: Int): Int          // 0x100B：0x2001=已删除，0x200D=受保护/只读（Z6 II 实测），-1=未连接，-2=传输失败
     external fun nativeObjectProtectedNative(handle: Int): Int // 0x1008 预检：1=受保护，0=未保护，-1=未连接，-2=查询失败
     external fun nativeStorageInfoNative(): String?            // 0x1005："capacity|free|freeImages|label"，失败 NULL
+
+    // ---- 拍照控制（0x100E 快门 / 0x1015 读参 / 0x1016 写参；任务 5）----
+    external fun nativeCaptureNative(): Int                    // 0x100E InitiateCapture [0,0]：0x2001=已触发，其他=相机拒绝码，-1=未连接，-2=传输失败
+    external fun nativeGetPropNative(prop: Int): ByteArray?    // 0x1015 GetDevicePropValue：原始 LE 字节（u16=2B / u32=4B），失败 NULL
+    external fun nativeSetPropNative(prop: Int, value: ByteArray): Int  // 0x1016 SetDevicePropValue（data-out）：0x2001=OK，其他=相机拒绝码，-1/-2=未连接/传输失败
 }

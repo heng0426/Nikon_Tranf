@@ -76,13 +76,17 @@ class UsbPtpSession(
         private const val OP_GET_OBJECT = 0x1009
         private const val OP_GET_THUMB = 0x100A
         private const val OP_DELETE_OBJECT = 0x100B
-        private const val OP_GET_PARTIAL_OBJECT = 0x1014
+        private const val OP_INITIATE_CAPTURE = 0x100E    // 标准 InitiateCapture：拍进存储卡（非 SDRAM）
+        private const val OP_GET_PARTIAL_OBJECT = 0x1014  // ⚠️ 本项目实测当 GetPartialObject 用；ZENCHE 口径为 GetDevicePropDesc——属性族以 0x1015/0x1016 为准
+        private const val OP_GET_DEVICE_PROP_VALUE = 0x1015
+        private const val OP_SET_DEVICE_PROP_VALUE = 0x1016
         private const val OP_GET_PARTIAL_OBJECT64 = 0x95C1
         // 尼康 USB 的部分读取是专有 0x101B（操作码字典实证）；标准 0x1014 在尼康 USB 上
         // 被解释为 GetDevicePropDesc 之类，参数对不上必返 0x2006
         private const val OP_NIKON_GET_PARTIAL = 0x101B
         // 尼康专有：对象清单表（句柄+时间戳一次拿全，免逐对象 0x1008；PTP-IP/USB 均可用）
         private const val OP_NIKON_OBJ_TABLE = 0x9434
+        private const val OP_GET_EVENT = 0x90C7           // 尼康：取事件（ObjectAdded 等）
         // 尼康文件句柄位段：hi16 高 8 位 0x2a=JPG、0x0a=NEF，低 8 位是文件夹段
         // （Z7=0x1c，新款固件跨文件夹 0x1c/0x1d——硬编码低字节会丢整段照片）
         private const val HI_GROUP_JPG = 0x2a00
@@ -404,6 +408,71 @@ class UsbPtpSession(
         resp.code
     } ?: -1
 
+    /** 标准快门（0x100E InitiateCapture，参数 [0,0]）：照片进存储卡。
+     *  任务 5 决策：USB 不走 ZENCHE 的 0x9207 SDRAM 路径（拍进卡与"传输工具"
+     *  心智一致——网格刷新即见新照片，可立即下载/删除，省掉 SDRAM 下载恢复链）。
+     *  返回 PTP 响应码：0x2001=已触发；其他=相机拒绝（如 0x2005 不支持/
+     *  0x2019 DeviceBusy）；-1=传输失败。 */
+    fun initiateCapture(): Int = try {
+        val resp = transaction(OP_INITIATE_CAPTURE, intArrayOf(0, 0))
+        if (resp.code != RESP_OK) {
+            Log.w("UsbPtp", "InitiateCapture=0x${(resp.code and 0xFFFF).toString(16)}")
+        }
+        resp.code
+    } catch (t: Throwable) {
+        Log.w("UsbPtp", "InitiateCapture 传输失败: ${t.message}")
+        -1
+    }
+
+    /** 取事件（0x90c7 GetEvent，尼康扩展；ZENCHE USB 同款）：
+     *  dataset = u16 count + N×(u16 code + u32 param)。
+     *  拍摄后轮询 0x4002 ObjectAdded 判断照片写卡完成。
+     *  null = 通道拒绝/传输失败（上层退化为固定延时）。 */
+    fun getEvents(): List<Pair<Int, Int>>? = try {
+        val r = transaction(OP_GET_EVENT)
+        if (r.code != RESP_OK || r.data.size < 2) {
+            Log.w("UsbPtp", "GetEvent=0x${(r.code and 0xFFFF).toString(16)}")
+            null
+        } else {
+            val bb = java.nio.ByteBuffer.wrap(r.data).order(ByteOrder.LITTLE_ENDIAN)
+            val n = bb.short.toInt() and 0xFFFF
+            val out = ArrayList<Pair<Int, Int>>(n)
+            repeat(n) {
+                if (bb.remaining() < 6) return@repeat
+                val code = bb.short.toInt() and 0xFFFF
+                val param = bb.int
+                out.add(code to param)
+            }
+            out
+        }
+    } catch (t: Throwable) {
+        Log.w("UsbPtp", "GetEvent 传输失败: ${t.message}")
+        null
+    }
+
+    /** 读设备属性（0x1015 GetDevicePropValue，ZENCHE 实测口径）。
+     *  返回原始 LE 字节（u16 属性 2 字节 / u32 属性 4 字节）；null=查询失败。 */
+    fun getDeviceProp(prop: Int): ByteArray? = withRecovery {
+        val r = transaction(OP_GET_DEVICE_PROP_VALUE, intArrayOf(prop))
+        if (r.code != RESP_OK) {
+            Log.w("UsbPtp", "GetDeviceProp(0x%04x)=0x%04x".format(prop, r.code and 0xFFFF))
+            null
+        } else r.data
+    }
+
+    /** 写设备属性（0x1016 SetDevicePropValue，data-out 相位；ZENCHE 实测口径）。
+     *  返回 PTP 响应码；-1=传输失败。 */
+    fun setDeviceProp(prop: Int, value: ByteArray): Int = try {
+        val r = transactionDataOut(OP_SET_DEVICE_PROP_VALUE, intArrayOf(prop), value)
+        if (r.code != RESP_OK) {
+            Log.w("UsbPtp", "SetDeviceProp(0x%04x)=0x%04x".format(prop, r.code and 0xFFFF))
+        }
+        r.code
+    } catch (t: Throwable) {
+        Log.w("UsbPtp", "SetDeviceProp 传输失败: ${t.message}")
+        -1
+    }
+
     /** 存储容量（0x1004 GetStorageIDs → 0x1005 GetStorageInfo）。
      *  ZENCHE 的连接详情无容量展示；导入后让用户删前可判断卡剩余空间。
      *  ⚠️ Z6 II 双卡槽：0x1004 返回 2 个 sid（0x00010000=槽1/0x00020000=槽2），
@@ -622,6 +691,39 @@ class UsbPtpSession(
             }
             else -> throw IllegalStateException("异常容器 type=$type")
         }
+    }
+
+    /** data-out 事务（cmd → Data 容器 → Response），0x1016 SetDevicePropValue 专用：
+     *  与 transaction 相同的容器格式；值很小（2~4 字节），单容器发完直接读响应。 */
+    private fun transactionDataOut(opcode: Int, params: IntArray, payload: ByteArray): Resp {
+        val conn = connection ?: throw IllegalStateException("会话未打开")
+        txid++
+        // ① Command 容器 → bulk OUT
+        val cmdLen = 12 + params.size * 4
+        val cmd = ByteBuffer.allocate(cmdLen).order(ByteOrder.LITTLE_ENDIAN)
+        cmd.putInt(cmdLen).putShort(1.toShort()).putShort(opcode.toShort()).putInt(txid)
+        for (p in params) cmd.putInt(p)
+        val w = conn.bulkTransfer(epOut, cmd.array(), cmdLen, TIMEOUT)
+        if (w != cmdLen) throw IllegalStateException("命令写入失败 w=$w")
+        // ② Data 容器（type=2）→ bulk OUT
+        val dLen = 12 + payload.size
+        val dat = ByteBuffer.allocate(dLen).order(ByteOrder.LITTLE_ENDIAN)
+        dat.putInt(dLen).putShort(2.toShort()).putShort(opcode.toShort()).putInt(txid)
+        dat.put(payload)
+        val w2 = conn.bulkTransfer(epOut, dat.array(), dLen, TIMEOUT)
+        if (w2 != dLen) throw IllegalStateException("数据写入失败 w=$w2")
+        // ③ Response 容器
+        val head = ByteArray(0x0400)
+        var n = bulkIn(head)
+        var zlp = 0
+        while (n == 0 && zlp++ < 3) n = bulkIn(head)
+        if (n < 12) throw IllegalStateException("响应缺失 n=$n")
+        val rb = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN)
+        rb.int; val rt = rb.short
+        if (rt.toInt() != 3) throw IllegalStateException("响应错位 type=$rt")
+        val code = rb.short.toInt() and 0xFFFF
+        rb.position(12)
+        return Resp(code, ByteArray(0), readParams(rb, n))
     }
 
     private fun readParams(bb: ByteBuffer, recLen: Int): IntArray {

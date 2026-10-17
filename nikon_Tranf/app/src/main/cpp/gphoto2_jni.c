@@ -528,6 +528,73 @@ static int pp_cmd_in(int fd, unsigned short op, unsigned int tid,
     return pp_cmd_in_rc(fd, op, tid, params, nparams, NULL);
 }
 
+/* data-out 事务（任务 5：0x1016 SetDevicePropValue）：请求(DataPhaseInfo=2)
+ * → StartData → EndData（值很小，单包发完）→ OpResponse。
+ * 帧格式与相机发来的镜像一致：StartData 载荷 = tid(u32) + 总长(u64)；
+ * Data/EndData 载荷 = tid(u32) + 数据（对齐 pp_data_in2 的解析路径）。 */
+static int pp_data_out(int fd, unsigned short op, unsigned int tid,
+                       unsigned int *params, int nparams,
+                       const unsigned char *data, int datalen,
+                       unsigned int *rc_out) {
+    if (rc_out) *rc_out = 0;
+    int len = 18 + nparams * 4;
+    unsigned char *req = (unsigned char *) malloc(len);
+    if (!req) return -1;
+    memset(req, 0, len);
+    req[0] = len & 0xff; req[1] = (len >> 8) & 0xff; req[2] = (len >> 16) & 0xff; req[3] = (len >> 24) & 0xff;
+    req[4] = PP_OP_REQ;
+    req[8] = 2;                                              /* DataPhaseInfo = 2 (data-out)，u32 */
+    req[12] = op & 0xff; req[13] = (op >> 8) & 0xff;
+    req[14] = tid & 0xff; req[15] = (tid >> 8) & 0xff; req[16] = (tid >> 16) & 0xff; req[17] = (tid >> 24) & 0xff;
+    for (int i = 0; i < nparams; i++) {
+        req[18 + i * 4 + 0] = params[i] & 0xff;
+        req[18 + i * 4 + 1] = (params[i] >> 8) & 0xff;
+        req[18 + i * 4 + 2] = (params[i] >> 16) & 0xff;
+        req[18 + i * 4 + 3] = (params[i] >> 24) & 0xff;
+    }
+    int rc = pp_cmd_frame(fd, req, len);
+    free(req); req = NULL;
+    if (rc != 0) return -1;
+
+    /* StartData：载荷 = tid(u32) + total(u64) 共 12 字节，紧跟 8 字节帧头 →
+     * 帧长 20。⚠️ 首版把 tid 放在帧偏移 12（载荷前多垫 4 个零字节、帧长 24），
+     * 相机把 tid 当成 total 高位 → 写参数全部被拒（ZENCHE PtpIpCamera
+     * sendCommandWithDataOut 为准：startData.u32(tx); startData.u64(len)）。 */
+    unsigned long long total = (unsigned long long) datalen;
+    unsigned char sd[20];
+    memset(sd, 0, sizeof(sd));
+    sd[0] = 20;
+    sd[4] = PP_START_DATA;
+    sd[8] = tid & 0xff; sd[9] = (tid >> 8) & 0xff; sd[10] = (tid >> 16) & 0xff; sd[11] = (tid >> 24) & 0xff;
+    sd[12] = total & 0xff; sd[13] = (total >> 8) & 0xff; sd[14] = (total >> 16) & 0xff; sd[15] = (total >> 24) & 0xff;
+    /* total 高 32 位恒 0（值 ≤ 4 字节），sd[16..19] 保持 0 */
+    if (pp_write_all(fd, sd, 20) != 0) return -1;
+
+    /* EndData：tid(u32) + 数据（值 ≤ 8 字节单包发完） */
+    int elen = 8 + 4 + datalen;
+    unsigned char *ed = (unsigned char *) malloc((size_t) elen);
+    if (!ed) return -1;
+    memset(ed, 0, elen);
+    ed[0] = elen & 0xff; ed[1] = (elen >> 8) & 0xff; ed[2] = (elen >> 16) & 0xff; ed[3] = (elen >> 24) & 0xff;
+    ed[4] = PP_END_DATA;
+    ed[8] = tid & 0xff; ed[9] = (tid >> 8) & 0xff; ed[10] = (tid >> 16) & 0xff; ed[11] = (tid >> 24) & 0xff;
+    memcpy(ed + 12, data, (size_t) datalen);
+    rc = pp_write_all(fd, ed, elen);
+    free(ed); ed = NULL;
+    if (rc != 0) return -1;
+
+    unsigned char *pl = NULL; int plen = 0;
+    int type = pp_read_frame(fd, &pl, &plen);
+    int r = (type == PP_OP_RESP) ? 0 : -2;
+    if (r == 0 && plen >= 2) {
+        unsigned int rc16 = pl[0] | (pl[1] << 8);
+        if (rc_out) *rc_out = rc16;
+        if (rc16 != 0x2001) r = -6;
+    }
+    free(pl);
+    return r;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_shinemeow_app_GPhoto2Bridge_nativePairingProbe(
         JNIEnv *env, jclass clz, jstring jIp) {
@@ -1160,4 +1227,66 @@ Java_com_shinemeow_app_GPhoto2Bridge_nativeStorageInfoNative(
     LOGI("storage: cap=%llu free=%llu imgs=%llu label=%s (hit=%d/%d)",
          capBytes, freeBytes, freeImages, label, hit, nsid);
     return (*env)->NewStringUTF(env, out);
+}
+
+/* ==================== 拍照控制（任务 5） ==================== */
+
+/* 标准快门（0x100E InitiateCapture [0,0]）：照片进存储卡（决策：USB/Wi-Fi
+ * 同用 0x100E，不走 ZENCHE 的 0x9207 SDRAM 路径）。
+ * 返回：0x2001=已触发；其他=相机拒绝码（0x2019=DeviceBusy 等）；-1=未连接；-2=传输失败。 */
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeCaptureNative(
+        JNIEnv *env, jclass clz) {
+    (void) clz;
+    if (g_tfd < 0) return -1;
+    unsigned int p[2] = {0, 0};
+    unsigned int rc = 0;
+    int r = pp_cmd_in_rc(g_tfd, 0x100E, g_ttid++, p, 2, &rc);
+    LOGI("capture: 0x100E r=%d rc=0x%04x", r, rc);
+    if (r == -2 || r == -5) return -2;
+    if (r != 0) return (r == -6) ? (int) rc : -2;
+    return (int) rc;
+}
+
+/* 读设备属性（0x1015 GetDevicePropValue）：原始 LE 字节。
+ * 返回 jbyteArray（u16 属性 2 字节 / u32 属性 4 字节）；失败 NULL（相机拒绝码打日志）。 */
+JNIEXPORT jbyteArray JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeGetPropNative(
+        JNIEnv *env, jclass clz, jint jProp) {
+    (void) clz;
+    if (g_tfd < 0) return NULL;
+    unsigned int p[1] = {(unsigned int) jProp};
+    unsigned char *d = NULL; int dlen = 0; unsigned int rc = 0;
+    int r = pp_data_in2(g_tfd, 0x1015, g_ttid++, p, 1, &d, &dlen, &rc);
+    if (r != 0 || dlen < 1) {
+        LOGI("getprop: 0x%04x r=%d rc=0x%04x dlen=%d", (unsigned) jProp, r, rc, dlen);
+        free(d);
+        return NULL;
+    }
+    jbyteArray out = (*env)->NewByteArray(env, dlen);
+    if (!out) { free(d); return NULL; }
+    (*env)->SetByteArrayRegion(env, out, 0, dlen, (const jbyte *) d);
+    free(d);
+    return out;
+}
+
+/* 写设备属性（0x1016 SetDevicePropValue，data-out 相位）。
+ * 返回：0x2001=OK；其他=相机拒绝码（0x2005/0x200A/0x200F/0x201C/0x201D=
+ * 属性不兼容，上层走回退链）；-1=未连接；-2=传输失败。 */
+JNIEXPORT jint JNICALL
+Java_com_shinemeow_app_GPhoto2Bridge_nativeSetPropNative(
+        JNIEnv *env, jclass clz, jint jProp, jbyteArray jValue) {
+    (void) clz;
+    if (g_tfd < 0) return -1;
+    jsize n = (*env)->GetArrayLength(env, jValue);
+    if (n < 1 || n > 16) return -2;
+    unsigned char val[16];
+    (*env)->GetByteArrayRegion(env, jValue, 0, n, (jbyte *) val);
+    unsigned int p[1] = {(unsigned int) jProp};
+    unsigned int rc = 0;
+    int r = pp_data_out(g_tfd, 0x1016, g_ttid++, p, 1, val, n, &rc);
+    LOGI("setprop: 0x%04x n=%d r=%d rc=0x%04x", (unsigned) jProp, n, r, rc);
+    if (r == -1 || r == -2 || r == -5) return -2;
+    if (r != 0) return (r == -6) ? (int) rc : -2;
+    return (int) rc;
 }
