@@ -1083,8 +1083,11 @@ Java_com_shinemeow_app_GPhoto2Bridge_nativeObjectProtectedNative(
     return (protection != 0) ? 1 : 0;
 }
 
-/* 存储容量（0x1004 → 0x1005 GetStorageInfo，取首个存储）：
+/* 存储容量（0x1004 → 0x1005 GetStorageInfo）：
  * 返回 "capacity|free|freeImages|label"，失败 NULL。
+ * ⚠️ Z6 II 双卡槽：0x1004 返回 2 个 sid（0x00010000/0x00020000），
+ * **空槽查询 0x1005 返回 0x2013 StoreNotAvailable**（实测）——遍历全部 sid，
+ * 聚合所有可用存储（空槽自动跳过）；全部不可用才返回 NULL。
  * dataset 布局同 USB 侧：MaxCapacity u64@6 / FreeSpaceInBytes u64@14 /
  * FreeSpaceInImages u32@22 / StorageDescription PSTR@26。 */
 JNIEXPORT jstring JNICALL
@@ -1092,43 +1095,69 @@ Java_com_shinemeow_app_GPhoto2Bridge_nativeStorageInfoNative(
         JNIEnv *env, jclass clz) {
     (void) clz;
     if (g_tfd < 0) return NULL;
-    unsigned int sid = 0;
+    unsigned int sids[8]; int nsid = 0;
     if (g_nstorages > 0) {
-        sid = g_storages[0];
+        for (int i = 0; i < g_nstorages && nsid < 8; i++)
+            sids[nsid++] = g_storages[i];
+        LOGI("stinfo: 用缓存 n=%d sid0=0x%08x", g_nstorages, g_storages[0]);
     } else {
-        unsigned char *sd = NULL; int sdlen = 0;
-        if (pp_data_in2(g_tfd, 0x1004, g_ttid++, NULL, 0, &sd, &sdlen, NULL) != 0 || sdlen < 4) {
+        unsigned char *sd = NULL; int sdlen = 0; unsigned int rc4 = 0;
+        int r4 = pp_data_in2(g_tfd, 0x1004, g_ttid++, NULL, 0, &sd, &sdlen, &rc4);
+        LOGI("stinfo: 0x1004 r=%d rc=0x%04x dlen=%d", r4, rc4, sdlen);
+        if (r4 != 0 || sdlen < 4) {
             free(sd);
             return NULL;
         }
         unsigned int cnt = (unsigned int) (sd[0] | (sd[1] << 8) | (sd[2] << 16) | ((unsigned) sd[3] << 24));
-        if (cnt == 0 || sdlen < 4 + 4) { free(sd); return NULL; }
-        sid = (unsigned int) (sd[4] | (sd[5] << 8) | (sd[6] << 16) | ((unsigned) sd[7] << 24));
+        if (cnt == 0 || sdlen < 4 + (int) cnt * 4) {
+            LOGI("stinfo: 0x1004 空数组 cnt=%u", cnt);
+            free(sd); return NULL;
+        }
+        for (unsigned int i = 0; i < cnt && nsid < 8; i++)
+            sids[nsid++] = (unsigned int) (sd[4 + i * 4] | (sd[5 + i * 4] << 8) |
+                            (sd[6 + i * 4] << 16) | ((unsigned) sd[7 + i * 4] << 24));
+        LOGI("stinfo: 0x1004 cnt=%u sid0=0x%08x", cnt, sids[0]);
         free(sd);
     }
-    unsigned char *d = NULL; int dlen = 0;
-    if (pp_data_in2(g_tfd, 0x1005, g_ttid++, &sid, 1, &d, &dlen, NULL) != 0 || dlen < 26) {
+    /* 遍历全部存储：聚合可用槽（Z6 II 空槽 0x2013，跳过） */
+    unsigned long long capBytes = 0, freeBytes = 0, freeImages = 0;
+    char label[64] = {0};
+    int hit = 0;
+    for (int i = 0; i < nsid; i++) {
+        unsigned char *d = NULL; int dlen = 0; unsigned int rc5 = 0;
+        int r5 = pp_data_in2(g_tfd, 0x1005, g_ttid++, &sids[i], 1, &d, &dlen, &rc5);
+        if (r5 != 0 || dlen < 26) {
+            LOGI("stinfo: 0x1005 sid=0x%08x 失败 r=%d rc=0x%04x dlen=%d",
+                 sids[i], r5, rc5, dlen);
+            free(d);
+            continue;
+        }
+        unsigned long long cap = 0, fr = 0;
+        memcpy(&cap, d + 6, 8);
+        memcpy(&fr, d + 14, 8);
+        unsigned int fimg = (unsigned int) (d[22] | (d[23] << 8) | (d[24] << 16) | ((unsigned) d[25] << 24));
+        capBytes += cap; freeBytes += fr; freeImages += fimg;
+        hit++;
+        LOGI("stinfo: 0x1005 sid=0x%08x ok dlen=%d cap=%llu free=%llu imgs=%u",
+             sids[i], dlen, cap, fr, fimg);
+        /* StorageDescription PSTR@26：u8 长度 + UTF-16LE 字符（取首个非空标签） */
+        if (label[0] == '\0' && dlen > 27 && dlen >= 27 + 2 * d[26]) {
+            int n = d[26], si = 0;
+            for (int j = 0; j < n && si < (int) sizeof(label) - 1; j++) {
+                unsigned char c = d[27 + j * 2];
+                label[si++] = (c >= 0x20 && c < 0x7f) ? (char) c : ' ';
+            }
+        }
         free(d);
+    }
+    if (hit == 0) {
+        LOGI("stinfo: 全部 %d 个存储不可用", nsid);
         return NULL;
     }
-    unsigned long long capBytes = 0, freeBytes = 0;
-    memcpy(&capBytes, d + 6, 8);
-    memcpy(&freeBytes, d + 14, 8);
-    unsigned int freeImages = (unsigned int) (d[22] | (d[23] << 8) | (d[24] << 16) | ((unsigned) d[25] << 24));
-    /* StorageDescription PSTR@26：u8 长度 + UTF-16LE 字符（可能无 NUL 收尾） */
-    char label[64] = {0};
-    if (dlen > 26 && dlen > 26 + 1 + 2 * d[26]) {
-        int n = d[26];
-        int si = 0;
-        for (int i = 0; i < n && si < (int) sizeof(label) - 1; i++) {
-            unsigned char c = d[27 + i * 2];
-            label[si++] = (c >= 0x20 && c < 0x7f) ? (char) c : ' ';
-        }
-    }
-    free(d);
     char out[160];
-    snprintf(out, sizeof(out), "%llu|%llu|%u|%s",
+    snprintf(out, sizeof(out), "%llu|%llu|%llu|%s",
              capBytes, freeBytes, freeImages, label);
-    LOGI("storage: cap=%llu free=%llu imgs=%u label=%s", capBytes, freeBytes, freeImages, label);
+    LOGI("storage: cap=%llu free=%llu imgs=%llu label=%s (hit=%d/%d)",
+         capBytes, freeBytes, freeImages, label, hit, nsid);
     return (*env)->NewStringUTF(env, out);
 }

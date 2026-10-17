@@ -2809,12 +2809,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *       （实测 0.67~0.83MB），RAW 数据一个字节不传。
      *  这里加 LRU 缓存与 ±1 页预取，翻回秒显。 */
 
-    /** 内存 LRU：高清位图（解码采样至最长边 ≤2048px，单张 ~4~6MB）。
-     *  按字节计（预算 = 堆上限/16，≤32MB）：旧实现没覆写 sizeOf，LruCache 退化为
-     *  按条目计数 —— 6 条 × 6MB ≈ 36MB 且不设上限，大图被频繁逐出，
-     *  翻回上一页要重新解码 50MB NEF（预览翻页卡顿的直接来源）。 */
+    /** 内存 LRU：高清位图（解码采样至最长边 ≤2048px）。
+     *  ⚠️ 单张实际内存 = 2048×1536×4 ≈ **12.6MB**（ARGB_8888 解码后，不是文件大小）——
+     *  旧预算 maxMemory/16（12~32MB）只装得下 1~2 张：每 put 一张就 trim 逐出旧的，
+     *  **往回翻（访问最早、最久未 get 的页）必 miss** → 重新解码 50MB NEF 期间
+     *  显示缩略图（糊）+ EXIF 表保留不清 → "EXIF 出来了但预览是糊"的直接来源。
+     *  Android 8+ 位图像素数据在 native heap，Java 堆压力低，预算给足：
+     *  64~160MB 可稳定持有 5~12 张，预览 ±1 预取窗口 + 往回翻 2~3 页全部命中。 */
     private val hiresCache = object : android.util.LruCache<Int, Bitmap>(
-        (Runtime.getRuntime().maxMemory() / 16).toInt().coerceIn(12 * 1024 * 1024, 32 * 1024 * 1024)
+        (Runtime.getRuntime().maxMemory() / 4).toInt().coerceIn(64 * 1024 * 1024, 160 * 1024 * 1024)
     ) {
         override fun sizeOf(key: Int, value: Bitmap) = value.byteCount
         override fun entryRemoved(evicted: Boolean, key: Int?, old: Bitmap?, new: Bitmap?) {

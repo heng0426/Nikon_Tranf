@@ -280,6 +280,7 @@ internal fun MainActivity.PairPager(
         initialIndex: Int,
         rows: List<PairRow>,
         onClose: (Int) -> Unit,
+        onFollow: (String) -> Unit,
         onDownloadJpg: (PairRow) -> Unit,
         onDownloadNef: (PairRow) -> Unit,
         onDelete: (PairRow) -> Unit
@@ -291,6 +292,12 @@ internal fun MainActivity.PairPager(
             if (pagerState.currentPage >= rows.size) {
                 onClose(rows.lastIndex.coerceAtLeast(0))
             }
+        }
+        // 网格跟随预览：翻页（或删除收缩使当前页内容更换）时，把当前照片标识报给主界面，
+        // 由主界面判断其在网格中是否完整可见，不可见（露出边缘也算）即跟随滚动。
+        // ⚠️ 传内容标识而非页号：rows 收缩时 currentPage 数值不变但内容已换页。
+        LaunchedEffect(pagerState.currentPage, rows.size) {
+            rows.getOrNull(pagerState.currentPage)?.let { onFollow(it.key) }
         }
         // 高清预览：开关开启时，当前页 ±1 自动预取（合并模式取显示中的那张：JPG 优先）
         LaunchedEffect(pagerState.currentPage, vm.hiresOn) {
@@ -401,6 +408,9 @@ internal fun MainActivity.PairPager(
                 }
                 HorizontalPager(
                     state = pagerState,
+                    // key = 照片唯一标识：删除使某页内容更换时组合重建，
+                    // PreviewZoomState 归零（否则上一张的移动/放大残留到下一张）
+                    key = { page -> rows.getOrNull(page)?.key ?: "gone_$page" },
                     modifier = Modifier.fillMaxSize()
                 ) { page ->
                     // 删除收缩 pageCount 的瞬时窗口内 page 可能越界 → 空渲染一帧等外层关闭
@@ -584,6 +594,7 @@ internal fun MainActivity.PreviewPager(
         initialIndex: Int,
         rows: List<PhotoRow>,
         onClose: (Int) -> Unit,
+        onFollow: (Int) -> Unit,
         onDownload: (PhotoRow) -> Unit,
         onDelete: (PhotoRow) -> Unit
     ) {
@@ -594,6 +605,12 @@ internal fun MainActivity.PreviewPager(
             if (pagerState.currentPage >= rows.size) {
                 onClose(rows.lastIndex.coerceAtLeast(0))
             }
+        }
+        // 网格跟随预览：翻页（或删除收缩使当前页内容更换）时，把当前照片 handle 报给
+        // 主界面，由主界面判断其在网格中是否完整可见，不可见（露出边缘也算）即跟随滚动。
+        // ⚠️ 传内容标识而非页号：rows 收缩时 currentPage 数值不变但内容已换页。
+        LaunchedEffect(pagerState.currentPage, rows.size) {
+            rows.getOrNull(pagerState.currentPage)?.let { onFollow(it.handle) }
         }
         // 高清预览：开关开启时，当前页 ±1 自动预取
         LaunchedEffect(pagerState.currentPage, vm.hiresOn) {
@@ -701,6 +718,9 @@ internal fun MainActivity.PreviewPager(
                 }
                 HorizontalPager(
                     state = pagerState,
+                    // key = 照片唯一标识：删除使某页内容更换时组合重建，
+                    // PreviewZoomState 归零（否则上一张的移动/放大残留到下一张）
+                    key = { page -> rows.getOrNull(page)?.handle ?: "gone_$page" },
                     modifier = Modifier.fillMaxSize()
                 ) { page ->
                     // 删除收缩 pageCount 的瞬时窗口内 page 可能越界 → 空渲染一帧等外层关闭

@@ -369,8 +369,11 @@ class UsbPtpSession(
         resp.code
     } ?: -1
 
-    /** 存储容量（0x1004 GetStorageIDs → 0x1005 GetStorageInfo，取首个存储）。
+    /** 存储容量（0x1004 GetStorageIDs → 0x1005 GetStorageInfo）。
      *  ZENCHE 的连接详情无容量展示；导入后让用户删前可判断卡剩余空间。
+     *  ⚠️ Z6 II 双卡槽：0x1004 返回 2 个 sid（0x00010000=槽1/0x00020000=槽2），
+     *  **空槽查询 0x1005 返回 0x2013 StoreNotAvailable**（实测）——必须遍历全部 sid，
+     *  聚合所有可用存储（空槽自动跳过）；全部不可用才返回 null。
      *  dataset 布局（PTP 标准）：StorageType u16@0 / FilesystemType u16@2 /
      *  AccessCapability u16@4 / MaxCapacity u64@6 / FreeSpaceInBytes u64@14 /
      *  FreeSpaceInImages u32@22 / StorageDescription PSTR@26。 */
@@ -381,12 +384,28 @@ class UsbPtpSession(
             Log.w("UsbPtp", "GetStorageIDs 失败 code=0x${(stor.code and 0xFFFF).toString(16)}")
             return@withRecovery null
         }
-        val r = transaction(OP_GET_STORAGE_INFO, intArrayOf(ids[0]))
-        if (r.code != RESP_OK || r.data.size < 26) {
-            Log.w("UsbPtp", "GetStorageInfo 失败 code=0x${(r.code and 0xFFFF).toString(16)}")
-            return@withRecovery null
+        Log.i("UsbPtp", "StorageIDs: " + ids.joinToString(" ") { "0x%08x".format(it) })
+        var cap = 0L; var free = 0L; var img = 0L; var label = ""; var hit = 0
+        for (sid in ids) {
+            val r = transaction(OP_GET_STORAGE_INFO, intArrayOf(sid))
+            if (r.code != RESP_OK || r.data.size < 26) {
+                Log.w(
+                    "UsbPtp",
+                    "GetStorageInfo(sid=0x%08x) 失败 code=0x%04x dlen=%d".format(
+                        sid, r.code and 0xFFFF, r.data.size
+                    )
+                )
+                continue
+            }
+            val si = parseStorageInfo(r.data) ?: continue
+            cap += si.capacity; free += si.free
+            img += si.freeImages.coerceAtLeast(0)
+            if (label.isEmpty()) label = si.label
+            hit++
+            Log.i("UsbPtp", "GetStorageInfo(sid=0x%08x) ok cap=%d free=%d".format(sid, si.capacity, si.free))
         }
-        parseStorageInfo(r.data)
+        if (hit == 0) return@withRecovery null
+        CamStorageInfo(cap, free, img, label)
     }
 
     /** 对象写保护预检（GetObjectInfo.ProtectionStatus）：删除前弹窗标注受保护张数。

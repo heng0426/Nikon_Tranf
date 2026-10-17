@@ -215,6 +215,15 @@ internal fun MainActivity.PairCell(
         Box(
             Modifier
                 .then(
+                    if (highlight) Modifier.border(UiSpec.SEL_BORDER_W, UiSpec.accent(vm.darkModeOn), RoundedCornerShape(UiSpec.ROUND_SMALL))
+                    else Modifier
+                )
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                .then(
+                    // 脉冲缩放挂在 clip 之后：内容在格子圆角内呼吸放大（被自身裁剪），
+                    // 不会像挂在链首缩放整格那样在边缘列溢出网格容器边界；
                     // 高亮时才挂独立渲染层（无条件挂会让每个格子常驻一个 layer，滑动多开销）
                     if (highlight) Modifier.graphicsLayer {
                         val s = 1f + 0.06f * pulse.value
@@ -222,13 +231,6 @@ internal fun MainActivity.PairCell(
                         scaleY = s
                     } else Modifier
                 )
-                .then(
-                    if (highlight) Modifier.border(UiSpec.SEL_BORDER_W, UiSpec.accent(vm.darkModeOn), RoundedCornerShape(UiSpec.ROUND_SMALL))
-                    else Modifier
-                )
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .combinedClickable(
                     // 短/长按反转（vm.swapPressOn.value，设置页开关）：开 = 短按选中、长按进预览；
                     // 关 = 默认短按预览、长按选中。触感反馈跟随"选中"动作，两种模式一致。
@@ -366,6 +368,15 @@ internal fun MainActivity.GridCell(
         Box(
             Modifier
                 .then(
+                    if (highlight) Modifier.border(UiSpec.SEL_BORDER_W, UiSpec.accent(vm.darkModeOn), RoundedCornerShape(UiSpec.ROUND_SMALL))
+                    else Modifier
+                )
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
+                .then(
+                    // 脉冲缩放挂在 clip 之后：内容在格子圆角内呼吸放大（被自身裁剪），
+                    // 不会像挂在链首缩放整格那样在边缘列溢出网格容器边界；
                     // 高亮时才挂独立渲染层（无条件挂会让每个格子常驻一个 layer，滑动多开销）
                     if (highlight) Modifier.graphicsLayer {
                         val s = 1f + 0.06f * pulse.value
@@ -373,13 +384,6 @@ internal fun MainActivity.GridCell(
                         scaleY = s
                     } else Modifier
                 )
-                .then(
-                    if (highlight) Modifier.border(UiSpec.SEL_BORDER_W, UiSpec.accent(vm.darkModeOn), RoundedCornerShape(UiSpec.ROUND_SMALL))
-                    else Modifier
-                )
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(UiSpec.ROUND_SMALL))
                 .combinedClickable(
                     // 短/长按反转（vm.swapPressOn.value，设置页开关）：开 = 短按选中、长按进预览；
                     // 关 = 默认短按预览、长按选中。触感反馈跟随"选中"动作，两种模式一致。

@@ -47,6 +47,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
@@ -516,6 +517,43 @@ class MainActivity : ComponentActivity() {
         // 设置/下载/筛选/弹窗的玻璃面不走全局模糊 —— 背景保持清晰，只在玻璃面自身
         // 范围内回绘主内容的模糊像（见 glassBackdropModifier，与删除气泡同款手法）
         val previewing = (mergeOn && pairPreviewIndex >= 0) || (!mergeOn && previewIndex >= 0)
+
+        // 网格跟随预览（预览 onFollow 回调调用）：目标 item 完整可见则不动；
+        // 可见但不完整 → animateScrollBy 补差动画对齐（下方露出不足贴到底、
+        // 顶部露出不足顶到顶）；完全不可见 → **分段平滑滚动**直到目标进入视口
+        // 再精确对齐——animateScrollToItem 对不可见目标内部是先瞬移再对齐
+        // （"向上整格跳没有动画"的来源），animateScrollBy 才是真正的滚动动画。
+        fun followGrid(state: LazyGridState, idx: Int) {
+            scope.launch {
+                var guard = 0
+                while (guard++ < 30) {   // 安全闸：最多滚 30 段（≈20+ 屏），防异常死循环
+                    val li = state.layoutInfo
+                    val item = li.visibleItemsInfo.firstOrNull { it.index == idx }
+                    if (item != null) {
+                        val h = item.size.height
+                        if (item.offset.y >= li.viewportStartOffset &&
+                            item.offset.y + h <= li.viewportEndOffset
+                        ) break   // 完整可见：到位
+                        // 不完整：最小距离对齐（底部露出不足 → 向下补差；顶部 → 向上补差）
+                        val delta = if (item.offset.y + h > li.viewportEndOffset)
+                            (item.offset.y + h - li.viewportEndOffset).toFloat()
+                        else (item.offset.y - li.viewportStartOffset).toFloat()
+                        state.animateScrollBy(delta, tween(UiSpec.FOLLOW_SCROLL))
+                        break
+                    }
+                    // 完全不可见：每次只滚**一行**（行高 + 行间距）——跟随手感 =
+                    // 翻一张网格跟一行；连翻数张时逐行追赶，绝不滚过头
+                    val last = li.visibleItemsInfo.lastOrNull()?.index ?: break
+                    val down = idx > last
+                    val stride = (li.visibleItemsInfo.firstOrNull { it.contentType == "photo" }?.size?.height
+                        ?: (li.viewportEndOffset - li.viewportStartOffset) / 3) + li.mainAxisItemSpacing
+                    state.animateScrollBy(
+                        if (down) stride.toFloat() else -stride.toFloat(),
+                        tween(UiSpec.FOLLOW_SCROLL)
+                    )
+                }
+            }
+        }
         // 删除成功气泡的毛玻璃底材：主内容每帧录进离屏层（contentLayer，不带模糊，
         // 正常显示走它），气泡内再把它平移回绘进 glassLayer 并施加 24dp 模糊 ——
         // 模糊只作用于气泡区域，不能设在 contentLayer 上（否则整屏跟着糊）。
@@ -1355,30 +1393,22 @@ class MainActivity : ComponentActivity() {
                 PairPager(
                     initialIndex = pairPreviewIndex,
                     rows = pairs.toList(),
+                    // 网格跟随预览：预览翻到哪，网格跟到哪（最小距离 + 动画）
+                    onFollow = { pairKey ->
+                        var idx = 0
+                        var found = false
+                        for (sec in vm.pairSections) {
+                            if (found) break
+                            idx++   // 日期分组头
+                            val pos = sec.rows.indexOfFirst { it.key == pairKey }
+                            if (pos >= 0) { idx += pos; found = true } else idx += sec.rows.size
+                        }
+                        if (found) followGrid(mergeGridState, idx)
+                    },
                     onClose = { page ->
                         highlightHandle = null
-                        val pairKey = pairs.getOrNull(page)?.key
-                        highlightPairKey = pairKey
+                        highlightPairKey = pairs.getOrNull(page)?.key
                         highlightPulseArmed = true
-                        // 网格跳到刚预览的对所在位置（已在可视区则不动）
-                        if (pairKey != null) {
-                            var idx = 0
-                            var found = false
-                            for (sec in vm.pairSections) {
-                                if (found) break
-                                idx++   // 日期分组头
-                                val pos = sec.rows.indexOfFirst { it.key == pairKey }
-                                if (pos >= 0) { idx += pos; found = true } else idx += sec.rows.size
-                            }
-                            if (found) {
-                                // 只露出边缘也算不可见，必须完整可见才不跳
-                                val item = mergeGridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == idx }
-                                val fullyVisible = item != null &&
-                                    item.offset.y >= mergeGridState.layoutInfo.viewportStartOffset &&
-                                    item.offset.y + item.size.height <= mergeGridState.layoutInfo.viewportEndOffset
-                                if (!fullyVisible) scope.launch { mergeGridState.scrollToItem(idx) }
-                            }
-                        }
                         pairPreviewIndex = -1
                     },
                     onDownloadJpg = { row ->
@@ -1408,30 +1438,22 @@ class MainActivity : ComponentActivity() {
                 PreviewPager(
                     initialIndex = previewIndex,
                     rows = visible.toList(),
+                    // 网格跟随预览：预览翻到哪，网格跟到哪（最小距离 + 动画）
+                    onFollow = { handle ->
+                        var idx = 0
+                        var found = false
+                        for (sec in vm.visibleSections) {
+                            if (found) break
+                            idx++   // 日期分组头
+                            val pos = sec.rows.indexOfFirst { it.handle == handle }
+                            if (pos >= 0) { idx += pos; found = true } else idx += sec.rows.size
+                        }
+                        if (found) followGrid(fileGridState, idx)
+                    },
                     onClose = { page ->
                         highlightPairKey = null
-                        val handle = visible.getOrNull(page)?.handle
-                        highlightHandle = handle
+                        highlightHandle = visible.getOrNull(page)?.handle
                         highlightPulseArmed = true
-                        // 网格跳到刚预览的照片所在位置（已在可视区则不动）
-                        if (handle != null) {
-                            var idx = 0
-                            var found = false
-                            for (sec in vm.visibleSections) {
-                                if (found) break
-                                idx++   // 日期分组头
-                                val pos = sec.rows.indexOfFirst { it.handle == handle }
-                                if (pos >= 0) { idx += pos; found = true } else idx += sec.rows.size
-                            }
-                            if (found) {
-                                // 只露出边缘也算不可见，必须完整可见才不跳
-                                val item = fileGridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == idx }
-                                val fullyVisible = item != null &&
-                                    item.offset.y >= fileGridState.layoutInfo.viewportStartOffset &&
-                                    item.offset.y + item.size.height <= fileGridState.layoutInfo.viewportEndOffset
-                                if (!fullyVisible) scope.launch { fileGridState.scrollToItem(idx) }
-                            }
-                        }
                         previewIndex = -1
                     },
                     onDownload = { row ->
