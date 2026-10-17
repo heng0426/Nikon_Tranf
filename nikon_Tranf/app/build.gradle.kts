@@ -63,8 +63,18 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.material3:material3")
+    // Material Icons（Icons.Filled.*）：此前经 material3 传递间接可用；引入 material3-picker
+    // 后其传递的 icons-core 在 runtime classpath 解析中丢失（compile 有、runtime 无 →
+    // 装机后连接即 ClassNotFoundException Icons$Filled 闪退），显式声明强制进包。
+    implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    // 摄影参数滚轮（ISO/光圈/快门选择器）：候选 A/B 可切换实测
+    // A) material3-picker：Material3 风格（选中高亮+分隔线+惯性 snap）
+    // implementation("com.seo4d696b75.compose:material3-picker:0.2.0")
+    // implementation("org.jetbrains.kotlinx:kotlinx-collections-immutable:0.3.8")
+    // B) WheelPickerCompose：iOS 风格（中间选框+边框+3D 滚动透视），JitPack
+    implementation("com.github.commandiron:WheelPickerCompose:1.1.11")
     // [SCROLLBAR-SEALED] 快速滚动条库已封存：依赖不参与编译，相关 UI 代码以 SCROLLBAR-SEALED
     // 标记注释封存（build.gradle.kts / UiSpec / MainViewModel / MainActivity / GridParts /
     // SettingsScreens / CardsIcons / DownloadsQueue / PreviewPagers）。重新启用步骤：

@@ -3462,7 +3462,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val cur = readPropRaw(0x500F)?.let { if (it.size >= 2) le16(it) else null } ?: return
         val i = ISO_LADDER.indexOf(cur).let { idx -> if (idx < 0) ISO_LADDER.indexOfFirst { v -> v >= cur } else idx }
         val next = (i + dir).takeIf { it in ISO_LADDER.indices } ?: return
-        val v = ISO_LADDER[next]
+        writeIsoValue(ISO_LADDER[next])
+    }
+
+    private fun stepAperture(dir: Int) {
+        val cur = readPropRaw(0x5007)?.let { if (it.size >= 2) le16(it) else null } ?: return
+        val i = AP_LADDER.indexOf(cur).let { idx -> if (idx < 0) AP_LADDER.indexOfFirst { v -> v >= cur } else idx }
+        val next = (i + dir).takeIf { it in AP_LADDER.indices } ?: return
+        writeApertureValue(AP_LADDER[next])
+    }
+
+    private fun stepShutter(dir: Int) {
+        val cur = readShutterSec()?.first ?: return
+        val next = SHUTTER_LADDER[(nearestShutterIdx(cur) + dir).takeIf { it in SHUTTER_LADDER.indices } ?: return]
+        writeShutterStep(next)
+    }
+
+    /** 快门秒值 → 阶梯最近挡索引（相对误差最小；相机值不在阶梯上时也能落到正确方向） */
+    private fun nearestShutterIdx(sec: Double): Int {
+        var idx = 0; var best = Double.MAX_VALUE
+        SHUTTER_LADDER.forEachIndexed { k, p ->
+            val d = Math.abs(p.sec - sec) / Math.max(sec, 1e-9)
+            if (d < best) { best = d; idx = k }
+        }
+        return idx
+    }
+
+    /* ---------- 挡位写值核心（步进与滚轮直接写共用）：写 + 读回 + 主线程更新 ---------- */
+
+    private fun writeIsoValue(v: Int) {
         val rc = writePropRaw(0x500F, le16b(v))
         if (rc == 0x2001) {
             Thread.sleep(120)                       // 相机内部生效延迟
@@ -3472,11 +3500,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } else stepFailHint("ISO", rc)
     }
 
-    private fun stepAperture(dir: Int) {
-        val cur = readPropRaw(0x5007)?.let { if (it.size >= 2) le16(it) else null } ?: return
-        val i = AP_LADDER.indexOf(cur).let { idx -> if (idx < 0) AP_LADDER.indexOfFirst { v -> v >= cur } else idx }
-        val next = (i + dir).takeIf { it in AP_LADDER.indices } ?: return
-        val v = AP_LADDER[next]
+    private fun writeApertureValue(v: Int) {
         val rc = writePropRaw(0x5007, le16b(v))
         if (rc == 0x2001) {
             Thread.sleep(120)
@@ -3486,18 +3510,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } else stepFailHint("光圈", rc)
     }
 
-    private fun stepShutter(dir: Int) {
-        val cur = readShutterSec()?.first ?: return
-        // 最近档匹配（相对误差最小者；相机值不在阶梯上时也能落到正确方向）
-        var idx = 0; var best = Double.MAX_VALUE
-        SHUTTER_LADDER.forEachIndexed { k, p ->
-            val d = Math.abs(p.sec - cur) / Math.max(cur, 1e-9)
-            if (d < best) { best = d; idx = k }
-        }
-        val next = SHUTTER_LADDER[(idx + dir).takeIf { it in SHUTTER_LADDER.indices } ?: return]
+    private fun writeShutterStep(next: ShutterStep) {
         // 写：d100 = (num<<16)|den（小数挡分母 10，与相机上报风格一致）；
-        // 非 OK 且非传输失败 → 回退 0x500d = sec×10000（放宽自 ZENCHE 的仅兼容
-        // 错误回退——1.3″ 档 d100 编码被拒时靠它兜底）
+        // 非 OK 且非传输失败 → 回退 0x500d = sec×10000（1.3″ 档 d100 编码被拒时兜底）
         val secMs = Math.round(next.sec * 10000.0)
         var rc = writePropRaw(0xD100, le32b(((next.num.toLong() and 0xFFFF) shl 16) or (next.den.toLong() and 0xFFFF)))
         var used = 0xD100
@@ -3513,6 +3528,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             mainHandler.post { paramShutter.value = shown; paramHint.value = null }
             Log.i("GPhoto2", "快门 → 目标 ${next.label} 实际 ${shown}s (写 0x%04x)".format(used))
         } else stepFailHint("快门", rc)
+    }
+
+    /* ---------- 滚轮直接写（参数条/滚轮弹窗用）----------
+     * UI 序（index 0 = 最亮端，上滑=更亮=index 减）：
+     *   ISO = 阶梯降序、快门 = 秒升序、光圈 = f 值升序（f 小=开大=亮）。
+     * 光圈 ± 步进的 dir 取反（#30）只影响 stepCamParam；滚轮按曝光序直接定挡。 */
+
+    /** 滚轮候选值标签（UI 序） */
+    fun paramWheelLabels(which: Int): List<String> = when (which) {
+        0 -> ISO_LADDER.reversed().map { it.toString() }
+        1 -> AP_LADDER.map { if (it % 100 == 0) "f/${it / 100}" else "f/${it / 100.0}" }
+        else -> SHUTTER_LADDER.reversed().map { it.label }
+    }
+
+    /** 当前值在 UI 序中的索引；-1 = 未知（相机值不在阶梯上） */
+    fun paramWheelIndex(which: Int): Int = when (which) {
+        0 -> paramIso.value?.let { v -> ISO_LADDER.indexOf(v) }?.takeIf { it >= 0 }?.let { ISO_LADDER.size - 1 - it } ?: -1
+        1 -> paramAperture.value?.let { v -> AP_LADDER.indexOf(v).takeIf { it >= 0 } } ?: -1
+        else -> paramShutter.value?.let { nearestShutterIdx(it) }?.let { SHUTTER_LADDER.size - 1 - it } ?: -1
+    }
+
+    /** 滚轮选定后直接写目标挡（松手/确认时调用） */
+    fun applyParamWheel(which: Int, uiIdx: Int) {
+        if (demoMode.value || !connected || paramsReadOnly.value) return
+        if (uiIdx !in paramWheelLabels(which).indices) return
+        Thread {
+            try {
+                synchronized(camMutex) {
+                    when (which) {
+                        0 -> ISO_LADDER.getOrNull(ISO_LADDER.size - 1 - uiIdx)?.let { writeIsoValue(it) }
+                        1 -> AP_LADDER.getOrNull(uiIdx)?.let { writeApertureValue(it) }
+                        else -> SHUTTER_LADDER.getOrNull(SHUTTER_LADDER.size - 1 - uiIdx)?.let { writeShutterStep(it) }
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w("GPhoto2", "滚轮写值异常: ${t.message}")
+            }
+        }.start()
     }
 
     /** 步进失败 → 面板底部提示（0x201F 额外置只读态，禁用全部步进） */
@@ -3791,6 +3844,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setCaptureRefresh(on: Boolean) { captureRefreshOn.value = on; prefs.edit().putBoolean("set_capture_refresh", on).apply() }
     fun setLvEco(on: Boolean) { lvEcoOn.value = on; prefs.edit().putBoolean("set_lv_eco", on).apply() }
     fun setCaptureBubble(on: Boolean) { captureBubbleOn.value = on; prefs.edit().putBoolean("set_capture_bubble", on).apply() }
+
+    /* ---------- 悬浮快门球（体验优化：拖动吸边/模式胶囊/隐藏开关/首次提示） ---------- */
+    val shutterBallHidden = mutableStateOf(prefs.getBoolean("set_shutter_ball_hide", false))
+    fun setShutterBallHidden(on: Boolean) {
+        shutterBallHidden.value = on
+        prefs.edit().putBoolean("set_shutter_ball_hide", on).apply()
+    }
+    /** 首次长按提示：显示一次后记住 */
+    val ballHintShown = mutableStateOf(prefs.getBoolean("set_ball_hint_shown", false))
+    fun markBallHintShown() { ballHintShown.value = true; prefs.edit().putBoolean("set_ball_hint_shown", true).apply() }
+    /** 球位置持久化：距最近边的比例（0~1，边内坐标）+ 所在侧 */
+    var ballSide = prefs.getInt("ball_side", 1)                        // 0=左 1=右
+    var ballYFrac = prefs.getFloat("ball_yfrac", 0.72f)                 // 球中心 y / 可用高度
+    fun saveBallPos(side: Int, yFrac: Float) {
+        ballSide = side; ballYFrac = yFrac
+        prefs.edit().putInt("ball_side", side).putFloat("ball_yfrac", yFrac).apply()
+    }
 
     /** 独占操作期间暂停取景拉帧（相机保持取景态；try/finally 保证恢复） */
     private fun <T> withLvPaused(block: () -> T): T {

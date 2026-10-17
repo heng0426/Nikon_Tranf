@@ -444,6 +444,13 @@ internal fun MainActivity.SettingsScreen(
                     checked = vm.captureBubbleOn.value,
                     onChange = { vm.setCaptureBubble(it) }
                 )
+                SettingsDivider()
+                SettingSwitch(
+                    title = "隐藏悬浮快门球",
+                    subtitle = "关闭主页右下角的悬浮快门球（拍摄功能仍在遥控页，需要时回此开关打开）",
+                    checked = vm.shutterBallHidden.value,
+                    onChange = { vm.setShutterBallHidden(it) }
+                )
             }
             SettingsSection(title = "外观", icon = { SectionIcon("外观") }) {
                 SettingSwitch(

@@ -52,6 +52,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -195,6 +196,7 @@ import androidx.compose.ui.unit.toIntSize
 import androidx.core.content.ContextCompat
 import com.shinemeow.app.ui.theme.ShineMeowTheme
 import kotlinx.coroutines.Dispatchers
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
@@ -1791,12 +1793,7 @@ class MainActivity : ComponentActivity() {
                             .padding(end = 16.dp, bottom = 108.dp)
                     ) { ShutterParamPanel(vm) }
                 }
-                Box(
-                    Modifier
-                        .align(Alignment.BottomEnd)
-                        .navigationBarsPadding()
-                        .padding(end = 18.dp, bottom = 26.dp)
-                ) { ShutterBall(vm) }
+                if (!vm.shutterBallHidden.value) ShutterBallLayer(vm)
             }
 
             // 拍摄结果气泡：样式与删除成功气泡一致（纯文本），1.8s 自动消失
@@ -1851,17 +1848,122 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 悬浮快门球（任务 5）：连接态右下角常驻。点按 = 0x100E 快门（照片进卡后自动刷新
-     *  网格）；长按 = 展开参数面板（ISO/光圈/快门步进）。拍摄中转圈。 */
+    /** 悬浮快门球层（任务 6 体验优化）：可拖动吸边（位置持久化）、球上方 AF/直拍
+     *  模式胶囊、首次长按提示气泡。拖动超过 UiSpec.BALL_SLOP 才算拖动（保存位置 +
+     *  吸边），否则视为点击/长按（拍照/展开面板）。 */
+    @Composable
+    private fun ShutterBallLayer(vm: MainViewModel) {
+        var hostSize by remember { mutableStateOf(IntSize.Zero) }
+        val density = LocalDensity.current
+        val ballPx = with(density) { UiSpec.SHUTTER_BALL.roundToPx() }
+        val edgePx = with(density) { UiSpec.BALL_EDGE.roundToPx() }
+        var off by remember { mutableStateOf<IntOffset?>(null) }     // null = 按持久化位置初始化
+        var dragging by remember { mutableStateOf(false) }
+        var moved by remember { mutableStateOf(false) }              // 本次手势是否超过 slop
+        var dragDist by remember { mutableStateOf(0f) }              // 手势累计位移（slop 按总量判）
+
+        Box(Modifier.fillMaxSize().onSizeChanged { hostSize = it }) {
+            val size = hostSize
+            if (size == IntSize.Zero) return@Box
+            val ballH = ballPx + with(density) { 30.dp.roundToPx() } // 含模式胶囊高度
+            val yMax = size.height - ballPx - edgePx
+            val cur = off ?: IntOffset(
+                if (vm.ballSide == 0) edgePx else size.width - ballPx - edgePx,
+                ((yMax - edgePx) * vm.ballYFrac).toInt().coerceIn(edgePx, yMax)
+            )
+            // 首次长按提示（显示 3.5s 一次，已示不再出）
+            if (!vm.ballHintShown.value) LaunchedEffect(Unit) {
+                delay(800)
+                delay(2700)
+                vm.markBallHintShown()
+            }
+            Column(Modifier.offset { cur }) {
+                // AF/直拍模式胶囊（随球拖动；与遥控页底条模式同状态）
+                Box(
+                    Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(bottom = 4.dp)
+                        .shadow(4.dp, RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (vm.shootAf.value) Color.White.copy(alpha = 0.85f) else UiSpec.accent(vm.darkModeOn))
+                        .clickable { vm.shootAf.value = !vm.shootAf.value }
+                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        if (vm.shootAf.value) "AF" else "直拍",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (vm.shootAf.value) Color(0xFF1C1C1E) else Color.White
+                    )
+                }
+                ShutterBall(
+                    vm,
+                    onDrag = { dx, dy ->
+                        // ⚠️ 位置必须读 off state（pointerInput(Unit) 的回调闭包捕获的
+                        // cur 是首次组合的旧值——按 cur 算 = 每帧从旧位加单帧位移，球不动）
+                        dragDist += abs(dx) + abs(dy)
+                        moved = dragDist > with(density) { UiSpec.BALL_SLOP.roundToPx() }
+                        dragging = moved
+                        val o = off ?: cur
+                        val nx = (o.x + dx).roundToInt().coerceIn(edgePx, size.width - ballPx - edgePx)
+                        val ny = (o.y + dy).roundToInt().coerceIn(edgePx, yMax)
+                        off = IntOffset(nx, ny)
+                    },
+                    onDragEnd = {
+                        if (moved) {
+                            val o = off ?: return@ShutterBall
+                            val side = if (o.x < size.width / 2) 0 else 1
+                            val nx = if (side == 0) edgePx else size.width - ballPx - edgePx
+                            off = IntOffset(nx, o.y)
+                            vm.saveBallPos(side, o.y.toFloat() / yMax)
+                        }
+                        dragging = false; moved = false; dragDist = 0f
+                    }
+                )
+            }
+            // 首次提示气泡（球左侧）
+            if (!vm.ballHintShown.value) {
+                Surface(
+                    Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 40.dp),
+                    shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
+                    color = UiSpec.bubbleTint(vm.darkModeOn)
+                ) {
+                    Text(
+                        "长按快门球可调节拍摄参数\n拖动球可移动位置",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (vm.darkModeOn) Color.White else Color(0xFF1C1C1E),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)
+                    )
+                }
+            }
+        }
+    }
+
+    /** 悬浮快门球（任务 5，体验优化后）：拖动吸边 + 点击拍照 + 长按参数面板。拍摄中转圈。 */
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    private fun ShutterBall(vm: MainViewModel) {
+    private fun ShutterBall(
+        vm: MainViewModel,
+        onDrag: (Float, Float) -> Unit,
+        onDragEnd: () -> Unit
+    ) {
         Box(
             Modifier
                 .size(UiSpec.SHUTTER_BALL)
                 .shadow(10.dp, CircleShape)
                 .clip(CircleShape)
                 .background(UiSpec.accent(vm.darkModeOn))
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragEnd = { onDragEnd() },
+                        onDragCancel = { onDragEnd() }
+                    ) { change, amt ->
+                        change.consume()
+                        onDrag(amt.x, amt.y)
+                    }
+                }
                 .combinedClickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -1939,27 +2041,10 @@ class MainActivity : ComponentActivity() {
                     )
                     else -> {
                         val pfg = if (dark) Color.White else Color(0xFF1C1C1E)
+                        val pdim = if (dark) Color.White.copy(alpha = 0.5f) else Color.Black.copy(alpha = 0.45f)
                         val ro = vm.paramsReadOnly.value
-                        ShutterParamRow(
-                            "ISO",
-                            vm.paramIso.value?.toString() ?: "—",
-                            pfg, !ro,
-                            { vm.stepCamParam(0, -1) }, { vm.stepCamParam(0, 1) }
-                        )
-                        ShutterParamRow(
-                            "光圈",
-                            vm.paramAperture.value?.let {
-                                if (it % 100 == 0) "f/${it / 100}" else "f/${it / 100.0}"
-                            } ?: "—",
-                            pfg, !ro,
-                            { vm.stepCamParam(1, -1) }, { vm.stepCamParam(1, 1) }
-                        )
-                        ShutterParamRow(
-                            "快门",
-                            vm.paramShutter.value?.let { vm.shutterLabel(it) } ?: "—",
-                            pfg, !ro,
-                            { vm.stepCamParam(2, -1) }, { vm.stepCamParam(2, 1) }
-                        )
+                        // 摄影参数条：三大数字横排；按住拖动滚值 / 单击弹滚轮（松手/确认写挡）
+                        ParamNumbersBar(vm, pfg, pdim, !ro)
                         // 提示行：步进失败原因 / Wi-Fi 只读说明
                         val hint = vm.paramHint.value
                             ?: if (ro) "Wi-Fi 连接下相机参数只读，请用 USB 连接调节" else null
@@ -1978,55 +2063,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 参数行：标签 + − 值 +（enabled=false 时按钮灰置） */
-    @Composable
-    private fun ShutterParamRow(
-        label: String, value: String, fg: Color, enabled: Boolean,
-        onMinus: () -> Unit, onPlus: () -> Unit
-    ) {
-        Row(
-            Modifier.fillMaxWidth().height(44.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                label,
-                Modifier.weight(0.8f),
-                style = MaterialTheme.typography.bodyMedium,
-                color = fg.copy(alpha = if (enabled) 1f else 0.55f)
-            )
-            ShutterStepBtn("−", enabled, onMinus)
-            Text(
-                value,
-                Modifier.weight(1.4f),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                style = MaterialTheme.typography.titleMedium,
-                color = fg.copy(alpha = if (enabled) 1f else 0.55f)
-            )
-            ShutterStepBtn("+", enabled, onPlus)
-        }
-    }
-
-    @Composable
-    private fun ShutterStepBtn(sym: String, enabled: Boolean, onClick: () -> Unit) {
-        Box(
-            Modifier
-                .size(34.dp)
-                .clip(CircleShape)
-                .background(
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (enabled) 1f else 0.4f)
-                )
-                .clickable(enabled = enabled, onClick = onClick),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                sym,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.4f)
-            )
-        }
-    }
-
-    /** 遥控拍摄页（任务 6）：全屏取景画面 + 底部控制条（AF / 对焦−+ / 大快门 / 录像）。
-     *  通道不支持取景（0x9201 探针被拒）→ 居中降级提示。BackHandler 退出即关取景。 */
+    /** 遥控拍摄页（任务 6，体验优化后）：全屏取景 + 两层底条（对焦行 / 模式+快门行）
+     *  + 可展开摄影参数条（与主页同款滚轮调值）。通道不支持取景（0x9201 探针被拒）
+     *  → 居中降级提示。BackHandler 退出即关取景。 */
     @Composable
     private fun RemoteScreen(vm: MainViewModel, onBack: () -> Unit) {
         val dark = vm.darkModeOn
@@ -2093,12 +2132,45 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                // 底部控制条：AF / 焦− / 步长 / 焦+ / 大快门 / 录像
+                // 底部控制条（两层）+ 可展开摄影参数条
+                var paramsOpen by remember { mutableStateOf(false) }
+                AnimatedVisibility(
+                    visible = paramsOpen,
+                    enter = expandVertically(tween(UiSpec.STANDARD)) + fadeIn(tween(UiSpec.QUICK)),
+                    exit = shrinkVertically(tween(UiSpec.QUICK)) + fadeOut(tween(UiSpec.QUICK))
+                ) {
+                    Surface(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(UiSpec.ROUND_LARGE),
+                        color = if (dark) Color(0xF21C1C1E) else Color(0xF6FFFFFF)
+                    ) {
+                        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                            ParamNumbersBar(
+                                vm,
+                                if (dark) Color.White else Color(0xFF1C1C1E),
+                                if (dark) Color.White.copy(alpha = 0.5f) else Color.Black.copy(alpha = 0.45f),
+                                !vm.paramsReadOnly.value
+                            )
+                            val hint = vm.paramHint.value
+                                ?: if (vm.paramsReadOnly.value) "Wi-Fi 连接下相机参数只读，请用 USB 连接调节" else null
+                            hint?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = UiSpec.error(dark),
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                // 第一层：对焦组（AF / 焦− / 步长 / 焦+）+ 参数胶囊
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -2120,12 +2192,34 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     RemoteCircleBtn("+", UiSpec.REMOTE_BTN, vm.lvActive.value, dark) { vm.stepFocus(2) }
-                    // 拍摄模式 chip：AF=自动对焦后拍摄(0x100E) / 直拍=不对焦立即拍(0x9207)
+                    // 参数胶囊：展开/收起摄影参数条（Wi-Fi 只读时同样可展开查看）
                     Box(
                         Modifier
-                            .height(30.dp)
-                            .widthIn(min = 40.dp)
-                            .clip(RoundedCornerShape(15.dp))
+                            .height(34.dp)
+                            .clip(RoundedCornerShape(17.dp))
+                            .background(if (paramsOpen) UiSpec.accent(dark) else Color.White.copy(alpha = 0.16f))
+                            .clickable { paramsOpen = !paramsOpen; if (paramsOpen) vm.refreshCamParams() }
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("参数", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                // 第二层：拍摄模式胶囊 + 大快门（复用任务 5 拍摄链路，取景态失败自动暂停重试）
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 拍摄模式胶囊：AF=自动对焦后拍摄(0x100E) / 直拍=不对焦立即拍(0x9207)
+                    Box(
+                        Modifier
+                            .height(40.dp)
+                            .widthIn(min = 64.dp)
+                            .clip(RoundedCornerShape(20.dp))
                             .background(
                                 if (vm.shootAf.value) Color.White.copy(alpha = 0.16f)
                                 else UiSpec.accent(dark)
@@ -2136,11 +2230,11 @@ class MainActivity : ComponentActivity() {
                         Text(
                             if (vm.shootAf.value) "AF" else "直拍",
                             color = Color.White,
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier.padding(horizontal = 8.dp)
+                            style = MaterialTheme.typography.titleSmall,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                     }
-                    // 大快门：复用任务 5 拍摄链路（取景态失败自动暂停重试）
+                    // 大快门
                     Box(
                         Modifier
                             .size(UiSpec.REMOTE_SHUTTER)

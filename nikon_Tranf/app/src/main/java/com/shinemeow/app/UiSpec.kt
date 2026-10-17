@@ -231,10 +231,14 @@ object UiSpec {
     val SCROLLBAR_THICKNESS = 9.dp // 滚动条拖块厚度
     [/SCROLLBAR-SEALED] */
     val SEL_BORDER_W = 3.dp      // 多选选中态/高亮描边宽
-    val SHUTTER_BALL = 64.dp     // 悬浮快门球直径（任务 5；连接态常驻右下角）
-    val PARAMS_PANEL_W = 300.dp  // 拍摄参数面板宽（ISO/光圈/快门三行毛玻璃卡）
+    val SHUTTER_BALL = 64.dp     // 悬浮快门球直径（任务 5；连接态常驻，可拖动吸边）
+    val PARAMS_PANEL_W = 300.dp  // 拍摄参数面板宽（ISO/光圈/快门毛玻璃卡）
     val REMOTE_SHUTTER = 76.dp   // 遥控页大快门键直径（任务 6）
-    val REMOTE_BTN = 48.dp       // 遥控页控制条按钮尺寸（AF/对焦/录像）
+    val REMOTE_BTN = 48.dp       // 遥控页控制条按钮尺寸（AF/对焦）
+    val WHEEL_ITEM_H = 52.dp     // 参数滚轮单挡高度（弹窗行高）
+    val DRAG_STEP = 44.dp        // 参数条滑动切档阈值（滑过此距离切一档；独立于弹窗行高便于单独调灵敏度）
+    val BALL_EDGE = 10.dp        // 快门球吸边后距屏幕边缘的距离
+    val BALL_SLOP = 18.dp        // 快门球拖动判定阈值（低于此位移算点击）
 
     /* ---------- 透明度 ---------- */
     val OUTLINE_ALPHA = 0.45f    // 描边胶囊描边强度（ActionPill / 两段式确认未armed态）
